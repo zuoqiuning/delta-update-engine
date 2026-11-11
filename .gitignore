@@ -13,6 +13,7 @@ pnpm-debug.log*
 /scripts/export-source.mjs
 /real-test/
 /项目完整源码.md
+/docs/design/
 
 # tauri generated
 **/src-tauri/gen/schemas

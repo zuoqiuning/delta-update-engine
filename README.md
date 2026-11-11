@@ -33,8 +33,6 @@ pnpm typecheck
 ## 文档
 
 - [文档索引](docs/README.md)
-- [架构设计](docs/design/architecture.md)
-- [协议与数据格式](docs/design/protocol.md)
 - [开发者接入](docs/guides/getting-started.md)
 - [测试计划](docs/testing/test-plan.md)
 

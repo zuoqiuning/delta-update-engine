@@ -26,7 +26,7 @@ fn main() {
 }
 ```
 
-在 `capabilities/default.json` 中授予 `delta-update:default`。配置写在 `tauri.conf.json` 的 `plugins.delta-update` 下，字段见 [协议文档 §9](../../docs/design/protocol.md)。
+在 `capabilities/default.json` 中授予 `delta-update:default`。配置写在 `tauri.conf.json` 的 `plugins.delta-update` 下。
 
 ## 命令与状态
 
@@ -55,7 +55,7 @@ await updater.start();
 // React 18+：import { useUpdater } from 'tauri-plugin-delta-update-api/react';
 ```
 
-完整步骤见 [开发者接入指南](../../docs/guides/getting-started.md)，权限模型见 [权限设计](../../docs/design/permission-model.md)。
+完整步骤见 [开发者接入指南](../../docs/guides/getting-started.md)。
 
 ## 已知边界
 
