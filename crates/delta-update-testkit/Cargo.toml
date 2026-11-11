@@ -1,0 +1,29 @@
+[package]
+name = "delta-update-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Test fixtures for delta-update-engine and tauri-plugin-delta-update"
+publish = false
+
+[dependencies]
+delta-update-engine = { path = "../delta-update-engine", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+minisign-verify.workspace = true
+minisign.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+axum = "0.8"
+
+[[bin]]
+name = "crash_harness"
+path = "src/bin/crash_harness.rs"
+
+[[bin]]
+name = "testkeygen"
+path = "src/bin/testkeygen.rs"

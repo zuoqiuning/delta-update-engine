@@ -1,0 +1,23 @@
+name: Bug report
+description: 报告更新失败、回滚异常或签名问题
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 现象、错误码、状态快照；请先脱敏
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 插件版本、应用版本、安装形态（per-user / Program Files / AppImage）
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 诊断信息
+      description: staging/journal 文件名列表、delta-update 日志、status 返回值

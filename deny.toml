@@ -1,0 +1,35 @@
+[advisories]
+yanked = "warn"
+ignore = [
+    # Tauri 的 Linux/GTK 栈经 glib-macros 引入 proc-macro-error；
+    # 该 crate 仅停止维护、无已知漏洞，待 tauri 升级 gtk-rs 后移除。
+    { id = "RUSTSEC-2024-0370", reason = "transitive via tauri -> glib-macros on Linux" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "bzip2-1.0.6",
+    "CDLA-Permissive-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Dev-only fixtures are path-only on purpose: Cargo drops dev-dependencies
+# from the published manifest, so pinning a version would force publishing an
+# unpublished testkit crate.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

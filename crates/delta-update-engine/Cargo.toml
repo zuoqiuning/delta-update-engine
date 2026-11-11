@@ -1,0 +1,57 @@
+[package]
+name = "delta-update-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "File-level delta update engine for Tauri applications"
+readme = "README.md"
+keywords = ["tauri", "updater", "delta", "update", "zstd"]
+categories = ["development-tools", "filesystem"]
+documentation = "https://docs.rs/delta-update-engine"
+
+[features]
+default = []
+test-faults = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+url.workspace = true
+minisign-verify.workspace = true
+sha2.workspace = true
+hex.workspace = true
+semver.workspace = true
+uuid.workspace = true
+fs4.workspace = true
+walkdir.workspace = true
+tempfile.workspace = true
+dunce.workspace = true
+tracing.workspace = true
+time.workspace = true
+sysinfo.workspace = true
+qbsdiff.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+delta-update-testkit = { path = "../delta-update-testkit" }
+
+[[bench]]
+name = "hash_tree"
+harness = false
+
+[[bench]]
+name = "patch_header"
+harness = false
+
+[[bench]]
+name = "journal_verify"
+harness = false

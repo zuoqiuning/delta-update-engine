@@ -1,0 +1,20 @@
+name: Feature request
+description: 提出新机制或改进
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述真实使用场景，不要只写“希望支持 X”
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 是否需要改协议、目录结构或公开 API
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案

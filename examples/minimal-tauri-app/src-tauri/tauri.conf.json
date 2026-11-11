@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Minimal Delta App",
+  "version": "0.1.0",
+  "identifier": "com.example.minimal-delta-app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Minimal Delta App",
+        "width": 800,
+        "height": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  },
+  "plugins": {
+    "delta-update": {
+      "config_version": 1,
+      "endpoint": "https://example.com/manifests/latest.json",
+      "signing_public_keys": ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"],
+      "auto_check": true,
+      "auto_apply": true,
+      "auto_confirm": true,
+      "channel": "stable"
+    }
+  }
+}

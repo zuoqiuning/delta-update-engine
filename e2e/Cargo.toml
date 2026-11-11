@@ -1,0 +1,24 @@
+[package]
+name = "delta-update-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "delta-update-e2e"
+path = "src/main.rs"
+
+[dependencies]
+delta-update-engine = { path = "../crates/delta-update-engine", version = "0.1.0" }
+delta-update-testkit = { path = "../crates/delta-update-testkit", version = "0.1.0" }
+delta-update-cli = { path = "../crates/delta-update-cli", version = "0.1.0" }
+hex.workspace = true
+minisign.workspace = true
+qbsdiff.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+url.workspace = true
+zstd.workspace = true

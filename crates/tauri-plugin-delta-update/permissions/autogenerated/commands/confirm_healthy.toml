@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-confirm-healthy"
+description = "Enables the confirm_healthy command without any pre-configured scope."
+commands.allow = ["confirm_healthy"]
+
+[[permission]]
+identifier = "deny-confirm-healthy"
+description = "Denies the confirm_healthy command without any pre-configured scope."
+commands.deny = ["confirm_healthy"]

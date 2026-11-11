@@ -1,0 +1,28 @@
+# build outputs
+**/target
+**/dist
+node_modules/
+.pnpm-store/
+pnpm-debug.log*
+
+# tool-managed scratch space
+/.screenshots/
+
+# generated source export (pnpm export:source)
+/项目完整源码.md
+
+# tauri generated
+**/src-tauri/gen/schemas
+
+# test fixtures
+e2e/fixtures
+crates/delta-update-testkit/fixtures
+real-test/work
+real-test/keys
+
+# secrets and logs
+*.log
+*.key
+*.pem
+.env
+.env.*

@@ -1,0 +1,10 @@
+[default]
+description = "Default permissions for the delta-update plugin"
+permissions = [
+    "allow-check",
+    "allow-prepare",
+    "allow-cancel-prepare",
+    "allow-status",
+    "allow-confirm-healthy",
+    "allow-restart-to-apply",
+]
