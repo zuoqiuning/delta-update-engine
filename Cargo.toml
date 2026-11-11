@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "e2e", "xtask", "real-test/demo-app"]
-exclude = ["examples/minimal-tauri-app/src-tauri"]
+members = ["crates/*", "e2e", "xtask"]
+exclude = ["examples/minimal-tauri-app/src-tauri", "real-test"]
 
 [workspace.package]
 version = "0.1.0"

@@ -8,7 +8,10 @@ pnpm-debug.log*
 # tool-managed scratch space
 /.screenshots/
 
-# generated source export (pnpm export:source)
+# local-only tooling and artifacts, never published
+/导出源码.bat
+/scripts/export-source.mjs
+/real-test/
 /项目完整源码.md
 
 # tauri generated
@@ -17,8 +20,6 @@ pnpm-debug.log*
 # test fixtures
 e2e/fixtures
 crates/delta-update-testkit/fixtures
-real-test/work
-real-test/keys
 
 # secrets and logs
 *.log

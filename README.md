@@ -14,7 +14,6 @@ crates/delta-update-testkit        测试夹具（不发布）
 packages/plugin-api                前端 invoke/类型封装
 examples/minimal-tauri-app         最小接入示例
 e2e                                跨进程端到端测试
-real-test                          真实更新演练（本地 HTTP + 真实 CLI/引擎）
 xtask                              仓库自动化
 docs                               设计、接入、参考、运维与测试文档
 ```
@@ -29,12 +28,6 @@ cargo test --workspace
 cargo xtask ci
 pnpm install
 pnpm typecheck
-
-# 导出关键源码到 项目完整源码.md（交接/分享用）
-pnpm export:source
-
-# 真实演练：构造 v1/v2 两个软件目录，生成补丁并实际更新（需要 Python 3 提供本地静态 HTTP 服务）
-pwsh -ExecutionPolicy Bypass -File real-test/run.ps1
 ```
 
 ## 文档

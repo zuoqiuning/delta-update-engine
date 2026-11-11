@@ -4,7 +4,6 @@
   "packageManager": "pnpm@12.15.0",
   "scripts": {
     "build": "pnpm --filter tauri-plugin-delta-update-api build",
-    "export:source": "node scripts/export-source.mjs",
     "test": "pnpm --filter tauri-plugin-delta-update-api test",
     "typecheck": "pnpm --filter tauri-plugin-delta-update-api typecheck"
   }

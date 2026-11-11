@@ -956,18 +956,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "delta-test-demo"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "delta-update-engine",
- "serde",
- "serde_json",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "delta-update-cli"
 version = "0.1.0"
 dependencies = [

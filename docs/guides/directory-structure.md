@@ -31,8 +31,7 @@ delta-update-engine/
 ├── examples/                   # 可运行的示例 Tauri 应用
 ├── e2e/                        # 跨进程端到端测试（独立 crate，publish = false）
 ├── xtask/                      # 仓库自动化（cargo xtask ...）
-├── scripts/                    # 工具脚本（源码导出、Windows 签名）
-├── 导出源码.bat                # 双击运行 scripts/export-source.mjs
+├── scripts/                    # 工具脚本（Windows 签名）
 ├── docs/                       # 全部文档，按主题分类
 ├── Cargo.toml                  # workspace 根清单
 ├── Cargo.lock                  # 应用/二进制仓库应提交
@@ -52,8 +51,6 @@ delta-update-engine/
 ```
 
 **根目录只允许上述内容**。临时文件、压缩包、截图、调试日志、发布产物一律不得留在根目录。IDE 自动生成的 `.screenshots/` 属于本地工具目录，已在 `.gitignore` 中忽略，不视为仓库内容。
-
-`项目完整源码.md` 由 `pnpm export:source` 生成，是交接/分享用的导出产物而非文档；可随时删除并重新生成，`docs-check` 会跳过它。
 
 本文描述的是**目标布局与唯一落位规则**：尚未实现的能力，其模块与测试文件在该能力实现时按本文的命名和位置加入，不得另起目录。
 
