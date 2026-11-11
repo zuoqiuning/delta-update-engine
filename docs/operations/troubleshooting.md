@@ -82,10 +82,11 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<AppName>\InstallLocati
 
 ```bash
 delta-update inspect --journal-dir "%LOCALAPPDATA%\com.example.app\delta-update\journal"
+delta-update inspect --journal-dir ... --verbose
 delta-update inspect --journal-dir ... --json > update-report.json
 ```
 
-输出包括：`apply.json` 配置、`commit.status`、`commit.journal` / `rollback.journal` 的版本与操作统计、`prepared.json`、启动尝试次数、跳过版本，以及一句结论（未完成提交 / 等待健康确认 / 失败重试 / 已准备 / 已回滚）。损坏的状态文件会列为警告而不是让命令崩溃；上报时附上该输出与目录文件列表即可。
+输出包括：`apply.json` 配置、`commit.status`、`commit.journal` / `rollback.journal` 的版本与操作统计、`prepared.json`、启动尝试次数、跳过版本，以及一句结论（未完成提交 / 等待健康确认 / 失败重试 / 已准备 / 已回滚）。`--verbose` 会逐条列出 `FileOp` 及其当前状态（`landed` / `pending` / `backed_up`）。损坏的状态文件会列为警告而不是让命令崩溃；上报时附上该输出与目录文件列表即可。
 
 
 ## 2. 状态机各状态的含义

@@ -316,7 +316,7 @@ async fn large_objects_use_parallel_ranges() {
         .filter(|(path, _)| path == OBJECT_KEY)
         .collect();
     assert!(
-        ranges.len() >= 4,
+        ranges.len() >= 2,
         "expected parallel range requests, got {ranges:?}"
     );
     assert!(

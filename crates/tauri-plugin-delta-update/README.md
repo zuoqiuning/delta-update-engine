@@ -62,5 +62,5 @@ await updater.start();
 - 文件级更新不会改写 NSIS 写入的“应用和功能”`DisplayVersion`；需要同步时由应用在确认健康后自行更新，或用新安装包覆盖安装。
 - `check` 会扫描并哈希安装根以计算差异，超大安装目录的首次检查有 I/O 成本；之后按 `size + mtime` 复用缓存的哈希，只重新哈希变化的文件。
 - prepare、commit/recovery 共享跨进程 `update.lock`；第二个实例的 prepare 返回 `E_UPDATE_LOCKED`。仍建议使用 Tauri single-instance 插件保证单实例运行。
-- 单个大文件（≥ 8 MiB）会切成最多 4 个 Range 分块并发下载，服务端不支持 Range 时自动回退单流；多文件之间仍按 `max_concurrent_downloads` 并发。
+- 单个大文件（≥ 8 MiB）按 8 MiB 分块、最多 4 路并发 Range 下载；服务端不支持 Range 时自动回退单流。多文件之间仍按 `max_concurrent_downloads` 并发。
 - 差分按文件生成：超过发布端 `--patch-max-file-size` 的文件直接走全量，不做文件内分块差分。

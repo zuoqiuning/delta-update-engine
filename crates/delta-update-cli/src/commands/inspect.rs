@@ -41,6 +41,15 @@ struct JournalInfo {
     trash: usize,
     restore: usize,
     remove_trash: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ops_detail: Option<Vec<OpInfo>>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpInfo {
+    kind: String,
+    path: String,
+    status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +62,12 @@ struct PreparedInfo {
 }
 
 impl JournalInfo {
-    fn from_journal(file: &str, journal: &Journal) -> Self {
+    fn from_journal(
+        file: &str,
+        journal: &Journal,
+        install_root: Option<&Path>,
+        verbose: bool,
+    ) -> Self {
         let mut info = Self {
             file: file.to_string(),
             commit_id: journal.commit_id.clone(),
@@ -65,16 +79,80 @@ impl JournalInfo {
             trash: 0,
             restore: 0,
             remove_trash: 0,
+            ops_detail: None,
         };
+        let mut details = Vec::new();
         for op in &journal.ops {
-            match op {
-                FileOp::Backup { .. } => info.backup += 1,
-                FileOp::Place { .. } => info.place += 1,
-                FileOp::Trash { .. } => info.trash += 1,
-                FileOp::Restore { .. } => info.restore += 1,
-                FileOp::RemoveTrash { .. } => info.remove_trash += 1,
-                _ => {}
+            let (kind, path, status) = match op {
+                FileOp::Backup { src, dst } => {
+                    info.backup += 1;
+                    (
+                        "Backup",
+                        src.clone(),
+                        if install_root.is_some_and(|root| root.join(dst).exists()) {
+                            "backed_up"
+                        } else {
+                            "pending"
+                        },
+                    )
+                }
+                FileOp::Place { dst, .. } => {
+                    info.place += 1;
+                    (
+                        "Place",
+                        dst.clone(),
+                        if install_root.is_some_and(|root| root.join(dst).exists()) {
+                            "landed"
+                        } else {
+                            "pending"
+                        },
+                    )
+                }
+                FileOp::Trash { src, trash_dst } => {
+                    info.trash += 1;
+                    let moved = install_root.is_some_and(|root| {
+                        !root.join(src).exists() || root.join(".trash").join(trash_dst).exists()
+                    });
+                    (
+                        "Trash",
+                        src.clone(),
+                        if moved { "landed" } else { "pending" },
+                    )
+                }
+                FileOp::Restore { dst, .. } => {
+                    info.restore += 1;
+                    (
+                        "Restore",
+                        dst.clone(),
+                        if install_root.is_some_and(|root| root.join(dst).exists()) {
+                            "landed"
+                        } else {
+                            "pending"
+                        },
+                    )
+                }
+                FileOp::RemoveTrash { trash_path } => {
+                    info.remove_trash += 1;
+                    let removed = install_root
+                        .is_none_or(|root| !root.join(".trash").join(trash_path).exists());
+                    (
+                        "RemoveTrash",
+                        trash_path.clone(),
+                        if removed { "landed" } else { "pending" },
+                    )
+                }
+                _ => ("Unknown", String::new(), "unknown"),
+            };
+            if verbose {
+                details.push(OpInfo {
+                    kind: kind.into(),
+                    path,
+                    status: status.into(),
+                });
             }
+        }
+        if verbose {
+            info.ops_detail = Some(details);
         }
         info
     }
@@ -87,7 +165,7 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
             args.journal_dir.display()
         );
     }
-    let report = inspect(&args.journal_dir)?;
+    let report = inspect(&args.journal_dir, args.verbose)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -96,7 +174,7 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn inspect(dir: &Path) -> anyhow::Result<Report> {
+fn inspect(dir: &Path, verbose: bool) -> anyhow::Result<Report> {
     let mut warnings = Vec::new();
 
     let apply = match state::read_apply_config(dir) {
@@ -119,8 +197,21 @@ fn inspect(dir: &Path) -> anyhow::Result<Report> {
             None
         }
     };
-    let journal = load_journal(dir, state::COMMIT_JOURNAL, &mut warnings);
-    let rollback_journal = load_journal(dir, state::ROLLBACK_JOURNAL, &mut warnings);
+    let install_root = apply.as_ref().map(|apply| apply.install_root.clone());
+    let journal = load_journal(
+        dir,
+        state::COMMIT_JOURNAL,
+        &mut warnings,
+        install_root.as_deref(),
+        verbose,
+    );
+    let rollback_journal = load_journal(
+        dir,
+        state::ROLLBACK_JOURNAL,
+        &mut warnings,
+        install_root.as_deref(),
+        verbose,
+    );
     let prepared = load_prepared(dir, &mut warnings);
     let attempts = state::read_attempts(dir);
     let skipped_version = state::read_skipped_version(dir);
@@ -147,7 +238,13 @@ fn inspect(dir: &Path) -> anyhow::Result<Report> {
     })
 }
 
-fn load_journal(dir: &Path, file: &str, warnings: &mut Vec<String>) -> Option<JournalInfo> {
+fn load_journal(
+    dir: &Path,
+    file: &str,
+    warnings: &mut Vec<String>,
+    install_root: Option<&Path>,
+    verbose: bool,
+) -> Option<JournalInfo> {
     let path = dir.join(file);
     if !path.exists() {
         return None;
@@ -160,7 +257,12 @@ fn load_journal(dir: &Path, file: &str, warnings: &mut Vec<String>) -> Option<Jo
         }
     };
     match Journal::decode(&bytes) {
-        Ok(journal) => Some(JournalInfo::from_journal(file, &journal)),
+        Ok(journal) => Some(JournalInfo::from_journal(
+            file,
+            &journal,
+            install_root,
+            verbose,
+        )),
         Err(error) => {
             warnings.push(format!("{file} 损坏：{error}"));
             None
@@ -264,18 +366,25 @@ fn print_human(report: &Report) {
         ("回滚日志", report.rollback_journal.as_ref()),
     ] {
         match journal {
-            Some(journal) => println!(
-                "{label}: {} {} -> {}, {} 个操作（Backup={}, Place={}, Trash={}, Restore={}, RemoveTrash={}）",
-                journal.file,
-                journal.from_version,
-                journal.version,
-                journal.ops,
-                journal.backup,
-                journal.place,
-                journal.trash,
-                journal.restore,
-                journal.remove_trash
-            ),
+            Some(journal) => {
+                println!(
+                    "{label}: {} {} -> {}, {} 个操作（Backup={}, Place={}, Trash={}, Restore={}, RemoveTrash={}）",
+                    journal.file,
+                    journal.from_version,
+                    journal.version,
+                    journal.ops,
+                    journal.backup,
+                    journal.place,
+                    journal.trash,
+                    journal.restore,
+                    journal.remove_trash
+                );
+                if let Some(ops) = &journal.ops_detail {
+                    for op in ops {
+                        println!("  - [{}] {}: {}", op.kind, op.path, op.status);
+                    }
+                }
+            }
             None => println!("{label}: 无"),
         }
     }

@@ -220,6 +220,28 @@ async fn prepare_modified(
         std::fs::create_dir_all(parent).map_err(|err| io_error(err, path))?;
     }
 
+    // A cancelled or interrupted prepare may already have produced the final
+    // staged file. Reuse it after a hash check instead of downloading/patching
+    // the same bytes again.
+    if dest.exists() {
+        if verify_staged(path, &dest, entry).await.is_ok() {
+            let planned = if should_try_patch(entry, context.limits) {
+                entry.delta_size.unwrap_or(entry.size)
+            } else {
+                entry.size
+            };
+            report_download(context, path, planned);
+            (context.progress)(Progress::Verifying { file: path.clone() });
+            return Ok(StagedFile {
+                path: path.clone(),
+                staging_path: dest,
+                sha256: entry.sha256.clone(),
+                size: entry.size,
+            });
+        }
+        let _ = std::fs::remove_file(&dest);
+    }
+
     if should_try_patch(entry, context.limits) {
         (context.progress)(Progress::Applying { file: path.clone() });
         match stage_patch(path, entry, source, &dest, context).await {
@@ -268,15 +290,20 @@ async fn stage_patch(
     let patch_path = context
         .patches_root
         .join(format!("{}.tdp", sha256_bytes(path.as_bytes())));
-    download_verified(
-        context.fetcher,
-        delta_key,
-        &patch_path,
-        delta_size,
-        None,
-        context.cancel,
-    )
-    .await?;
+    // A cancelled prepare keeps the downloaded patch. Reuse it when the size
+    // matches; the target hash check after applying still rejects bad bytes.
+    let patch_ready = std::fs::metadata(&patch_path).is_ok_and(|meta| meta.len() == delta_size);
+    if !patch_ready {
+        download_verified(
+            context.fetcher,
+            delta_key,
+            &patch_path,
+            delta_size,
+            None,
+            context.cancel,
+        )
+        .await?;
+    }
     report_download(context, path, delta_size);
 
     // Read only the fixed-size header; the payload is parsed by `apply_patch`.

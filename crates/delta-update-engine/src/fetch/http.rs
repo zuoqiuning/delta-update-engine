@@ -21,7 +21,8 @@ const MAX_REFRESHES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 200;
 /// Objects at least this large are fetched as parallel Range chunks.
 const RANGE_CHUNK_THRESHOLD: u64 = 8 * 1024 * 1024;
-const RANGE_CHUNK_COUNT: usize = 4;
+const RANGE_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
+const RANGE_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FetchLimits {
@@ -378,12 +379,16 @@ impl HttpFetcher {
                 .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
         }
         remove_chunks(dest).await;
+        let chunk_dir = chunk_dir(dest);
+        tokio::fs::create_dir_all(&chunk_dir)
+            .await
+            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
 
-        let chunk_size = total.div_ceil(RANGE_CHUNK_COUNT as u64);
+        let chunk_count = total.div_ceil(RANGE_CHUNK_SIZE) as usize;
         let outcomes: Vec<Result<ChunkOutcome, EngineError>> =
-            futures_util::stream::iter(0..RANGE_CHUNK_COUNT)
-                .map(|index| self.download_chunk(url, dest, index, chunk_size, total))
-                .buffer_unordered(RANGE_CHUNK_COUNT)
+            futures_util::stream::iter(0..chunk_count)
+                .map(|index| self.download_chunk(url, dest, index, total))
+                .buffer_unordered(RANGE_CONCURRENCY)
                 .collect()
                 .await;
 
@@ -407,7 +412,7 @@ impl HttpFetcher {
             .await
             .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
         let mut written = 0_u64;
-        for index in 0..RANGE_CHUNK_COUNT {
+        for index in 0..chunk_count {
             let path = chunk_path(dest, index);
             let mut part = tokio::fs::File::open(&path)
                 .await
@@ -422,6 +427,7 @@ impl HttpFetcher {
             .await
             .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
         drop(output);
+        let _ = tokio::fs::remove_dir(&chunk_dir).await;
 
         if written != total {
             remove_chunks(dest).await;
@@ -438,17 +444,16 @@ impl HttpFetcher {
         url: &Url,
         dest: &Path,
         index: usize,
-        chunk_size: u64,
         total: u64,
     ) -> Result<ChunkOutcome, EngineError> {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
 
-        let start = chunk_size.saturating_mul(index as u64);
+        let start = RANGE_CHUNK_SIZE.saturating_mul(index as u64);
         if start >= total {
             return Ok(ChunkOutcome::Unsupported);
         }
-        let end = (start + chunk_size).min(total) - 1;
+        let end = (start + RANGE_CHUNK_SIZE).min(total) - 1;
         let response = self
             .client
             .get(url.clone())
@@ -603,18 +608,20 @@ enum ChunkOutcome {
     Unsupported,
 }
 
-fn chunk_path(dest: &Path, index: usize) -> PathBuf {
+fn chunk_dir(dest: &Path) -> PathBuf {
     let name = dest
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("object");
-    dest.with_file_name(format!(".{name}.chunk-{index}"))
+    dest.with_file_name(format!(".{name}.chunks"))
+}
+
+fn chunk_path(dest: &Path, index: usize) -> PathBuf {
+    chunk_dir(dest).join(format!("chunk-{index}"))
 }
 
 async fn remove_chunks(dest: &Path) {
-    for index in 0..RANGE_CHUNK_COUNT {
-        let _ = tokio::fs::remove_file(chunk_path(dest, index)).await;
-    }
+    let _ = tokio::fs::remove_dir_all(chunk_dir(dest)).await;
 }
 
 fn rate_limited(response: &reqwest::Response) -> Option<EngineError> {

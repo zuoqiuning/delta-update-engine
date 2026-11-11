@@ -783,6 +783,7 @@ doctor:
 
 inspect:
 --journal-dir <DIR>     必填；应用本地数据目录下的 delta-update/journal
+--verbose               逐条列出 Journal 操作及落地/备份状态
 --json                  输出机器可读 JSON
 ```
 

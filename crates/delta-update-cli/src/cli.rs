@@ -144,6 +144,9 @@ pub struct InspectArgs {
     /// Path to the app's journal directory (contains commit.journal/apply.json).
     #[arg(long)]
     pub journal_dir: PathBuf,
+    /// List every journal operation and whether its target is already in place.
+    #[arg(long)]
+    pub verbose: bool,
     /// Emit machine-readable JSON.
     #[arg(long)]
     pub json: bool,

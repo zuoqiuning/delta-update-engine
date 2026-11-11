@@ -208,7 +208,7 @@ async fn prepare_applies_qbsdiff_patch() {
             "full_key": "artifacts/full/2.0.0/App.exe"
         }
     }));
-    let (dir, engine, _server) = start(
+    let (dir, engine, server) = start(
         manifest,
         &keys,
         "1.0.0",
@@ -234,6 +234,22 @@ async fn prepare_applies_qbsdiff_patch() {
         new
     );
     assert!(progress.lock().unwrap().join(" ").contains("Applying"));
+
+    let patch_requests = server
+        .requests()
+        .iter()
+        .filter(|path| path.as_str() == "artifacts/1.0.0-to-2.0.0/App.exe.tdp")
+        .count();
+    engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|path| path.as_str() == "artifacts/1.0.0-to-2.0.0/App.exe.tdp")
+            .count(),
+        patch_requests,
+        "a repeated prepare must reuse the staged target instead of downloading again"
+    );
     drop(dir);
 }
 
