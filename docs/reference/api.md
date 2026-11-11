@@ -736,6 +736,7 @@ delta-update verify     # 从对象存储验证已发布内容
 delta-update verify-key # 验证私钥与公钥配对
 delta-update doctor     # 线上体检：清单、签名、补丁链、资源可访问性
 delta-update inspect    # 离线解码本地 journal 目录，输出更新诊断
+delta-update init       # 打印插件配置与 capability 片段
 ```
 
 ### 5.2 `release` 参数
@@ -787,7 +788,7 @@ inspect:
 --json                  输出机器可读 JSON
 ```
 
-`verify` 从对象存储重新下载清单、验签、抽样下载补丁、应用补丁、校验目标哈希。`doctor` 额外校验：所有备用端点的版本一致性、清单字段合法性、对象可访问性与字节数。`inspect` 离线读取 journal 目录，输出待处理提交、PREPARED、回滚与损坏状态，不需要启动应用。三者都是发布与排障的标准步骤。
+`verify` 从对象存储重新下载清单、验签、抽样下载补丁、应用补丁、校验目标哈希。`doctor` 额外校验：所有备用端点的版本一致性、清单字段合法性、对象可访问性与字节数。`inspect` 离线读取 journal 目录，输出待处理提交、PREPARED、回滚与损坏状态，不需要启动应用；退出码 `1` 表示未完成 Journal（可重启恢复），`2` 表示状态损坏（需人工介入）。三者都是发布与排障的标准步骤。
 
 ## 6. Feature Flags
 

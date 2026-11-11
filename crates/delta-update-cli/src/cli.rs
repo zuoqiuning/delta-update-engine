@@ -25,6 +25,8 @@ pub enum Command {
     Doctor(DoctorArgs),
     /// Inspect a local journal directory (offline update diagnostics).
     Inspect(InspectArgs),
+    /// Print the Tauri plugin configuration and capability snippets.
+    Init(InitArgs),
 }
 
 #[derive(Debug, Args)]
@@ -150,4 +152,20 @@ pub struct InspectArgs {
     /// Emit machine-readable JSON.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InitArgs {
+    /// Project root to inspect for an existing tauri.conf.json.
+    #[arg(long, default_value = ".")]
+    pub dir: PathBuf,
+    /// Manifest endpoint; omitted prints a placeholder.
+    #[arg(long)]
+    pub endpoint: Option<String>,
+    /// Trusted minisign public key; repeat for key rotation.
+    #[arg(long = "public-key")]
+    pub public_keys: Vec<String>,
+    /// Update channel written into the config.
+    #[arg(long, default_value = "stable")]
+    pub channel: String,
 }

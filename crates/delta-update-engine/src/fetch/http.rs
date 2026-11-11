@@ -408,38 +408,93 @@ impl HttpFetcher {
             return Ok(None);
         }
 
-        let mut output = tokio::fs::File::create(dest)
+        let merged = self.merge_chunks(dest, chunk_count, total).await;
+        remove_chunks(dest).await;
+        match merged {
+            Ok(Some(written)) => Ok(Some(DownloadReceipt {
+                bytes_written: written,
+                resumed: false,
+            })),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Concatenate chunk files into a temporary sibling and atomically rename
+    /// it into place, so a crash never leaves a half-written destination.
+    async fn merge_chunks(
+        &self,
+        dest: &Path,
+        chunk_count: usize,
+        total: u64,
+    ) -> Result<Option<u64>, EngineError> {
+        let merge_path = merge_path(dest);
+        let mut output = tokio::fs::File::create(&merge_path)
             .await
             .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
         let mut written = 0_u64;
         for index in 0..chunk_count {
             let path = chunk_path(dest, index);
-            let mut part = tokio::fs::File::open(&path)
-                .await
-                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-            written += tokio::io::copy(&mut part, &mut output)
-                .await
-                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+            let mut part = match tokio::fs::File::open(&path).await {
+                Ok(part) => part,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&merge_path).await;
+                    return Err(EngineError::PermissionDenied(error.to_string()));
+                }
+            };
+            match tokio::io::copy(&mut part, &mut output).await {
+                Ok(bytes) => written += bytes,
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&merge_path).await;
+                    return Err(EngineError::PermissionDenied(error.to_string()));
+                }
+            }
             let _ = tokio::fs::remove_file(&path).await;
         }
-        output
-            .sync_all()
-            .await
-            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        if let Err(error) = output.sync_all().await {
+            let _ = tokio::fs::remove_file(&merge_path).await;
+            return Err(EngineError::PermissionDenied(error.to_string()));
+        }
         drop(output);
-        let _ = tokio::fs::remove_dir(&chunk_dir).await;
-
         if written != total {
-            remove_chunks(dest).await;
+            let _ = tokio::fs::remove_file(&merge_path).await;
             return Ok(None);
         }
-        Ok(Some(DownloadReceipt {
-            bytes_written: written,
-            resumed: false,
-        }))
+        // Windows rename does not replace an existing file.
+        let _ = tokio::fs::remove_file(dest).await;
+        if let Err(error) = tokio::fs::rename(&merge_path, dest).await {
+            let _ = tokio::fs::remove_file(&merge_path).await;
+            return Err(EngineError::PermissionDenied(error.to_string()));
+        }
+        Ok(Some(written))
     }
 
+    /// Download one chunk with retries. A transient failure must not throw
+    /// away the chunks that already succeeded.
     async fn download_chunk(
+        &self,
+        url: &Url,
+        dest: &Path,
+        index: usize,
+        total: u64,
+    ) -> Result<ChunkOutcome, EngineError> {
+        let mut attempt = 0;
+        loop {
+            match self.download_chunk_once(url, dest, index, total).await {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) if error.retryable() && attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    let delay = error.retry_after().unwrap_or_else(|| {
+                        Duration::from_millis(RETRY_BASE_DELAY_MS << (attempt - 1))
+                    });
+                    tokio::time::sleep(delay).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn download_chunk_once(
         &self,
         url: &Url,
         dest: &Path,
@@ -620,8 +675,17 @@ fn chunk_path(dest: &Path, index: usize) -> PathBuf {
     chunk_dir(dest).join(format!("chunk-{index}"))
 }
 
+fn merge_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("object");
+    dest.with_file_name(format!(".{name}.merging"))
+}
+
 async fn remove_chunks(dest: &Path) {
     let _ = tokio::fs::remove_dir_all(chunk_dir(dest)).await;
+    let _ = tokio::fs::remove_file(merge_path(dest)).await;
 }
 
 fn rate_limited(response: &reqwest::Response) -> Option<EngineError> {
@@ -725,6 +789,9 @@ impl Fetcher for HttpFetcher {
         max_bytes: u64,
     ) -> Result<DownloadReceipt, EngineError> {
         let max_bytes = max_bytes.min(self.limits.object_max_bytes);
+        // A crash during a ranged download can leave a stale chunk directory or
+        // merge temp file behind. Clear them before any download strategy runs.
+        remove_chunks(dest).await;
         let mut resume = resume_from;
         let mut refreshes = 0;
         loop {
@@ -759,6 +826,21 @@ impl Fetcher for HttpFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stale_chunk_artifacts_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("App.exe");
+        let chunks = chunk_dir(&dest);
+        std::fs::create_dir_all(&chunks).unwrap();
+        std::fs::write(chunks.join("chunk-0"), b"stale").unwrap();
+        std::fs::write(merge_path(&dest), b"stale").unwrap();
+
+        remove_chunks(&dest).await;
+
+        assert!(!chunks.exists());
+        assert!(!merge_path(&dest).exists());
+    }
 
     #[test]
     fn custom_headers_are_validated_and_stored() {

@@ -171,6 +171,17 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
     } else {
         print_human(&report);
     }
+    if !report.warnings.is_empty() {
+        eprintln!(
+            "inspect: {} warning(s); corrupt or unreadable state needs manual attention",
+            report.warnings.len()
+        );
+        std::process::exit(2);
+    }
+    if report.journal.is_some() || report.rollback_journal.is_some() {
+        eprintln!("inspect: unfinished update journal; restart the app to recover or retry");
+        std::process::exit(1);
+    }
     Ok(())
 }
 

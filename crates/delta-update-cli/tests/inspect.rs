@@ -43,7 +43,11 @@ fn reports_a_pending_commit_as_json() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unfinished journal must be recoverable-with-retry: {output:?}"
+    );
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["apply"]["version"], "2.0.0");
     assert_eq!(report["journal"]["ops"], 1);
@@ -56,7 +60,7 @@ fn reports_a_pending_commit_as_json() {
 }
 
 #[test]
-fn reports_a_corrupt_journal_without_failing() {
+fn reports_a_corrupt_journal_and_exits_nonzero() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::write(root.join("commit.journal"), b"not a journal").unwrap();
@@ -68,8 +72,25 @@ fn reports_a_corrupt_journal_without_failing() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "corrupt journal must need manual attention: {output:?}"
+    );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("commit.journal 损坏"), "{text}");
     assert!(text.contains("诊断:"), "{text}");
+}
+
+#[test]
+fn accepts_a_clean_journal_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("没有待处理的更新状态"));
 }

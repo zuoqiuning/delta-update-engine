@@ -11,5 +11,6 @@ fn main() -> anyhow::Result<()> {
         Command::VerifyKey(args) => commands::verify_key::run(&args),
         Command::Doctor(args) => commands::doctor::run(&args),
         Command::Inspect(args) => commands::inspect::run(&args),
+        Command::Init(args) => commands::init::run(&args),
     }
 }

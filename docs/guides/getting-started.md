@@ -114,6 +114,17 @@ fn main() {
 
 **获取公钥字符串**：打开 `release-1.pub`，去掉注释行，取 base64 主体部分（通常以 `RWQ` 开头的一整行）。
 
+也可以让 CLI 生成可直接合并的配置片段：
+
+```bash
+delta-update init \
+  --endpoint https://your-bucket.cos.ap-guangzhou.myqcloud.com/manifests/latest.json \
+  --public-key RWQ...release-1... \
+  --public-key RWQ...release-2...
+```
+
+它会打印 `plugins.delta-update` 配置、`capabilities/default.json` 权限片段与接入检查清单。`--dir` 默认当前目录：如果存在 `src-tauri/tauri.conf.json`，会优先复用已有的 `plugins.delta-update` 配置；从官方 updater 迁移时，也会把 `plugins.updater.pubkey` 作为默认公钥（endpoint 仍需显式提供）。
+
 ### 3.3 第三步：授予默认权限
 
 **src-tauri/capabilities/default.json**

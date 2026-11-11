@@ -16,6 +16,11 @@
 - 断点复用：`prepare` 先校验已存在的暂存目标，哈希匹配直接复用；已下载的 patch 在大小匹配时复用。取消、崩溃或重复调用 prepare 不再重复下载同一文件。
 - 离线诊断增强：`inspect --verbose` 逐条列出 `FileOp` 及 `landed` / `pending` / `backed_up` 状态，便于判断替换进度与备份完整性。
 - 下载加速：≥ 8 MiB 的对象按 8 MiB 分块、最多 4 路并发 Range 下载，合并后统一校验；服务端忽略 Range、分块异常或尺寸不符时自动回退单流，不改变最终哈希校验。
+- 接入 CLI：新增 `delta-update init`，按 `--endpoint` / `--public-key` 生成可直接合并的 `plugins.delta-update` 配置与 capability 片段，并列出接入检查项。
+- 大对象重试：单个 Range 分块失败时按指数退避重试（尊重 `Retry-After`），不再因一个分块的瞬时 502 丢弃全部已下载分块；合并改为写临时文件后原子 rename，崩溃不会留下半截目标文件。
+- `inspect` 门禁：存在未完成/回滚 Journal 时返回退出码 `1`（重启可恢复），状态损坏返回 `2`（需人工介入），干净状态返回 `0`。
+- 接入迁移：`delta-update init --dir` 会读取现有 `src-tauri/tauri.conf.json`，复用 `plugins.delta-update` 的 endpoint/公钥，或从官方 updater 的 `pubkey` 迁移公钥。
+- 下载清理：每次 `download` 前清理过期的 `.chunks` 目录与 `.merging` 临时文件，避免崩溃残留撑爆缓存。
 - 修复：自定义 `headers` 现在只发送到清单与签名请求，不再泄露到第三方对象下载（此前实现与文档相反）。
 
 ### Added
