@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
@@ -19,6 +19,9 @@ use super::{DownloadReceipt, Fetcher};
 const MAX_RETRIES: u32 = 3;
 const MAX_REFRESHES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 200;
+/// Objects at least this large are fetched as parallel Range chunks.
+const RANGE_CHUNK_THRESHOLD: u64 = 8 * 1024 * 1024;
+const RANGE_CHUNK_COUNT: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FetchLimits {
@@ -322,9 +325,11 @@ impl HttpFetcher {
         max_bytes: u64,
         kind: LimitedKind,
     ) -> Result<Vec<u8>, EngineError> {
-        let response = self
-            .client
-            .get(url)
+        let mut request = self.client.get(url);
+        for (name, value) in &self.headers {
+            request = request.header(name.clone(), value.clone());
+        }
+        let response = request
             .send()
             .await
             .map_err(|err| EngineError::from(network_error(&err)))?;
@@ -351,6 +356,143 @@ impl HttpFetcher {
         Ok(bytes.to_vec())
     }
 
+    /// Download a large object as parallel Range chunks, then concatenate.
+    ///
+    /// Returns `Ok(None)` when the server does not honor ranges or the data
+    /// does not match the expected size, so the caller can fall back to the
+    /// regular single-stream download. All partial chunks are cleaned up.
+    async fn try_download_ranged(
+        &self,
+        url: &Url,
+        dest: &Path,
+        total: u64,
+    ) -> Result<Option<DownloadReceipt>, EngineError> {
+        use futures_util::StreamExt;
+
+        if total < RANGE_CHUNK_THRESHOLD {
+            return Ok(None);
+        }
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        }
+        remove_chunks(dest).await;
+
+        let chunk_size = total.div_ceil(RANGE_CHUNK_COUNT as u64);
+        let outcomes: Vec<Result<ChunkOutcome, EngineError>> =
+            futures_util::stream::iter(0..RANGE_CHUNK_COUNT)
+                .map(|index| self.download_chunk(url, dest, index, chunk_size, total))
+                .buffer_unordered(RANGE_CHUNK_COUNT)
+                .collect()
+                .await;
+
+        let mut unsupported = false;
+        for outcome in outcomes {
+            match outcome {
+                Ok(ChunkOutcome::Written) => {}
+                Ok(ChunkOutcome::Unsupported) => unsupported = true,
+                Err(error) => {
+                    remove_chunks(dest).await;
+                    return Err(error);
+                }
+            }
+        }
+        if unsupported {
+            remove_chunks(dest).await;
+            return Ok(None);
+        }
+
+        let mut output = tokio::fs::File::create(dest)
+            .await
+            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        let mut written = 0_u64;
+        for index in 0..RANGE_CHUNK_COUNT {
+            let path = chunk_path(dest, index);
+            let mut part = tokio::fs::File::open(&path)
+                .await
+                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+            written += tokio::io::copy(&mut part, &mut output)
+                .await
+                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        output
+            .sync_all()
+            .await
+            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        drop(output);
+
+        if written != total {
+            remove_chunks(dest).await;
+            return Ok(None);
+        }
+        Ok(Some(DownloadReceipt {
+            bytes_written: written,
+            resumed: false,
+        }))
+    }
+
+    async fn download_chunk(
+        &self,
+        url: &Url,
+        dest: &Path,
+        index: usize,
+        chunk_size: u64,
+        total: u64,
+    ) -> Result<ChunkOutcome, EngineError> {
+        use futures_util::StreamExt;
+        use tokio::io::AsyncWriteExt;
+
+        let start = chunk_size.saturating_mul(index as u64);
+        if start >= total {
+            return Ok(ChunkOutcome::Unsupported);
+        }
+        let end = (start + chunk_size).min(total) - 1;
+        let response = self
+            .client
+            .get(url.clone())
+            .header(RANGE, format!("bytes={start}-{end}"))
+            .send()
+            .await
+            .map_err(|err| EngineError::from(network_error(&err)))?;
+        if let Some(error) = rate_limited(&response) {
+            return Err(error);
+        }
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Ok(ChunkOutcome::Unsupported);
+        }
+
+        let expected = end - start + 1;
+        let path = chunk_path(dest, index);
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        let mut written = 0_u64;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| EngineError::from(network_error(&err)))?;
+            written += chunk.len() as u64;
+            if written > expected {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return Ok(ChunkOutcome::Unsupported);
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        }
+        file.sync_all()
+            .await
+            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+        if written != expected {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(ChunkOutcome::Unsupported);
+        }
+        Ok(ChunkOutcome::Written)
+    }
+
     async fn try_download(
         &self,
         url: Url,
@@ -372,9 +514,6 @@ impl HttpFetcher {
         };
 
         let mut request = self.client.get(url);
-        for (name, value) in &self.headers {
-            request = request.header(name.clone(), value.clone());
-        }
         if resume_from > 0 {
             request = request.header(RANGE, format!("bytes={resume_from}-"));
         }
@@ -456,6 +595,25 @@ impl LimitedKind {
                 "signature is {size} bytes, limit is {max}"
             ))),
         }
+    }
+}
+
+enum ChunkOutcome {
+    Written,
+    Unsupported,
+}
+
+fn chunk_path(dest: &Path, index: usize) -> PathBuf {
+    let name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("object");
+    dest.with_file_name(format!(".{name}.chunk-{index}"))
+}
+
+async fn remove_chunks(dest: &Path) {
+    for index in 0..RANGE_CHUNK_COUNT {
+        let _ = tokio::fs::remove_file(chunk_path(dest, index)).await;
     }
 }
 
@@ -564,6 +722,16 @@ impl Fetcher for HttpFetcher {
         let mut refreshes = 0;
         loop {
             let url = self.resolve(key).await?;
+            if resume == 0 {
+                match self.try_download_ranged(&url, dest, max_bytes).await {
+                    Ok(Some(receipt)) => return Ok(receipt),
+                    Ok(None) => {}
+                    Err(error) if error.retryable() => {
+                        tracing::debug!(key, %error, "ranged download failed; falling back to a single stream");
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             match self.try_download(url, dest, resume, max_bytes).await {
                 Ok(receipt) => return Ok(receipt),
                 Err(error) if self.signing.is_some() && is_expired_status(&error) => {

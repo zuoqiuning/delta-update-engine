@@ -18,6 +18,7 @@ struct MockState {
     forbidden: Mutex<HashMap<String, u32>>,
     cut_at: Mutex<HashMap<String, usize>>,
     requests: Mutex<Vec<String>>,
+    headers: Mutex<Vec<(String, HashMap<String, String>)>>,
     ranges: Mutex<Vec<(String, String)>>,
     range_supported: AtomicBool,
     signing: AtomicBool,
@@ -130,6 +131,17 @@ impl MockServer {
         self.state.max_active.load(Ordering::SeqCst)
     }
 
+    /// Last value of a header seen on a request for `path`, lowercase name.
+    pub fn last_header(&self, path: &str, name: &str) -> Option<String> {
+        let path = normalize(path);
+        let name = name.to_ascii_lowercase();
+        lock(&self.state.headers)
+            .iter()
+            .rev()
+            .find(|(request_path, _)| *request_path == path)
+            .and_then(|(_, headers)| headers.get(&name).cloned())
+    }
+
     pub fn reset_max_concurrent(&self) {
         self.state.max_active.store(0, Ordering::SeqCst);
     }
@@ -161,6 +173,17 @@ async fn serve(State(state): State<Arc<MockState>>, request: Request) -> Respons
     let _active = ActiveGuard::new(&state);
     let path = normalize(request.uri().path());
     lock(&state.requests).push(path.clone());
+    let captured: HashMap<String, String> = request
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect();
+    lock(&state.headers).push((path.clone(), captured));
     if let Some(range) = request
         .headers()
         .get(header::RANGE)

@@ -20,13 +20,14 @@ async fn fixture(content: &[u8]) -> Fixture {
 }
 
 async fn fixture_with(files: &[(&str, &[u8])], max_concurrent: usize) -> Fixture {
-    fixture_with_client(files, max_concurrent, reqwest::Client::new()).await
+    fixture_with_client(files, max_concurrent, reqwest::Client::new(), Vec::new()).await
 }
 
 async fn fixture_with_client(
     files: &[(&str, &[u8])],
     max_concurrent: usize,
     client: reqwest::Client,
+    headers: Vec<(String, String)>,
 ) -> Fixture {
     let keys = TestKeyPair::generate();
     let mut manifest_files = serde_json::Map::new();
@@ -74,15 +75,28 @@ async fn fixture_with_client(
         std::fs::write(full, b"old").unwrap();
     }
     let endpoint = Url::parse(&server.url("manifests/latest.json")).unwrap();
-    let fetcher = HttpFetcher::new(
-        client,
-        endpoint.clone(),
-        None,
-        FetchLimits::default(),
-        None,
-        true,
-    )
-    .unwrap();
+    let fetcher = if headers.is_empty() {
+        HttpFetcher::new(
+            client,
+            endpoint.clone(),
+            None,
+            FetchLimits::default(),
+            None,
+            true,
+        )
+        .unwrap()
+    } else {
+        HttpFetcher::new_with_options(
+            endpoint.clone(),
+            None,
+            FetchLimits::default(),
+            None,
+            true,
+            None,
+            headers,
+        )
+        .unwrap()
+    };
     let mut limits = Limits::default();
     limits.max_concurrent_downloads = max_concurrent;
     let engine = Engine::new(EngineConfig {
@@ -206,7 +220,7 @@ async fn slow_responses_time_out() {
         .read_timeout(std::time::Duration::from_millis(200))
         .build()
         .unwrap();
-    let fixture = fixture_with_client(&[("App.exe", &content)], 4, client).await;
+    let fixture = fixture_with_client(&[("App.exe", &content)], 4, client, Vec::new()).await;
 
     fixture.engine.check().await.unwrap();
     fixture.server.set_delay(1_000);
@@ -279,6 +293,72 @@ async fn cancelled_prepare_keeps_staged_files() {
         1,
         "the completed file should not be downloaded again: {:?}",
         server.requests()
+    );
+}
+
+/// Objects above the chunk threshold are fetched as parallel Range requests.
+#[tokio::test]
+async fn large_objects_use_parallel_ranges() {
+    let content = vec![0x5a_u8; 10 * 1024 * 1024];
+    let fixture = fixture_with(&[("App.exe", &content)], 2).await;
+
+    fixture.engine.check().await.unwrap();
+    let prepared = fixture.engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap(),
+        content
+    );
+
+    let ranges: Vec<_> = fixture
+        .server
+        .ranges()
+        .into_iter()
+        .filter(|(path, _)| path == OBJECT_KEY)
+        .collect();
+    assert!(
+        ranges.len() >= 4,
+        "expected parallel range requests, got {ranges:?}"
+    );
+    assert!(
+        ranges.iter().all(|(_, range)| range.starts_with("bytes=")),
+        "{ranges:?}"
+    );
+}
+
+/// Custom headers authenticate manifest/signature requests and must never be
+/// forwarded to third-party object hosts.
+#[tokio::test]
+async fn custom_headers_only_reach_manifest_and_signature() {
+    let content = vec![7_u8; 1024];
+    let fixture = fixture_with_client(
+        &[("App.exe", &content)],
+        2,
+        reqwest::Client::new(),
+        vec![("x-api-key".into(), "secret".into())],
+    )
+    .await;
+
+    fixture.engine.check().await.unwrap();
+    assert_eq!(
+        fixture
+            .server
+            .last_header("manifests/latest.json", "x-api-key")
+            .as_deref(),
+        Some("secret")
+    );
+    assert_eq!(
+        fixture
+            .server
+            .last_header("manifests/latest.json.minisig", "x-api-key")
+            .as_deref(),
+        Some("secret")
+    );
+
+    fixture.engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        fixture.server.last_header(OBJECT_KEY, "x-api-key"),
+        None,
+        "object downloads must not receive credentials"
     );
 }
 
