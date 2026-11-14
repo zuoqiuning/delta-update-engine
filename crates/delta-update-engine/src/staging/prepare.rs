@@ -19,12 +19,81 @@ use super::plan::{PreparedPlan, StagedFile};
 
 const MAX_RETRIES: u32 = 2;
 
+/// A patch container this client can apply.
+///
+/// Adding a strategy means adding an implementation and one entry in
+/// [`APPLIERS`]; `prepare_modified` and `stage_patch` stay unchanged.
+trait PatchApplier: Sync {
+    fn strategy(&self) -> Strategy;
+
+    /// Parse the fixed-size header and bind it to the signed manifest entry.
+    fn parse_header(
+        &self,
+        bytes: &[u8],
+        entry: &FileEntry,
+        path: &str,
+    ) -> Result<PatchHeader, EngineError>;
+
+    /// Apply the patch payload to `source`, writing the result to `dest`.
+    fn apply(
+        &self,
+        source: &Path,
+        patch: &Path,
+        dest: &Path,
+        header: &PatchHeader,
+        limits: &Limits,
+    ) -> Result<(), EngineError>;
+}
+
+struct QbsdiffApplier;
+
+impl PatchApplier for QbsdiffApplier {
+    fn strategy(&self) -> Strategy {
+        Strategy::QbsdiffZstd
+    }
+
+    fn parse_header(
+        &self,
+        bytes: &[u8],
+        entry: &FileEntry,
+        path: &str,
+    ) -> Result<PatchHeader, EngineError> {
+        let (header, _) = PatchHeader::parse(bytes)?;
+        validate_header(entry, &header, path)?;
+        Ok(header)
+    }
+
+    fn apply(
+        &self,
+        source: &Path,
+        patch: &Path,
+        dest: &Path,
+        header: &PatchHeader,
+        limits: &Limits,
+    ) -> Result<(), EngineError> {
+        apply_patch(source, patch, dest, header, limits)
+    }
+}
+
+/// Every patch format the client ships. `stage_full` downloads the full object
+/// for anything not listed here.
+static APPLIERS: &[&dyn PatchApplier] = &[&QbsdiffApplier];
+
+fn applier_for(strategy: &Strategy) -> Option<&'static dyn PatchApplier> {
+    APPLIERS
+        .iter()
+        .copied()
+        .find(|applier| &applier.strategy() == strategy)
+}
+
 pub(crate) struct PrepareInput<'a> {
     pub manifest: &'a Manifest,
     pub diff: &'a DiffResult,
     pub fetcher: &'a dyn Fetcher,
     pub install_root: &'a Path,
     pub staging_root: &'a Path,
+    /// Journal root; per-file patch fallbacks are appended to `worker.log` here.
+    pub journal_root: &'a Path,
     pub version: &'a str,
     pub manifest_hash: &'a str,
     pub limits: &'a Limits,
@@ -36,6 +105,7 @@ struct StageContext<'a> {
     fetcher: &'a dyn Fetcher,
     files_root: &'a Path,
     patches_root: &'a Path,
+    journal_root: &'a Path,
     limits: &'a Limits,
     cancel: &'a CancellationToken,
     progress: &'a (dyn Fn(Progress) + Send + Sync),
@@ -53,18 +123,35 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
     std::fs::create_dir_all(&files_root).map_err(|err| io_error(err, "staging"))?;
     std::fs::create_dir_all(&patches_root).map_err(|err| io_error(err, "staging"))?;
 
-    preflight(input.manifest, input.diff, input.staging_root, input.limits)?;
-    verify_unchanged(input).await?;
+    preflight(
+        input.manifest,
+        input.diff,
+        input.install_root,
+        input.staging_root,
+        input.limits,
+    )?;
+    let repairs = verify_unchanged(input).await?;
 
     let downloaded = Mutex::new(0);
+    let repair_bytes = repairs.iter().fold(0_u64, |total, path| {
+        total.saturating_add(
+            input
+                .manifest
+                .files
+                .get(path)
+                .map(|entry| entry.size)
+                .unwrap_or(0),
+        )
+    });
     let context = StageContext {
         fetcher: input.fetcher,
         files_root: &files_root,
         patches_root: &patches_root,
+        journal_root: input.journal_root,
         limits: input.limits,
         cancel: input.cancel,
         progress: input.progress,
-        total_download: input.diff.download_bytes,
+        total_download: input.diff.download_bytes.saturating_add(repair_bytes),
         downloaded: &downloaded,
     };
 
@@ -72,7 +159,28 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
     // returned future non-general over lifetimes, which breaks Tauri's command
     // macros downstream.
     let limit = input.limits.max_concurrent_downloads.max(1);
-    let modified = input.diff.modified.clone();
+    let mut modified = input.diff.modified.clone();
+    for path in repairs {
+        let mut entry = input.manifest.files.get(&path).cloned().ok_or_else(|| {
+            EngineError::ManifestInvalid(format!("{path}: repaired entry is missing"))
+        })?;
+        if entry.full_key.is_none() {
+            return Err(PatchError::SourceMismatch(format!(
+                "{path}: local file changed after check and the manifest has no full fallback"
+            ))
+            .into());
+        }
+        // A missing or modified local file cannot be a patch source. Repair it
+        // from the full blob instead of trying (and failing) the delta path.
+        entry.strategy = Strategy::Full;
+        entry.delta_key = None;
+        entry.delta_size = None;
+        tracing::warn!(
+            path,
+            "local file changed after check; repairing from the full blob"
+        );
+        modified.push(ModifiedFile { path, entry });
+    }
     let added: Vec<(String, FileEntry)> = input
         .diff
         .added
@@ -130,6 +238,7 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
 fn preflight(
     manifest: &Manifest,
     diff: &DiffResult,
+    install_root: &Path,
     staging_root: &Path,
     limits: &Limits,
 ) -> Result<(), EngineError> {
@@ -162,12 +271,26 @@ fn preflight(
             available,
         });
     }
+    // Staging may live on another volume (`staging_dir` is configurable). The
+    // install volume then needs room for the materialized files; backups and
+    // trash are renames inside the same tree, so they add no bytes. On the same
+    // volume this check is already implied by the staging check above.
+    let install_available =
+        fs4::available_space(install_root).map_err(|err| io_error(err, "install"))?;
+    if install_available < materialized {
+        return Err(EngineError::InsufficientDiskSpace {
+            required: materialized,
+            available: install_available,
+        });
+    }
     Ok(())
 }
 
-/// Re-hash every unchanged file in place. The install tree can be large, so
-/// the scan runs on the blocking pool instead of stalling the async runtime.
-async fn verify_unchanged(input: &PrepareInput<'_>) -> Result<(), EngineError> {
+/// Re-hash every unchanged file in place. Files that no longer match are
+/// returned as repair candidates instead of failing the whole prepare; the
+/// caller can materialize them from their content-addressed full blob. The
+/// install tree can be large, so the scan runs on the blocking pool.
+async fn verify_unchanged(input: &PrepareInput<'_>) -> Result<Vec<String>, EngineError> {
     let unchanged: Vec<(String, String)> = input
         .diff
         .unchanged
@@ -194,18 +317,18 @@ fn verify_unchanged_files(
     unchanged: &[(String, String)],
     install_root: &Path,
     cancel: &CancellationToken,
-) -> Result<(), EngineError> {
+) -> Result<Vec<String>, EngineError> {
+    let mut repairs = Vec::new();
     for (path, expected) in unchanged {
         check_cancel(cancel)?;
-        let actual = sha256_file(&install_root.join(path)).map_err(|err| io_error(err, path))?;
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(PatchError::SourceMismatch(format!(
-                "{path}: local file changed after check"
-            ))
-            .into());
+        match sha256_file(&install_root.join(path)) {
+            Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
+            Ok(_) => repairs.push(path.clone()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => repairs.push(path.clone()),
+            Err(err) => return Err(io_error(err, path)),
         }
     }
-    Ok(())
+    Ok(repairs)
 }
 
 async fn prepare_modified(
@@ -251,6 +374,12 @@ async fn prepare_modified(
             }
             Err(error) if fallback_allowed(&error) => {
                 tracing::warn!(path, %error, "patch failed; falling back to the full object");
+                // Durable evidence for support bundles: the log is the only
+                // place that records which file fell back and why.
+                crate::worker_log::append(
+                    context.journal_root,
+                    &format!("patch fallback: {path}: {}", error.code()),
+                );
                 let _ = std::fs::remove_file(&dest);
             }
             Err(error) => return Err(error),
@@ -314,15 +443,16 @@ async fn stage_patch(
         .read_exact(&mut header_bytes)
         .map_err(|_| PatchError::FormatMismatch(format!("{path}: patch is truncated")))?;
     drop(patch_file);
-    let (header, _) = PatchHeader::parse(&header_bytes)?;
-    validate_header(entry, &header, source, path)?;
+    let applier = applier_for(&entry.strategy)
+        .ok_or_else(|| PatchError::UnknownStrategy(entry.strategy.as_str().to_string()))?;
+    let header = applier.parse_header(&header_bytes, entry, path)?;
 
     let source_owned = source.to_path_buf();
     let patch_owned = patch_path.clone();
     let dest_owned = dest.to_path_buf();
     let limits_owned = context.limits.clone();
     tokio::task::spawn_blocking(move || {
-        apply_patch(
+        applier.apply(
             &source_owned,
             &patch_owned,
             &dest_owned,
@@ -343,12 +473,7 @@ async fn stage_patch(
     })
 }
 
-fn validate_header(
-    entry: &FileEntry,
-    header: &PatchHeader,
-    source: &Path,
-    path: &str,
-) -> Result<(), EngineError> {
+fn validate_header(entry: &FileEntry, header: &PatchHeader, path: &str) -> Result<(), EngineError> {
     let expected_id = entry
         .strategy
         .patch_id()
@@ -370,13 +495,6 @@ fn validate_header(
     if hex_to_32(&entry.sha256) != Some(header.target_sha256) {
         return Err(PatchError::FormatMismatch(format!(
             "{path}: container target hash does not match manifest"
-        ))
-        .into());
-    }
-    let source_hash = sha256_file(source).map_err(|err| io_error(err, path))?;
-    if hex_to_32(&source_hash) != Some(header.source_sha256) {
-        return Err(PatchError::SourceMismatch(format!(
-            "{path}: local source hash does not match the patch"
         ))
         .into());
     }
@@ -407,6 +525,19 @@ async fn stage_full(
     entry: &FileEntry,
     context: &StageContext<'_>,
 ) -> Result<StagedFile, EngineError> {
+    match &entry.strategy {
+        Strategy::Full | Strategy::QbsdiffZstd => {}
+        Strategy::Unknown(value) => tracing::warn!(
+            path,
+            strategy = %value,
+            "unknown patch strategy; downloading the full object"
+        ),
+        strategy => tracing::warn!(
+            path,
+            strategy = strategy.as_str(),
+            "manifest uses a patch strategy this client does not implement; downloading the full object"
+        ),
+    }
     let dest = context.files_root.join(path);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|err| io_error(err, path))?;
@@ -454,6 +585,10 @@ async fn download_verified(
                 return Ok(());
             }
         }
+        // A same-size but corrupt object must not be resumed from EOF: most
+        // object stores answer `Range: bytes=<size>-` with 416, which is not
+        // retryable. Drop it and start a clean download.
+        let _ = std::fs::remove_file(dest);
     }
 
     for attempt in 0..=MAX_RETRIES {
@@ -495,7 +630,7 @@ async fn download_with_retry(
             .await
             .map(|meta| meta.len())
             .unwrap_or(0);
-        if resume > max_bytes {
+        if max_bytes > 0 && resume >= max_bytes {
             // A stale or oversized partial file cannot be resumed.
             let _ = std::fs::remove_file(dest);
             resume = 0;
@@ -519,7 +654,7 @@ async fn download_with_retry(
 }
 
 fn should_try_patch(entry: &FileEntry, limits: &Limits) -> bool {
-    entry.strategy == Strategy::QbsdiffZstd
+    applier_for(&entry.strategy).is_some()
         && entry.delta_key.is_some()
         && entry
             .delta_size

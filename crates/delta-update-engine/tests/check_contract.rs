@@ -197,6 +197,73 @@ async fn check_ignores_other_channels() {
     assert_eq!(outcome.version, None);
 }
 
+fn with_min_supported(version: &str, min: &str) -> Vec<u8> {
+    let mut value: Value = serde_json::from_slice(&manifest(
+        "2.0.0",
+        Some(version),
+        false,
+        &sha256_bytes(b"new"),
+        3,
+    ))
+    .unwrap();
+    value["min_supported_version"] = json!(min);
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[tokio::test]
+async fn check_flags_a_client_below_min_supported_version() {
+    let keys = TestKeyPair::generate();
+    let (_dir, engine, _server) =
+        start(with_min_supported("stable", "1.5.0"), &keys, &keys, "1.0.0").await;
+
+    let outcome = engine.check().await.unwrap();
+    assert!(outcome.available);
+    assert!(outcome.update_required);
+    assert_eq!(outcome.min_supported_version.as_deref(), Some("1.5.0"));
+}
+
+#[tokio::test]
+async fn check_does_not_require_an_update_at_the_min_supported_version() {
+    let keys = TestKeyPair::generate();
+    let (_dir, engine, _server) =
+        start(with_min_supported("stable", "1.5.0"), &keys, &keys, "1.5.0").await;
+
+    let outcome = engine.check().await.unwrap();
+    assert!(!outcome.update_required);
+    assert_eq!(outcome.min_supported_version.as_deref(), Some("1.5.0"));
+}
+
+#[tokio::test]
+async fn check_ignores_min_supported_version_from_another_channel() {
+    let keys = TestKeyPair::generate();
+    let (_dir, engine, _server) =
+        start(with_min_supported("beta", "1.5.0"), &keys, &keys, "1.0.0").await;
+
+    let outcome = engine.check().await.unwrap();
+    assert!(!outcome.available);
+    assert!(!outcome.update_required);
+    assert_eq!(outcome.min_supported_version, None);
+}
+
+#[test]
+fn parse_rejects_a_min_supported_version_above_the_release() {
+    let mut value: Value = serde_json::from_slice(&manifest(
+        "2.0.0",
+        Some("stable"),
+        false,
+        &sha256_bytes(b"new"),
+        3,
+    ))
+    .unwrap();
+    value["min_supported_version"] = json!("2.1.0");
+    let error = delta_update_engine::manifest::parse_manifest(
+        &serde_json::to_vec(&value).unwrap(),
+        &Limits::default(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "E_MANIFEST_PARSE");
+}
+
 #[tokio::test]
 async fn check_rejects_too_new_schema() {
     let keys = TestKeyPair::generate();

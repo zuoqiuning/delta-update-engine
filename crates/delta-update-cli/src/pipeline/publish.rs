@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 
-use crate::pipeline::manifest::{latest_key, signature_key, version_key};
+use crate::pipeline::manifest::{latest_key, sbom_key, signature_key, version_key};
 use crate::publisher::Publisher;
 
 #[derive(Debug, Clone)]
@@ -26,15 +26,34 @@ pub struct ManifestSet<'a> {
 }
 
 /// Upload objects and confirm every one exists with the expected size. This
-/// runs before any manifest is published.
+/// runs before any manifest is published. Transient object-store failures are
+/// retried; a release can be re-run safely because keys are content-addressed
+/// or version-scoped.
 pub fn upload_objects(publisher: &dyn Publisher, objects: &[ObjectUpload]) -> anyhow::Result<()> {
     for object in objects {
-        match &object.body {
-            ObjectBody::Bytes(bytes) => publisher.put(&object.key, bytes)?,
-            ObjectBody::File(path) => publisher.put_file(&object.key, path)?,
-        }
+        put_with_retry(publisher, object)?;
     }
     verify_objects(publisher, objects)
+}
+
+fn put_with_retry(publisher: &dyn Publisher, object: &ObjectUpload) -> anyhow::Result<()> {
+    let mut last = None;
+    for attempt in 0..3 {
+        let result = match &object.body {
+            ObjectBody::Bytes(bytes) => publisher.put(&object.key, bytes),
+            ObjectBody::File(path) => publisher.put_file(&object.key, path),
+        };
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = Some(error);
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(200 << attempt));
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("upload failed without an error")))
 }
 
 pub fn verify_objects(publisher: &dyn Publisher, objects: &[ObjectUpload]) -> anyhow::Result<()> {
@@ -78,6 +97,50 @@ pub fn publish_manifests(publisher: &dyn Publisher, set: &ManifestSet<'_>) -> an
         }
     }
     Ok(())
+}
+
+/// Publish the advisory SBOM after the signed manifest. Clients never read it,
+/// so a failure here fails the release for compliance but cannot affect
+/// update delivery.
+pub fn publish_sbom(
+    publisher: &dyn Publisher,
+    prefix: &str,
+    version: &str,
+    sbom: &[u8],
+) -> anyhow::Result<String> {
+    let key = sbom_key(prefix, version);
+    publisher.put(&key, sbom)?;
+    match publisher.head(&key)? {
+        Some(size) if size == sbom.len() as u64 => Ok(key),
+        Some(size) => bail!("{key} has size {size}, expected {}", sbom.len()),
+        None => bail!("{key} is missing after upload"),
+    }
+}
+
+/// Publish only `latest.json` and its signature, leaving the versioned manifest
+/// untouched. Used by `rollback --to-version`, which must keep the original
+/// release history auditable.
+pub fn publish_latest(
+    publisher: &dyn Publisher,
+    prefix: &str,
+    manifest: &[u8],
+    signature: &[u8],
+) -> anyhow::Result<String> {
+    let latest_key = latest_key(prefix);
+    let latest_signature_key = signature_key(&latest_key);
+    publisher.put(&latest_signature_key, signature)?;
+    publisher.put(&latest_key, manifest)?;
+    for (key, expected) in [
+        (latest_signature_key.as_str(), signature.len() as u64),
+        (latest_key.as_str(), manifest.len() as u64),
+    ] {
+        match publisher.head(key)? {
+            Some(size) if size == expected => {}
+            Some(size) => bail!("{key} has size {size}, expected {expected}"),
+            None => bail!("{key} is missing after upload"),
+        }
+    }
+    Ok(latest_key)
 }
 
 /// Read the published manifest and signature for `version`.

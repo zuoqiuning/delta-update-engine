@@ -9,6 +9,13 @@ pub struct StateEvent {
 #[non_exhaustive]
 pub enum EngineState {
     Idle,
+    /// The running version is below the publisher's `min_supported_version`.
+    /// The engine never blocks startup; the application decides how strict to
+    /// be. `version` is the release the manifest offers, if any.
+    UpdateRequired {
+        version: String,
+        min_supported_version: String,
+    },
     Checking,
     Downloading {
         total: u64,
@@ -49,6 +56,7 @@ impl EngineState {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Idle => "Idle",
+            Self::UpdateRequired { .. } => "UpdateRequired",
             Self::Checking => "Checking",
             Self::Downloading { .. } => "Downloading",
             Self::Preparing { .. } => "Preparing",
@@ -80,8 +88,15 @@ impl EngineState {
         matches!(
             (self, next),
             (Idle, Checking)
+                | (Idle, UpdateRequired { .. })
                 | (Idle, Committed { .. })
                 | (Idle, RollingBack { .. })
+                | (UpdateRequired { .. }, Checking)
+                | (UpdateRequired { .. }, Prepared { .. })
+                | (UpdateRequired { .. }, Cancelled { .. })
+                | (UpdateRequired { .. }, Failed { .. })
+                | (UpdateRequired { .. }, Idle)
+                | (Checking, UpdateRequired { .. })
                 | (Checking, Downloading { .. })
                 | (Checking, Failed { .. })
                 | (Downloading { .. }, Preparing { .. })
@@ -193,5 +208,18 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.code(), "E_INVALID_TRANSITION");
+    }
+
+    #[test]
+    fn update_required_is_a_resting_state() {
+        let required = EngineState::UpdateRequired {
+            version: "2.0.0".into(),
+            min_supported_version: "1.5.0".into(),
+        };
+        assert_eq!(required.name(), "UpdateRequired");
+        assert!(!required.is_busy());
+        assert!(EngineState::Idle.can_transition_to(&required));
+        assert!(required.can_transition_to(&EngineState::Checking));
+        assert!(required.can_transition_to(&EngineState::Idle));
     }
 }

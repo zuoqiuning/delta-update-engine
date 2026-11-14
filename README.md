@@ -1,8 +1,42 @@
 # Delta Update Engine（增量更新内核）
 
-面向 Tauri 2 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
+面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> 核心 crate 为 `delta-update-engine`，Tauri 接入层为 `tauri-plugin-delta-update`，发布侧为 `delta-update-cli`。当前状态：引擎、插件生命周期与 CLI 发布管线均已实现；Windows per-user/per-machine 更新、启动期提权恢复、崩溃回滚与端到端门禁均已通过。
+> **`1.0.0-rc.1` is out** — 这是 1.0 的候选版本，公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
+>
+> 平台范围是刻意的：只支持 Windows per-user / per-machine / 便携版。macOS 签名 `.app` 与 Linux 包管理器/AppImage 使用不同的完整性模型，不在本插件范围内；其他平台请使用官方安装器或包管理器。
+>
+> 核心 crate 为 `delta-update-engine`，Tauri 接入层为 `tauri-plugin-delta-update`，发布侧为 `delta-update-cli`。
+
+## 何时使用
+
+| 场景 | 选择 |
+| --- | --- |
+| Windows 桌面应用体积大、每次发版只改少量文件 | 本插件：只下载变化的文件 |
+| 发布清单、签名与灰度需要自托管 | 本插件：清单 + minisign + COS/S3/本地目录 |
+| macOS / Linux / 移动端 | 官方 `tauri-plugin-updater` 或系统包管理器 |
+| 接受整包替换、希望维护成本最低 | 官方 `tauri-plugin-updater`（以安装包为单位） |
+| 通过应用商店分发 | 商店渠道，不接入自更新 |
+
+与官方 updater 的关系：官方 updater 以**安装包**为单位替换，签名与端到端流程由 Tauri 维护；本插件以**文件**为单位打补丁，需要自己发布清单、维护对象存储与密钥，换来的是升级下载量下降和可回滚的写前日志。两者不叠加——同一应用只接入一种更新通道。
+
+### 为什么选 delta-update
+
+| 维度 | 官方 `tauri-plugin-updater` | 本插件 |
+| --- | --- | --- |
+| 更新单位 | 完整安装包（NSIS / MSI / bundle） | 变化文件的补丁 + 全量回退 |
+| 下载量 | 与安装包同量级 | 只下载差异；未变化文件不传输 |
+| 平台 | Windows / macOS / Linux | 仅 Windows 10+ 桌面 |
+| 签名模型 | minisign 清单；安装包由安装器/平台校验 | minisign 清单；Journal 与签名清单绑定，worker 重新验签 |
+| 应用时机 | 用户确认后运行安装器 | 退出后由替换进程落地，下次启动即新版本 |
+| 回滚 | 无内建版本回滚，需重新发布旧版本 | 崩溃循环自动回滚；`rollback --to-version` 一键切回 |
+| 失败恢复 | 依赖安装器与用户重试 | 写前 Journal 幂等重放，失败按逆日志恢复 |
+| 维护成本 | 低（Tauri 官方维护） | 需要自建清单、对象存储、密钥与发布流水线 |
+| 适用 | 跨平台、安装包小、希望少运维 | Windows、体积大、发版频繁、需要可控回滚 |
+
+第三方增量方案（例如 `tauri-delta-updater`）通常也需要自建差分与发布链路。选择时优先确认它的信任模型、回滚语义与 Windows 安装形态，而不是只看压缩率。
+
+Windows 环境矩阵（已验证 / 未验证）见[兼容性文档](docs/reference/compatibility.md#11-windows-环境矩阵已验证--未验证)。
 
 ## 仓库结构
 
@@ -26,15 +60,21 @@ docs                               设计、接入、参考、运维与测试文
 cargo check --workspace
 cargo test --workspace
 cargo xtask ci
+cargo xtask contract-check   # 退出码 / JSON 信封契约
+cargo xtask bench-check      # criterion 基线对比（配合 CI 的 --baseline main）
 pnpm install
 pnpm typecheck
 ```
+
+CI 集成只依赖 [CLI 契约](docs/cli-contract.md) 里的退出码与 JSON 顶层字段；发布流水线可用 `delta-update release --pipeline` 一步完成生成、自测、上传与审计。
 
 ## 文档
 
 - [文档索引](docs/README.md)
 - [开发者接入](docs/guides/getting-started.md)
 - [测试计划](docs/testing/test-plan.md)
+- [安全策略](SECURITY.md)
+- [版本与兼容承诺](docs/reference/versioning.md)
 
 ## 许可
 

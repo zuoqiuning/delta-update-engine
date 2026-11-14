@@ -8,10 +8,12 @@
 pub mod apply;
 pub mod config;
 pub mod crypto;
+pub mod diagnostics;
 pub mod engine;
 pub mod error;
 pub mod fetch;
 pub mod fs;
+pub mod history;
 pub mod journal;
 pub mod limits;
 pub mod manifest;
@@ -22,6 +24,7 @@ pub mod rollback;
 pub mod staging;
 pub mod state;
 pub mod version;
+pub(crate) mod worker_log;
 
 pub use apply::{run_applier, run_applier_from_args, run_recovery, DirectWriter, PrivilegedWriter};
 pub use config::EngineConfig;
@@ -29,7 +32,8 @@ pub use engine::{CheckOutcome, Engine, PendingCommit, PreparedUpdate, Progress, 
 pub use error::{
     EngineError, ErrorAction, ErrorCategory, ErrorPayload, NetworkError, PatchError, SignatureError,
 };
+pub use history::{UpdateRecord, UpdateResult};
 pub use journal::{ApplyConfig, CommitStatus, FileOp, Journal, JournalOutcome};
 pub use limits::Limits;
 pub use manifest::model::{FileEntry, Manifest, Strategy};
-pub use state::{EngineState, ProgressPayload, StateEvent, StatePayload};
+pub use state::{EngineState, ProgressPayload, ProgressUnit, StateEvent, StatePayload};

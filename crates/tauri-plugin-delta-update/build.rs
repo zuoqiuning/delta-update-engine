@@ -5,6 +5,10 @@ const COMMANDS: &[&str] = &[
     "status",
     "confirm_healthy",
     "restart_to_apply",
+    "export_diagnostics",
+    "open_diagnostics_folder",
+    "get_update_history",
+    "clear_skipped_version",
 ];
 
 fn main() {

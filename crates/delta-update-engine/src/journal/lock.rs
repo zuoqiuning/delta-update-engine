@@ -9,6 +9,12 @@ use crate::error::EngineError;
 ///
 /// The OS releases the lock when the process exits, so a stale file never
 /// blocks the next attempt.
+///
+/// **Not reentrant.** `fs4` documents that acquiring an advisory lock twice
+/// through the same process (or a cloned handle) is platform-dependent and may
+/// deadlock instead of returning `WouldBlock`. Never call [`UpdateLock::acquire`]
+/// while the same call stack already holds one for the same journal directory;
+/// split the work into a locked and an unlocked helper instead.
 pub struct UpdateLock {
     file: File,
 }

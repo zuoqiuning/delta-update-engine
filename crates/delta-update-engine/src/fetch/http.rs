@@ -19,16 +19,16 @@ use super::{DownloadReceipt, Fetcher};
 const MAX_RETRIES: u32 = 3;
 const MAX_REFRESHES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 200;
-/// Objects at least this large are fetched as parallel Range chunks.
-const RANGE_CHUNK_THRESHOLD: u64 = 8 * 1024 * 1024;
-const RANGE_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
-const RANGE_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FetchLimits {
     pub manifest_max_bytes: u64,
     pub signature_max_bytes: u64,
     pub object_max_bytes: u64,
+    /// Objects at least this large are fetched as parallel Range chunks.
+    pub range_chunk_threshold: u64,
+    pub range_chunk_size: u64,
+    pub range_concurrency: usize,
 }
 
 impl Default for FetchLimits {
@@ -37,6 +37,9 @@ impl Default for FetchLimits {
             manifest_max_bytes: 8 * 1024 * 1024,
             signature_max_bytes: 64 * 1024,
             object_max_bytes: 4 * 1024 * 1024 * 1024,
+            range_chunk_threshold: 8 * 1024 * 1024,
+            range_chunk_size: 8 * 1024 * 1024,
+            range_concurrency: 4,
         }
     }
 }
@@ -119,6 +122,34 @@ impl HttpFetcher {
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30))
             .user_agent(concat!("delta-update/", env!("CARGO_PKG_VERSION")));
+        let redirect_hosts = allowed_hosts.clone();
+        builder = builder.redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "too many redirects",
+                ));
+            }
+            if !is_allowed_endpoint(attempt.url(), allow_insecure_http) {
+                return attempt.error(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "redirect target is not an allowed HTTPS endpoint",
+                ));
+            }
+            if let Some(hosts) = &redirect_hosts {
+                let host = attempt.url().host_str().unwrap_or_default().to_string();
+                if !hosts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+                {
+                    return attempt.error(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("redirect host is not allowed: {host}"),
+                    ));
+                }
+            }
+            attempt.follow()
+        }));
         if let Some(proxy) = proxy {
             let proxy = reqwest::Proxy::all(proxy)
                 .map_err(|err| EngineError::ConfigInvalid(format!("proxy: {err}")))?;
@@ -334,6 +365,7 @@ impl HttpFetcher {
             .send()
             .await
             .map_err(|err| EngineError::from(network_error(&err)))?;
+        self.check_host(response.url())?;
         if let Some(error) = rate_limited(&response) {
             return Err(error);
         }
@@ -370,7 +402,11 @@ impl HttpFetcher {
     ) -> Result<Option<DownloadReceipt>, EngineError> {
         use futures_util::StreamExt;
 
-        if total < RANGE_CHUNK_THRESHOLD {
+        if total < self.limits.range_chunk_threshold || self.limits.range_chunk_size == 0 {
+            return Ok(None);
+        }
+        // One chunk has no parallelism and only adds directory/merge work.
+        if total.div_ceil(self.limits.range_chunk_size) < 2 {
             return Ok(None);
         }
         if let Some(parent) = dest.parent() {
@@ -384,11 +420,11 @@ impl HttpFetcher {
             .await
             .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
 
-        let chunk_count = total.div_ceil(RANGE_CHUNK_SIZE) as usize;
+        let chunk_count = total.div_ceil(self.limits.range_chunk_size) as usize;
         let outcomes: Vec<Result<ChunkOutcome, EngineError>> =
             futures_util::stream::iter(0..chunk_count)
                 .map(|index| self.download_chunk(url, dest, index, total))
-                .buffer_unordered(RANGE_CONCURRENCY)
+                .buffer_unordered(self.limits.range_concurrency.max(1))
                 .collect()
                 .await;
 
@@ -504,11 +540,11 @@ impl HttpFetcher {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
 
-        let start = RANGE_CHUNK_SIZE.saturating_mul(index as u64);
+        let start = self.limits.range_chunk_size.saturating_mul(index as u64);
         if start >= total {
             return Ok(ChunkOutcome::Unsupported);
         }
-        let end = (start + RANGE_CHUNK_SIZE).min(total) - 1;
+        let end = (start + self.limits.range_chunk_size).min(total) - 1;
         let response = self
             .client
             .get(url.clone())
@@ -516,6 +552,7 @@ impl HttpFetcher {
             .send()
             .await
             .map_err(|err| EngineError::from(network_error(&err)))?;
+        self.check_host(response.url())?;
         if let Some(error) = rate_limited(&response) {
             return Err(error);
         }
@@ -582,6 +619,7 @@ impl HttpFetcher {
             .send()
             .await
             .map_err(|err| EngineError::from(network_error(&err)))?;
+        self.check_host(response.url())?;
         if let Some(error) = rate_limited(&response) {
             return Err(error);
         }
@@ -718,7 +756,34 @@ fn network_error(err: &reqwest::Error) -> NetworkError {
             }
         };
     }
-    NetworkError::Connect(err.to_string())
+    NetworkError::Connect(describe_connect_failure(err))
+}
+
+/// `reqwest` collapses DNS, TLS, proxy and connection-refused failures into one
+/// type. Keep the stable `E_NETWORK_CONNECT` code, but prefix the message with
+/// the layer that failed so support can tell them apart.
+fn describe_connect_failure(err: &reqwest::Error) -> String {
+    let mut chain = vec![err.to_string()];
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        chain.push(cause.to_string());
+        source = cause.source();
+    }
+    let text = chain.join(" ");
+    let lower = text.to_lowercase();
+    if lower.contains("dns")
+        || lower.contains("name or service")
+        || lower.contains("failed to lookup address")
+    {
+        format!("DNS resolution failed: {text}")
+    } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake")
+    {
+        format!("TLS handshake failed: {text}")
+    } else if lower.contains("proxy") {
+        format!("proxy connection failed: {text}")
+    } else {
+        text
+    }
 }
 
 fn is_expired_status(error: &EngineError) -> bool {
@@ -802,6 +867,10 @@ impl Fetcher for HttpFetcher {
                     Ok(None) => {}
                     Err(error) if error.retryable() => {
                         tracing::debug!(key, %error, "ranged download failed; falling back to a single stream");
+                    }
+                    Err(error) if self.signing.is_some() && is_expired_status(&error) => {
+                        tracing::warn!(key, %error, "signed URL expired during ranged download; retrying as a single stream");
+                        self.invalidate(key);
                     }
                     Err(error) => return Err(error),
                 }

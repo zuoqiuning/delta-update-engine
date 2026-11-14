@@ -3,5 +3,5 @@
 pub mod event;
 pub mod machine;
 
-pub use event::{ProgressPayload, StatePayload};
+pub use event::{ProgressPayload, ProgressUnit, StatePayload};
 pub use machine::{EngineState, StateEvent};

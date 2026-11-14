@@ -1,0 +1,12 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "monitor"
+description = """
+Read-only update monitoring.
+
+Only allows `check`, `status` and `get_update_history`; the frontend can
+display update availability, progress and past outcomes but cannot prepare or
+install anything.
+"""
+permissions = ["allow-check", "allow-status", "allow-get-update-history"]

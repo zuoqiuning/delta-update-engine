@@ -33,6 +33,8 @@ pub struct OutputManifest {
     pub files: BTreeMap<String, ManifestFile>,
     #[serde(skip_serializing_if = "is_false")]
     pub rollback: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_supported_version: Option<String>,
 }
 
 pub struct ManifestInput<'a> {
@@ -41,6 +43,7 @@ pub struct ManifestInput<'a> {
     pub rollback: bool,
     pub notes: Option<&'a str>,
     pub mandatory: bool,
+    pub min_supported_version: Option<&'a str>,
     pub files: BTreeMap<String, ManifestFile>,
 }
 
@@ -57,6 +60,7 @@ pub fn build(input: ManifestInput<'_>) -> anyhow::Result<Vec<u8>> {
         mandatory: input.mandatory,
         files: input.files,
         rollback: input.rollback,
+        min_supported_version: input.min_supported_version.map(str::to_string),
     };
     serde_json::to_vec_pretty(&manifest).context("serialize manifest")
 }
@@ -67,6 +71,11 @@ pub fn version_key(prefix: &str, version: &str) -> String {
 
 pub fn latest_key(prefix: &str) -> String {
     prefixed(prefix, "manifests/latest.json")
+}
+
+/// Advisory inventory of the release. Never read by clients.
+pub fn sbom_key(prefix: &str, version: &str) -> String {
+    prefixed(prefix, &format!("manifests/{version}.sbom.json"))
 }
 
 pub fn signature_key(manifest_key: &str) -> String {
@@ -120,12 +129,14 @@ mod tests {
             rollback: false,
             notes: None,
             mandatory: false,
+            min_supported_version: None,
             files,
         })
         .unwrap();
         let text = String::from_utf8(first).unwrap();
         assert!(!text.contains("rollback"));
         assert!(!text.contains("mandatory"));
+        assert!(!text.contains("min_supported_version"));
         assert!(text.find("a.txt").unwrap() < text.find("b.txt").unwrap());
     }
 }

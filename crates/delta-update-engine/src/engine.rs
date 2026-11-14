@@ -9,9 +9,10 @@ use uuid::Uuid;
 use crate::config::EngineConfig;
 use crate::crypto::{sha256_bytes, sha256_file, verify_manifest};
 use crate::error::{EngineError, SignatureError};
+use crate::history;
 use crate::journal::state::{
-    self, ApplyConfig, CommitStatus, APPLY_JSON, COMMIT_JOURNAL, COMMIT_STATUS, PREPARED_JSON,
-    UPDATE_LOCK,
+    self, ApplyConfig, CommitStatus, APPLY_JSON, COMMIT_JOURNAL, COMMIT_META, COMMIT_STATUS,
+    PREPARED_JSON, UPDATE_LOCK,
 };
 use crate::journal::{plan as journal_plan, UpdateLock};
 use crate::manifest::diff::{diff, DiffResult, LocalFile, LocalManifest};
@@ -40,6 +41,14 @@ pub struct CheckOutcome {
     pub notes: Option<String>,
     /// The publisher marked this update as mandatory.
     pub mandatory: bool,
+    /// The running version is below the manifest's `min_supported_version`.
+    pub update_required: bool,
+    /// The publisher's minimum supported version, when the manifest sets one.
+    pub min_supported_version: Option<String>,
+    /// Files skipped because they are cloud placeholders (OneDrive/Files
+    /// On-Demand). They are not part of the diff, so if the manifest lists them
+    /// they are downloaded in full. Surfaced so UIs can explain the size.
+    pub cloud_placeholders_skipped: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +112,8 @@ pub enum StartupOutcome {
 struct VerifiedUpdate {
     manifest: Manifest,
     manifest_hash: String,
+    raw_manifest: Vec<u8>,
+    signature: String,
     diff: DiffResult,
 }
 
@@ -125,17 +136,41 @@ pub struct Engine {
     config: EngineConfig,
     current_version: Version,
     session: Mutex<SessionState>,
+    /// Test/legacy escape hatch. Not part of `EngineConfig`: production code
+    /// cannot reach it accidentally, only through [`Engine::new_legacy`].
+    allow_unsigned_journal_recovery: bool,
 }
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Result<Self, EngineError> {
+        Self::build(config, false)
+    }
+
+    /// Test/legacy constructor that permits replaying a journal without a
+    /// signed-manifest binding. `#[doc(hidden)]`: it is not a supported
+    /// production option, and the plugin/CLI never call it.
+    #[doc(hidden)]
+    pub fn new_legacy(
+        config: EngineConfig,
+        allow_unsigned_journal_recovery: bool,
+    ) -> Result<Self, EngineError> {
+        Self::build(config, allow_unsigned_journal_recovery)
+    }
+
+    fn build(config: EngineConfig, allow_unsigned: bool) -> Result<Self, EngineError> {
         config.validate()?;
         let current_version = Version::parse(&config.current_version)
             .map_err(|_| EngineError::VersionInvalid(config.current_version.clone()))?;
+        if allow_unsigned {
+            tracing::warn!(
+                "allow_unsigned_journal_recovery is enabled: recovery may execute a journal that is not bound to a signed manifest"
+            );
+        }
         Ok(Self {
             config,
             current_version,
             session: Mutex::new(SessionState::default()),
+            allow_unsigned_journal_recovery: allow_unsigned,
         })
     }
 
@@ -150,25 +185,35 @@ impl Engine {
             self.config.fetcher.fetch_manifest(),
             self.config.fetcher.fetch_signature()
         )?;
-        let signature = std::str::from_utf8(&raw_signature).map_err(|_| {
-            EngineError::Signature(SignatureError::Invalid(
-                "signature is not valid UTF-8".into(),
-            ))
-        })?;
-        verify_manifest(&raw_manifest, signature, &self.config.signing_public_keys)?;
+        let signature = std::str::from_utf8(&raw_signature)
+            .map_err(|_| {
+                EngineError::Signature(SignatureError::Invalid(
+                    "signature is not valid UTF-8".into(),
+                ))
+            })?
+            .to_string();
+        verify_manifest(&raw_manifest, &signature, &self.config.signing_public_keys)?;
         let manifest = parse_manifest(&raw_manifest, &self.config.limits)?;
-
         let channel = manifest.channel.as_deref().unwrap_or("stable");
         if channel != self.config.channel {
             self.clear_verified()?;
             return Ok(self.outcome(false, None, 0, 0, 0, 0));
         }
+        // Only a manifest for this client's channel can require an update.
+        let min_supported_version = manifest.min_supported_version.clone();
+        let update_required = manifest.is_update_required(&self.current_version);
+        let with_support = |mut outcome: CheckOutcome| {
+            outcome.update_required = update_required;
+            outcome.min_supported_version = min_supported_version.clone();
+            outcome
+        };
+
         if state::read_skipped_version(&self.config.journal_root).as_deref()
             == Some(manifest.version.as_str())
         {
             if !manifest.rollback {
                 self.clear_verified()?;
-                return Ok(self.outcome(false, None, 0, 0, 0, 0));
+                return Ok(with_support(self.outcome(false, None, 0, 0, 0, 0)));
             }
             // An explicit rollback to this version clears the crash-loop skip.
             let _ = std::fs::remove_file(self.config.journal_root.join(state::SKIPPED_VERSION));
@@ -178,10 +223,10 @@ impl Engine {
         let decision = decide(&manifest.version, &current_version, manifest.rollback)?;
         if decision == VersionDecision::NoUpdate {
             self.clear_verified()?;
-            return Ok(self.outcome(false, None, 0, 0, 0, 0));
+            return Ok(with_support(self.outcome(false, None, 0, 0, 0, 0)));
         }
 
-        let diff = tokio::task::spawn_blocking({
+        let (diff, placeholders_skipped) = tokio::task::spawn_blocking({
             let install_root = self.config.install_root.clone();
             let journal_root = self.config.journal_root.clone();
             let manifest = manifest.clone();
@@ -203,12 +248,15 @@ impl Engine {
         );
         outcome.notes = manifest.notes.clone();
         outcome.mandatory = manifest.mandatory;
+        outcome.cloud_placeholders_skipped = placeholders_skipped;
         self.set_verified(VerifiedUpdate {
             manifest,
             manifest_hash: sha256_bytes(&raw_manifest),
+            raw_manifest,
+            signature,
             diff,
         })?;
-        Ok(outcome)
+        Ok(with_support(outcome))
     }
 
     /// Scan the install root and classify every manifest entry against it.
@@ -219,7 +267,7 @@ impl Engine {
     /// large install do not re-hash unchanged files. `check` runs this on the
     /// blocking pool.
     pub fn diff(&self, local_root: &Path, remote: &Manifest) -> Result<DiffResult, EngineError> {
-        diff_install(local_root, &self.config.journal_root, remote)
+        diff_install(local_root, &self.config.journal_root, remote).map(|(diff, _)| diff)
     }
 
     /// Prepare the version that passed `check`. Runs a check first when no
@@ -246,6 +294,7 @@ impl Engine {
             fetcher: self.config.fetcher.as_ref(),
             install_root: &self.config.install_root,
             staging_root: &self.config.staging_root,
+            journal_root: &self.config.journal_root,
             version: &verified.manifest.version,
             manifest_hash: &verified.manifest_hash,
             limits: &self.config.limits,
@@ -285,6 +334,12 @@ impl Engine {
     /// replacement process is the only consumer of the result.
     pub fn begin_commit(&self, prepared: &PreparedUpdate) -> Result<PendingCommit, EngineError> {
         let _lock = UpdateLock::acquire(&self.config.journal_root.join(UPDATE_LOCK))?;
+        // A second instance must not overwrite the pending commit intent of
+        // the first one. The worker consumes the journal after this lock is
+        // released, so the existence check is the cross-process hand-off.
+        if self.config.journal_root.join(COMMIT_JOURNAL).exists() {
+            return Err(EngineError::UpdateLocked);
+        }
         let prepared_path = self.config.journal_root.join(PREPARED_JSON);
         if !prepared_path.exists() {
             return Err(EngineError::NotPrepared);
@@ -295,7 +350,69 @@ impl Engine {
         }
         verify_plan(&plan)?;
 
+        // Capture the old bytes before the worker moves them. Rollback verifies
+        // Restore against this snapshot instead of trusting the backup file's
+        // current hash (which may have been corrupted or tampered with).
+        let mut old_hashes = state::OldHashes::new();
+        for path in plan
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .chain(plan.removed.iter())
+        {
+            let file = self.config.install_root.join(path);
+            let metadata = match std::fs::metadata(&file) {
+                Ok(metadata) => metadata,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    return Err(EngineError::Internal(format!(
+                        "old hash {path}: cannot read metadata: {err}"
+                    )))
+                }
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            let sha256 = sha256_file(&file)
+                .map_err(|err| EngineError::Internal(format!("old hash {path}: {err}")))?;
+            old_hashes.insert(
+                path.clone(),
+                state::OldFileHash {
+                    sha256,
+                    size: metadata.len(),
+                },
+            );
+        }
+        state::write_old_hashes(&self.config.journal_root, &old_hashes)?;
+
         let commit_id = Uuid::new_v4().to_string();
+        match state::read_verified_manifest(&self.config.journal_root)? {
+            Some((raw, _signature)) => {
+                if sha256_bytes(&raw) != plan.manifest_hash {
+                    return Err(EngineError::JournalCorrupt(
+                        "verified manifest does not match the PREPARED plan".into(),
+                    ));
+                }
+                state::write_commit_meta(
+                    &self.config.journal_root,
+                    &state::CommitMeta {
+                        manifest_hash: plan.manifest_hash.clone(),
+                        version: plan.version.clone(),
+                        from_version: self.config.current_version.clone(),
+                        install_root: self.config.install_root.clone(),
+                        commit_id: commit_id.clone(),
+                    },
+                )?;
+            }
+            None if self.allow_unsigned_journal_recovery => {
+                // Test/legacy mode: the journal cannot be bound to a signed
+                // manifest, and recovery will only run it when the same
+                // explicit flag is set.
+            }
+            None => {
+                return Err(EngineError::NotPrepared);
+            }
+        }
         let journal = journal_plan::build(
             &plan,
             &commit_id,
@@ -314,6 +431,11 @@ impl Engine {
         state::write_apply_config(&self.config.journal_root, &apply_config)?;
         let journal_path = self.config.journal_root.join(COMMIT_JOURNAL);
         journal.write_atomic(&journal_path)?;
+        history::mark_started(
+            &self.config.journal_root,
+            &plan.version,
+            &self.config.current_version,
+        );
 
         Ok(PendingCommit {
             commit_id,
@@ -338,6 +460,19 @@ impl Engine {
         }
         let _ = std::fs::remove_file(journal_root.join(COMMIT_JOURNAL));
         let _ = std::fs::remove_file(journal_root.join(APPLY_JSON));
+        let _ = std::fs::remove_file(journal_root.join(COMMIT_META));
+        state::remove_old_hashes(journal_root);
+        history::clear_started(journal_root);
+        Ok(())
+    }
+
+    /// Clear the rollback skip marker so the same version can be retried.
+    ///
+    /// `check` skips a version that was rolled back unless the manifest carries
+    /// `rollback: true`. Publishers sometimes fix and re-release the same
+    /// version, so this is the manual escape hatch.
+    pub fn clear_skipped_version(&self) -> Result<(), EngineError> {
+        state::clear_skipped_version(&self.config.journal_root);
         Ok(())
     }
 
@@ -374,24 +509,38 @@ impl Engine {
                 known.save(&journal_root.join("known_files.json"))?;
             }
         }
+        state::promote_verified_to_installed(journal_root)?;
 
         let _ = std::fs::remove_file(journal_root.join(COMMIT_JOURNAL));
         let _ = std::fs::remove_file(journal_root.join(COMMIT_STATUS));
+        let _ = std::fs::remove_file(journal_root.join(COMMIT_META));
         let _ = std::fs::remove_file(journal_root.join(APPLY_JSON));
         let _ = std::fs::remove_file(&prepared_path);
+        state::remove_old_hashes(journal_root);
         HashCache::clear(journal_root);
         crate::fs::remove_dir_all_best_effort(&self.config.staging_root.join(&version));
-        crate::fs::remove_dir_all_best_effort(&rollback::backup_dir(
-            &self.config.install_root,
-            &commit_id,
-        ));
-        crate::fs::remove_dir_all_best_effort(&rollback::trash_dir(
-            &self.config.install_root,
-            &commit_id,
-        ));
+        for (label, path) in [
+            (
+                "backup",
+                rollback::backup_dir(&self.config.install_root, &commit_id),
+            ),
+            (
+                "trash",
+                rollback::trash_dir(&self.config.install_root, &commit_id),
+            ),
+        ] {
+            if !crate::fs::remove_dir_all_best_effort(&path) {
+                tracing::warn!(
+                    kind = label,
+                    path = %path.display(),
+                    "cleanup left files behind (locked or still in use); they are harmless but occupy disk"
+                );
+            }
+        }
         if state::read_skipped_version(journal_root).as_deref() != Some(version.as_str()) {
             let _ = std::fs::remove_file(journal_root.join(state::SKIPPED_VERSION));
         }
+        history::record_completed(journal_root, &version, None);
         Ok(())
     }
 
@@ -401,14 +550,69 @@ impl Engine {
     /// Counts one startup attempt. Use [`Self::recover_after_elevation`] when
     /// an elevated worker already performed the recovery for this start.
     pub fn recover_and_cleanup(&self) -> Result<StartupOutcome, EngineError> {
-        let attempts = state::increment_attempts(&self.config.journal_root)?;
-        self.recover_with_attempts(attempts)
+        let attempts =
+            state::increment_attempts(&self.config.journal_root, self.config.crash_loop_threshold)?;
+        let outcome = self.recover_with_attempts(attempts)?;
+        self.record_startup_outcome(&outcome);
+        Ok(outcome)
+    }
+
+    /// Read the newest persisted update outcomes for the host application to
+    /// display or forward to its own monitoring. Nothing is uploaded here.
+    pub fn update_history(&self, limit: usize) -> Vec<crate::history::UpdateRecord> {
+        history::read(&self.config.journal_root, limit)
+    }
+
+    fn record_startup_outcome(&self, outcome: &StartupOutcome) {
+        match outcome {
+            StartupOutcome::RolledBack { reason, .. } => {
+                history::record_rolled_back(&self.config.journal_root, reason);
+            }
+            StartupOutcome::NeedsAttention { error } => {
+                history::record_failed(&self.config.journal_root, error.code());
+            }
+            _ => {}
+        }
+    }
+
+    /// A normal shutdown of a committed but unconfirmed version proves the
+    /// process did not crash. Discount the startup attempt so "open, look,
+    /// close" does not accumulate into a rollback; real crashes never reach the
+    /// exit hook and keep counting.
+    ///
+    /// Callers gate this on a grace period and on the update awaiting
+    /// confirmation. They must also ensure the commit really reached
+    /// `CommitStatus::Completed`: this method deliberately no-ops otherwise, so
+    /// a future refactor that splits `begin_commit` from the worker spawn must
+    /// not call it between those steps.
+    pub fn discount_clean_exit(&self) -> Result<(), EngineError> {
+        let journal_root = &self.config.journal_root;
+        if !matches!(
+            state::read_commit_status(journal_root)?,
+            Some(CommitStatus::Completed { .. })
+        ) {
+            return Ok(());
+        }
+        let _lock = UpdateLock::acquire(&journal_root.join(UPDATE_LOCK))?;
+        let attempts = state::read_attempts(journal_root);
+        if attempts == 0 {
+            return Ok(());
+        }
+        state::write_attempts(journal_root, attempts - 1, self.config.crash_loop_threshold)?;
+        tracing::info!(
+            remaining = attempts - 1,
+            "clean exit discounted one unconfirmed start"
+        );
+        Ok(())
     }
 
     /// Inspect the result of an elevated recovery worker without counting a
     /// second startup attempt. The worker increments the counter once.
     pub fn recover_after_elevation(&self) -> Result<StartupOutcome, EngineError> {
-        self.recover_with_attempts(state::read_attempts(&self.config.journal_root))
+        let outcome =
+            self.recover_with_attempts(state::read_attempts(&self.config.journal_root))?;
+        self.record_startup_outcome(&outcome);
+        Ok(outcome)
     }
 
     /// Whether recovering this startup needs write access to the install root.
@@ -427,6 +631,8 @@ impl Engine {
             journal_root: &self.config.journal_root,
             crash_loop_threshold: self.config.crash_loop_threshold,
             attempts,
+            trusted_keys: &self.config.signing_public_keys,
+            accept_unsigned_journal: self.allow_unsigned_journal_recovery,
         })
     }
 
@@ -463,6 +669,11 @@ impl Engine {
     }
 
     fn set_verified(&self, verified: VerifiedUpdate) -> Result<(), EngineError> {
+        state::write_verified_manifest(
+            &self.config.journal_root,
+            &verified.raw_manifest,
+            &verified.signature,
+        )?;
         self.session
             .lock()
             .map_err(|_| EngineError::Internal("engine state poisoned".into()))?
@@ -497,6 +708,9 @@ impl Engine {
             total_bytes,
             notes: None,
             mandatory: false,
+            update_required: false,
+            min_supported_version: None,
+            cloud_placeholders_skipped: 0,
         }
     }
 }
@@ -505,18 +719,21 @@ fn diff_install(
     install_root: &Path,
     journal_root: &Path,
     remote: &Manifest,
-) -> Result<DiffResult, EngineError> {
+) -> Result<(DiffResult, u32), EngineError> {
     let mut cache = HashCache::load(journal_root, install_root);
-    let local = scan_local(install_root, &mut cache)?;
+    let (local, placeholders_skipped) = scan_local(install_root, &mut cache)?;
     let known = KnownFiles::load(&journal_root.join("known_files.json"))?;
     let result = diff(&local, remote, &known.files)?;
     cache.save(journal_root);
-    Ok(result)
+    Ok((result, placeholders_skipped))
 }
 
-fn scan_local(root: &Path, cache: &mut HashCache) -> Result<LocalManifest, EngineError> {
+/// Scan the install root. Returns the local manifest and the number of cloud
+/// placeholder files that were intentionally left out of the diff.
+fn scan_local(root: &Path, cache: &mut HashCache) -> Result<(LocalManifest, u32), EngineError> {
     let mut files = LocalManifest::new();
     let mut present = BTreeSet::new();
+    let mut placeholders_skipped = 0_u32;
     for entry in walkdir::WalkDir::new(root).follow_links(false) {
         let entry = entry
             .map_err(|err| EngineError::Internal(format!("scan {}: {err}", root.display())))?;
@@ -529,12 +746,26 @@ fn scan_local(root: &Path, cache: &mut HashCache) -> Result<LocalManifest, Engin
             .map_err(|err| EngineError::Internal(format!("scan {}: {err}", root.display())))?
             .to_string_lossy()
             .replace('\\', "/");
-        if matches!(relative.split('/').next(), Some(".old" | ".trash")) {
+        if relative.split('/').next().is_some_and(|segment| {
+            segment.eq_ignore_ascii_case(".old") || segment.eq_ignore_ascii_case(".trash")
+        }) {
             continue;
         }
         let metadata = entry
             .metadata()
             .map_err(|err| io_error(err.into(), &relative))?;
+        if crate::fs::is_cloud_placeholder(&metadata) {
+            // Hashing would hydrate the placeholder and stall `check` for
+            // seconds per file. Leave it out of the diff and warn: if the
+            // manifest still lists it, it is materialized from its
+            // content-addressed blob like any missing file.
+            tracing::warn!(
+                file = %relative,
+                "skipping cloud placeholder (OneDrive/Files On-Demand); download it locally to include it in the diff"
+            );
+            placeholders_skipped = placeholders_skipped.saturating_add(1);
+            continue;
+        }
         let size = metadata.len();
         let mtime = mtime_ns(&metadata);
         present.insert(relative.clone());
@@ -551,7 +782,7 @@ fn scan_local(root: &Path, cache: &mut HashCache) -> Result<LocalManifest, Engin
         files.insert(relative, LocalFile { sha256, size });
     }
     cache.retain(&present);
-    Ok(files)
+    Ok((files, placeholders_skipped))
 }
 
 /// Modification time as nanoseconds. `None` when the filesystem cannot report
@@ -584,7 +815,8 @@ mod tests {
         std::fs::write(root.join("app.exe"), b"v1").unwrap();
 
         let mut cache = HashCache::load(&root.join("journal"), root);
-        let first = scan_local(root, &mut cache).unwrap();
+        let (first, skipped) = scan_local(root, &mut cache).unwrap();
+        assert_eq!(skipped, 0);
         assert_eq!(first["app.exe"].sha256, crate::crypto::sha256_bytes(b"v1"));
 
         // Same size and mtime must reuse the cached hash verbatim.
@@ -596,14 +828,14 @@ mod tests {
             "deadbeef".into(),
         );
         assert_eq!(
-            scan_local(root, &mut cache).unwrap()["app.exe"].sha256,
+            scan_local(root, &mut cache).unwrap().0["app.exe"].sha256,
             "deadbeef"
         );
 
         // A size change invalidates the entry and re-hashes the file.
         std::fs::write(root.join("app.exe"), b"v2-longer").unwrap();
         assert_eq!(
-            scan_local(root, &mut cache).unwrap()["app.exe"].sha256,
+            scan_local(root, &mut cache).unwrap().0["app.exe"].sha256,
             crate::crypto::sha256_bytes(b"v2-longer")
         );
     }

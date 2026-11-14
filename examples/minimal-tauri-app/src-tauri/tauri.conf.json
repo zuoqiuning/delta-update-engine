@@ -31,8 +31,8 @@
       "endpoint": "https://example.com/manifests/latest.json",
       "signing_public_keys": ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"],
       "auto_check": true,
-      "auto_apply": true,
-      "auto_confirm": true,
+      "auto_apply": false,
+      "auto_confirm": false,
       "channel": "stable"
     }
   }

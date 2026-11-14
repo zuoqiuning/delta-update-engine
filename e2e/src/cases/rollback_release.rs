@@ -1,3 +1,4 @@
+use delta_update_engine::crypto::sha256_bytes;
 use delta_update_engine::StartupOutcome;
 use delta_update_testkit::tree;
 
@@ -65,7 +66,7 @@ async fn run_inner() -> Result<(), String> {
         .await
         .map_err(|err| format!("prepare: {err}"))?;
     let delta = format!("artifacts/{CURRENT_VERSION}-to-{TARGET_VERSION}/App.exe.tdp");
-    let full = format!("artifacts/full/{TARGET_VERSION}/App.exe");
+    let full = format!("blobs/{}", sha256_bytes(&app_target));
     let requests = release.server.requests();
     if !requests.iter().any(|request| request == &delta) {
         return Err(format!("rollback delta was not downloaded: {requests:?}"));

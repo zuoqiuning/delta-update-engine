@@ -26,15 +26,25 @@ pub fn failed_state(error: &EngineError) -> EngineState {
 /// Process-wide plugin state: engine handle, UI snapshot, PREPARED update and
 /// the async command gate.
 pub struct PluginState {
-    engine: Arc<Engine>,
+    engine: Option<Arc<Engine>>,
+    /// Present when the engine could not be constructed. The host app still
+    /// starts; update commands return this error instead of taking the window
+    /// down with them.
+    startup_error: Option<String>,
+    current_version: String,
     snapshot: RwLock<EngineState>,
     target_version: RwLock<Option<String>>,
+    /// From the last check: the oldest version the publisher still supports.
+    min_supported_version: RwLock<Option<String>>,
     last_check: RwLock<Option<(Instant, CheckOutcome)>>,
     prepared: RwLock<Option<PreparedUpdate>>,
     journal_root: PathBuf,
     auto_apply: bool,
     auto_confirm: bool,
     confirm_delay_ms: u64,
+    /// A clean exit after this long discounts one unconfirmed start.
+    exit_grace_period: Duration,
+    started_at: Instant,
     auto_confirm_started: AtomicBool,
     awaiting_confirm: AtomicBool,
     gate: Mutex<()>,
@@ -42,24 +52,68 @@ pub struct PluginState {
 
 impl PluginState {
     pub fn new(engine: Engine, config: &Config, journal_root: PathBuf) -> Self {
+        let current_version = engine.config().current_version.clone();
         Self {
-            engine: Arc::new(engine),
+            engine: Some(Arc::new(engine)),
+            startup_error: None,
+            current_version,
             snapshot: RwLock::new(EngineState::Idle),
             target_version: RwLock::new(None),
+            min_supported_version: RwLock::new(None),
             last_check: RwLock::new(None),
             prepared: RwLock::new(None),
             journal_root,
             auto_apply: config.auto_apply,
             auto_confirm: config.auto_confirm,
             confirm_delay_ms: config.confirm_delay_ms,
+            exit_grace_period: Duration::from_secs(config.exit_grace_period_secs),
+            started_at: Instant::now(),
             auto_confirm_started: AtomicBool::new(false),
             awaiting_confirm: AtomicBool::new(false),
             gate: Mutex::new(()),
         }
     }
 
-    pub fn engine(&self) -> &Arc<Engine> {
-        &self.engine
+    /// Build a state object without an engine. The application keeps running
+    /// and every update command reports the configuration/startup error.
+    pub fn disabled(error: &EngineError, config: &Config) -> Self {
+        Self {
+            engine: None,
+            startup_error: Some(error.to_string()),
+            current_version: String::new(),
+            snapshot: RwLock::new(EngineState::Idle),
+            target_version: RwLock::new(None),
+            min_supported_version: RwLock::new(None),
+            last_check: RwLock::new(None),
+            prepared: RwLock::new(None),
+            journal_root: PathBuf::new(),
+            auto_apply: false,
+            auto_confirm: false,
+            confirm_delay_ms: config.confirm_delay_ms,
+            exit_grace_period: Duration::from_secs(config.exit_grace_period_secs),
+            started_at: Instant::now(),
+            auto_confirm_started: AtomicBool::new(false),
+            awaiting_confirm: AtomicBool::new(false),
+            gate: Mutex::new(()),
+        }
+    }
+
+    pub fn engine(&self) -> Result<&Arc<Engine>, EngineError> {
+        self.engine.as_ref().ok_or_else(|| {
+            EngineError::ConfigInvalid(
+                self.startup_error
+                    .clone()
+                    .unwrap_or_else(|| "update engine is not available".into()),
+            )
+        })
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.engine.is_none()
+    }
+
+    pub fn current_version(&self) -> &str {
+        &self.current_version
     }
 
     pub fn snapshot(&self) -> EngineState {
@@ -103,6 +157,19 @@ impl PluginState {
 
     pub fn set_target_version(&self, version: Option<String>) {
         if let Ok(mut current) = self.target_version.write() {
+            *current = version;
+        }
+    }
+
+    pub fn min_supported_version(&self) -> Option<String> {
+        self.min_supported_version
+            .read()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    pub fn set_min_supported_version(&self, version: Option<String>) {
+        if let Ok(mut current) = self.min_supported_version.write() {
             *current = version;
         }
     }
@@ -162,6 +229,12 @@ impl PluginState {
 
     pub fn awaiting_confirm(&self) -> bool {
         self.awaiting_confirm.load(Ordering::SeqCst)
+    }
+
+    /// Whether this session ran long enough for a clean exit to count as a
+    /// normal use rather than an immediate crash.
+    pub fn clean_exit_grace_elapsed(&self) -> bool {
+        self.started_at.elapsed() >= self.exit_grace_period
     }
 
     pub fn gate(&self) -> &Mutex<()> {

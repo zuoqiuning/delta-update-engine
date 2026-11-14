@@ -41,11 +41,13 @@ function UpdateBanner() {
 }
 ```
 
-`confirm()` is the post-restart health acknowledgement (state `Committed`); the
-default `auto_confirm` already calls it. When several components share one
-controller, `start()`/`stop()` are reference counted and the listener is only
-released by the last consumer. React is an optional peer dependency: Vue/Svelte
-and vanilla apps use `createUpdateController` directly.
+`confirm()` is the post-restart health acknowledgement (state `Committed`). It is
+**not** called automatically by default (`auto_confirm: false`); call it after
+your app's core startup work succeeds. Set `auto_confirm: true` only if the
+window being visible is a sufficient health signal for your app. When several
+components share one controller, `start()`/`stop()` are reference counted and
+the listener is only released by the last consumer. React is an optional peer
+dependency: Vue/Svelte and vanilla apps use `createUpdateController` directly.
 
 ### Vue / Svelte
 

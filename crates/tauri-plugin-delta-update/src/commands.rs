@@ -6,7 +6,7 @@ use delta_update_engine::{
     CheckOutcome, EngineError, EngineState, ErrorPayload, PreparedUpdate, StatePayload,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::events::emit_state;
 use crate::lifecycle::progress_state;
@@ -29,6 +29,17 @@ pub struct CheckResult {
     pub total_bytes: u64,
     pub notes: Option<String>,
     pub mandatory: bool,
+    /// The running version is below the publisher's `min_supported_version`.
+    #[serde(default)]
+    pub update_required: bool,
+    /// Oldest version the publisher still supports; absent when unset.
+    #[serde(default)]
+    pub min_supported_version: Option<String>,
+    /// Files skipped because they are cloud placeholders; they will be
+    /// downloaded in full if the manifest lists them. `default` keeps payloads
+    /// from older plugin versions deserializable.
+    #[serde(default)]
+    pub cloud_placeholders_skipped: u32,
 }
 
 impl From<CheckOutcome> for CheckResult {
@@ -43,6 +54,9 @@ impl From<CheckOutcome> for CheckResult {
             total_bytes: outcome.total_bytes,
             notes: outcome.notes,
             mandatory: outcome.mandatory,
+            update_required: outcome.update_required,
+            min_supported_version: outcome.min_supported_version,
+            cloud_placeholders_skipped: outcome.cloud_placeholders_skipped,
         }
     }
 }
@@ -69,6 +83,16 @@ pub struct RestartResult {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsResult {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClearSkipResult {
+    pub cleared: bool,
+}
+
 fn publish<R: Runtime>(app: &AppHandle<R>, state: &PluginState, next: EngineState) {
     state.set_state(next.clone());
     emit_state(app, state.payload(&next));
@@ -83,12 +107,20 @@ fn resting(before: &EngineState, state: &PluginState) -> EngineState {
             version: version.clone(),
         };
     }
-    state
-        .prepared()
-        .map(|prepared| EngineState::Prepared {
+    if let Some(prepared) = state.prepared() {
+        return EngineState::Prepared {
             version: prepared.version,
-        })
-        .unwrap_or(EngineState::Idle)
+        };
+    }
+    if let Some(min_supported_version) = state.min_supported_version() {
+        return EngineState::UpdateRequired {
+            version: state
+                .target_version()
+                .unwrap_or_else(|| state.current_version().to_string()),
+            min_supported_version,
+        };
+    }
+    EngineState::Idle
 }
 
 /// Keep a committed, prepared or rolled-back state when a background refresh
@@ -113,7 +145,7 @@ fn busy(state: &PluginState, to: &str) -> ErrorPayload {
 }
 
 fn current_version(state: &PluginState) -> String {
-    state.engine().config().current_version.clone()
+    state.current_version().to_string()
 }
 
 async fn run_check<R: Runtime>(
@@ -121,12 +153,18 @@ async fn run_check<R: Runtime>(
     state: &PluginState,
 ) -> Result<CheckOutcome, EngineError> {
     publish(app, state, EngineState::Checking);
-    let outcome = state.engine().check().await?;
+    let outcome = state.engine()?.check().await?;
     if outcome.available {
         state.set_target_version(outcome.version.clone());
     } else {
         state.set_target_version(None);
     }
+    state.set_min_supported_version(
+        outcome
+            .min_supported_version
+            .clone()
+            .filter(|_| outcome.update_required),
+    );
     state.record_check(&outcome);
     Ok(outcome)
 }
@@ -162,7 +200,7 @@ async fn prepare_now<R: Runtime>(
     let task_app = AppHandle::clone(app);
     let task_state = Arc::clone(state);
     let result = state
-        .engine()
+        .engine()?
         .prepare(Box::new(move |progress| {
             let Ok(_guard) = progress_gate.lock() else {
                 return;
@@ -244,12 +282,14 @@ async fn check_and_prepare<R: Runtime>(
         return;
     };
     let before = state.snapshot();
-    let allowed = matches!(before, EngineState::Idle)
-        || (retry_settled
-            && matches!(
-                before,
-                EngineState::Failed { .. } | EngineState::RolledBack { .. }
-            ));
+    let allowed = matches!(
+        before,
+        EngineState::Idle | EngineState::UpdateRequired { .. }
+    ) || (retry_settled
+        && matches!(
+            before,
+            EngineState::Failed { .. } | EngineState::RolledBack { .. }
+        ));
     if !allowed {
         return;
     }
@@ -363,7 +403,7 @@ pub async fn cancel_prepare(
     let state = Arc::clone(state.inner());
     state
         .engine()
-        .cancel_prepare()
+        .and_then(|engine| engine.cancel_prepare())
         .map_err(|error| error.to_payload())?;
     // The in-flight prepare publishes the terminal Cancelled/Prepared state
     // once it actually stops; publishing here could race a just-finished
@@ -378,6 +418,94 @@ pub async fn status(state: State<'_, Arc<PluginState>>) -> Result<StatePayload, 
     Ok(state.payload(&state.snapshot()))
 }
 
+/// Forget the rollback skip marker so the same version can be tried again.
+///
+/// Needed when a publisher fixes a release and re-uploads the same version:
+/// `check` would otherwise skip it until a higher version appears.
+#[tauri::command]
+pub async fn clear_skipped_version(
+    state: State<'_, Arc<PluginState>>,
+) -> Result<ClearSkipResult, ErrorPayload> {
+    let engine = state.engine().map_err(|error| error.to_payload())?;
+    let cleared =
+        delta_update_engine::journal::state::read_skipped_version(state.journal_root()).is_some();
+    engine
+        .clear_skipped_version()
+        .map_err(|error| error.to_payload())?;
+    Ok(ClearSkipResult { cleared })
+}
+
+/// Write a support bundle next to the app logs and return its path.
+///
+/// The destination is chosen by the plugin, never by the frontend, so this
+/// command cannot be used to write arbitrary files. Users can attach the
+/// returned JSON to a ticket without collecting scattered state by hand.
+#[tauri::command]
+pub async fn export_diagnostics<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<PluginState>>,
+) -> Result<DiagnosticsResult, ErrorPayload> {
+    let journal_root = state.journal_root().clone();
+    let install_root = state
+        .engine()
+        .ok()
+        .map(|engine| engine.config().install_root.clone());
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| EngineError::Internal(format!("app_log_dir: {error}")).to_payload())?;
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        EngineError::Internal(format!("create {}: {error}", dir.display())).to_payload()
+    })?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let path = dir.join(format!("delta-update-diagnostics-{stamp}.json"));
+    delta_update_engine::diagnostics::write_bundle(
+        &journal_root,
+        true,
+        "tauri-plugin-delta-update",
+        &path,
+        install_root.as_deref(),
+        true,
+    )
+    .map_err(|error| error.to_payload())?;
+    Ok(DiagnosticsResult {
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn get_update_history(
+    state: State<'_, Arc<PluginState>>,
+    limit: Option<usize>,
+) -> Result<Vec<delta_update_engine::UpdateRecord>, ErrorPayload> {
+    let engine = state.engine().map_err(|error| error.to_payload())?;
+    // The file is capped anyway; the clamp only keeps a hostile caller from
+    // asking for an unbounded response.
+    Ok(engine.update_history(limit.unwrap_or(50).min(500)))
+}
+
+/// Open the app log directory in Explorer so the user can attach the newest
+/// bundle without searching the filesystem by hand.
+///
+/// The path comes from `app_log_dir()`, not from the frontend, so this cannot
+/// be used to open an arbitrary location.
+#[tauri::command]
+pub async fn open_diagnostics_folder<R: Runtime>(app: AppHandle<R>) -> Result<(), ErrorPayload> {
+    let dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|error| EngineError::Internal(format!("app_log_dir: {error}")).to_payload())?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| {
+            EngineError::Internal(format!("open {}: {error}", dir.display())).to_payload()
+        })
+}
+
 #[tauri::command]
 pub async fn confirm_healthy<R: Runtime>(
     app: AppHandle<R>,
@@ -389,7 +517,7 @@ pub async fn confirm_healthy<R: Runtime>(
     // crash loop and trigger a rollback.
     state
         .engine()
-        .confirm_healthy()
+        .and_then(|engine| engine.confirm_healthy())
         .map_err(|error| error.to_payload())?;
     state.mark_awaiting_confirm(false);
     if matches!(state.snapshot(), EngineState::Committed { .. }) {
@@ -413,20 +541,23 @@ pub async fn restart_to_apply<R: Runtime>(
     if !matches!(state.snapshot(), EngineState::Prepared { .. }) {
         return Err(EngineError::NotPrepared.to_payload());
     }
-    let pending = state
-        .engine()
+    let engine = state.engine().map_err(|error| error.to_payload())?;
+    let pending = engine
         .begin_commit(&prepared)
         .map_err(|error| error.to_payload())?;
-    let install_root = state.engine().config().install_root.clone();
+    let install_root = engine.config().install_root.clone();
     if let Err(error) = crate::applier::spawn_replacement(
         &install_root,
         state.journal_root(),
         &pending.commit_id,
         true,
     ) {
-        if let Err(discard) = state.engine().discard_pending_commit() {
+        if let Err(discard) = engine.discard_pending_commit() {
             tracing::error!(%discard, "failed to withdraw the pending commit");
         }
+        // Keep the observable state in sync with the command result: otherwise
+        // a UI that only listens to events still shows `Prepared`.
+        publish(&app, &state, failed_state(&error));
         return Err(error.to_payload());
     }
 

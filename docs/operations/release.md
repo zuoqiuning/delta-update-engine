@@ -75,6 +75,14 @@ jobs:
 
 `MINISIGN_PUBLIC_KEYS` 的格式为逗号分隔的 base64 公钥载荷，轮换期间恰好两个，无空格、无尾随分隔符。
 
+从私钥导出公钥与 key ID（不需要安装 minisign）：
+
+```bash
+delta-update key-info --key /tmp/release.key
+# public key: RWQ...
+# key id: 1F2E...
+```
+
 
 ## 3. `delta-update release` 命令参考
 
@@ -100,16 +108,21 @@ delta-update release [OPTIONS]
   --channel <NAME>        更新通道，默认 stable。
   --notes-file <PATH>     发布说明文件，写入清单 notes（UTF-8，最大 64 KiB）。
   --mandatory             标记本次更新为强制更新（清单 mandatory: true）。
+  --min-supported <SEMVER> 发布者仍支持的最旧版本（清单 min_supported_version）。
+                          必须 <= --version；低于它的客户端在 check 中收到
+                          update_required: true，由应用决定多严格。
   --region <REGION>       COS / S3 区域，如 ap-guangzhou、us-east-1、auto（R2）。
   --prefix <PREFIX>       对象键前缀，默认空（根前缀）。
-  --dry-run               生成清单和补丁，但不上传对象存储。
+  --dry-run               生成补丁并在内存中签名清单，打印摘要；不落盘、不上传。
   --require-delta         本应差分的文件未能产出低于阈值的补丁时，构建失败。
   --delta-max-ratio <F>   补丁体积超过全量的此比例时，降级为全量。默认 0.60。
   --patch-max-file-size <BYTES>
                           超过此大小的文件不做差分、直接全量。默认 64 MiB。
                           qbsdiff 内存约为输入的 17 倍，需提高时同时降低 --jobs。
   --verify                上传完成后自动执行 verify。
-  --jobs <N>              补丁生成的并行度，默认 CPU 核数。
+  --self-test             在 --from 的临时副本上做 apply + rollback 演练；需要 --from。
+  --jobs <N>              补丁生成的并行度，默认 min(核数/2, 4)；--jobs 可覆盖。
+                          启动时会打印 “patch jobs: N (max file ..., estimated peak ~M)”。
   --verbose               输出每个文件的策略选择和补丁体积。
 ```
 
@@ -146,6 +159,10 @@ delta-update release \
 
 `--notes-file` 与 `--mandatory` 是产品提示字段：客户端 `check` 会原样返回 `notes` 与 `mandatory`，由应用的更新弹窗决定如何展示、是否禁止跳过。它们不参与签名之外的任何决策，也不会绕过版本守卫。
 
+`--min-supported` 用于安全场景：它把“最低可接受版本”写进签名清单，客户端 `check` 返回 `update_required: true`，插件进入 `UpdateRequired` 状态。引擎不会阻止应用启动——紧急医疗、离线等场景仍可继续使用；应用可以据此显示不可关闭的更新提示或禁用联网功能。
+
+默认输出在 `released ...` 之后还有一行 **`delta coverage: N/M modified files patched (...)`**，直接回答“增量是否真的生效”：未生效的数量会按 `too large` / `ratio` / `compressed` 拆开，便于调整 `--patch-max-file-size` 或 `--delta-max-ratio`。
+
 ### 3.3 S3 兼容存储（AWS S3 / Cloudflare R2 / MinIO）
 
 `--bucket s3://your-bucket` 使用 S3 Signature V4（path-style），凭证从环境变量读取：
@@ -173,7 +190,43 @@ delta-update release ... --bucket s3://updates
 
 客户端仍然只读取 HTTPS 清单端点；S3/R2 的公开读 URL 或 CDN 域名填入插件的 `endpoint` 即可。
 
-### 3.4 CLI 内部行为
+### 3.4 一体化发布 `--pipeline`
+
+`--pipeline` 把“生成 → 自测 → 上传 → 审计”串成一次运行：
+
+```bash
+delta-update release --from build/1.9.0 --to build/2.0.0 \
+  --version 2.0.0 --from-version 1.9.0 \
+  --bucket cos://your-bucket --key release.key \
+  --pipeline --report release-report.json
+```
+
+1. 生成补丁、清单、签名（同普通 `release`）。
+2. 在 `--from` 的临时副本上执行 `--self-test` 的 apply + rollback。
+3. 按原子顺序上传对象、签名、清单与 SBOM。
+4. 用 `inspect --from-release` 的同一套逻辑验签并 `HEAD` 校验每个对象。
+5. 写 `release-report.json`（`v`/`tool`/覆盖率/自测/审计/观察窗口）。
+
+`--watch 600 --interval 60` 会在审计后继续按间隔重跑审计，直到时间窗口结束；任何一轮发现对象缺失或大小不符都会让整次发布失败，适合 CDN 传播与对象存储一致性延迟的场景。
+
+任一步失败即停止，不会写报告，退出码按 [CLI 契约](../cli-contract.md) 透传。`--initial` 会跳过自测并在报告中记录 `"ran": false`。CI 可以把报告直接作为 artifact 归档；GitHub Actions 与 GitLab CI 的模板见 [`examples/ci/`](../../examples/ci/)。
+
+把 `--report` 指向目录（或没有 `.json` 后缀的路径）时，报告按 `<version>.json` 归档，例如 `--report .reports/`。之后用趋势表检查增量策略是否退化：
+
+```bash
+delta-update report --history .reports/
+```
+
+```text
+VERSION       CHANGED  COVERAGE      DELTA       FULL  PATCH/FALLBACK
+2.0.0              12     75.0%     1.2 MB     4.8 MB            9/3
+2.1.0              15     40.0%     3.1 MB     7.8 MB            6/9
+warning: 2.1.0 coverage 40.0% is 35 points below 2.0.0; new fallbacks: bin/large.dll (too_large)
+```
+
+覆盖率相比上一版本下降超过 20 个百分点时，警告会列出该版本新增的回退文件与原因——通常意味着某个文件意外膨胀超过 `--patch-max-file-size`。
+
+### 3.5 CLI 内部行为
 
 `delta-update release` 按以下顺序执行，任一步失败即中止：
 
@@ -186,7 +239,8 @@ delta-update release ... --bucket s3://updates
 7. **先上传补丁和全量对象**，逐个 `HEAD` 校验存在且字节数正确。
 8. 上传 `<version>.json.minisig` 与 `latest.json.minisig`——**签名必须先于对应清单存在**。
 9. 上传 `<version>.json`，**最后上传 `latest.json`**。
-10. `--verify` 时重新下载清单、验签、抽样应用补丁并校验目标哈希。
+10. 生成并上传 `manifests/<version>.sbom.json`（只含清单已有的路径、哈希、大小、策略与对象键，供合规审计；客户端不读取，也不参与更新）。
+11. `--verify` 时重新下载清单、验签、抽样应用补丁并校验目标哈希。**注意**：`--verify` 用私钥派生的公钥自检，只能证明上传内容与签名自洽；要验证“客户端内嵌公钥是否信任这把密钥”，请单独执行 `delta-update verify --public-key <客户端公钥>`。
 
 
 ## 4. 原子发布顺序与对象存储操作
@@ -212,20 +266,19 @@ CLI 的 `release` 命令强制执行此顺序。但如果你手工操作 COS 或
   │   ├── latest.json                    # 插件唯一直接请求的清单
   │   ├── latest.json.minisig
   │   ├── 2.0.0.json                     # 历史版本，供回滚/降级素材
-  │   └── 2.0.0.json.minisig
-  └── artifacts/
-      ├── 2.0.0-to-2.1.0/
-      │   ├── App.exe.tdp
-      │   └── bin/core.dll.tdp
-      └── full/
-          └── 2.1.0/
-              ├── App.exe
-              └── resources/icon.png
+  │   ├── 2.0.0.json.minisig
+  │   └── 2.0.0.sbom.json                # 派生库存清单（审计用，客户端不读取）
+  ├── artifacts/
+  │   └── 2.0.0-to-2.1.0/
+  │       ├── App.exe.tdp
+  │       └── bin/core.dll.tdp
+  └── blobs/
+      └── <sha256>              # 内容寻址的全量回退对象（所有文件，含未变化）
 ```
 
-**`manifests/` 前缀**只存放清单和签名。**`artifacts/` 前缀**存放补丁和全量对象。`latest.json` 是唯一被客户端直接请求的 URL（通过插件的 `endpoint` 配置），其余对象键由清单内部指定。
+**`manifests/` 前缀**只存放清单和签名。**`artifacts/` 前缀**存放差分补丁，**`blobs/` 前缀**存放按 SHA-256 内容寻址的全量对象。`latest.json` 是唯一被客户端直接请求的 URL（通过插件的 `endpoint` 配置），其余对象键由清单内部指定。
 
-配置 `--prefix` 时，上述所有键（包括 `manifests/`、`artifacts/` 以及清单内部的对象键）都会加上该前缀；客户端的 `endpoint` 必须指向 `<prefix>/manifests/latest.json`。
+配置 `--prefix` 时，上述所有键（包括 `manifests/`、`artifacts/`、`blobs/` 以及清单内部的对象键）都会加上该前缀；客户端的 `endpoint` 必须指向 `<prefix>/manifests/latest.json`。
 
 ### 4.3 COS 生命周期与版本保留
 
@@ -238,7 +291,7 @@ COS 生命周期规则可以自动沉降或删除旧对象以控制存储成本�
 | `manifests/latest.json*`    | **永不自动删除**           | 客户端始终需要最新清单   |
 | `manifests/<version>.json*` | 保留 **至少 3 个**最近版本 | 回滚和降级素材           |
 | `artifacts/<from>-to-<to>/` | 保留 **至少 2 个**版本对   | 覆盖最近的更新路径       |
-| `artifacts/full/<version>/` | 保留 **至少 2 个**最近版本 | 差分失败时的全量回退来源 |
+| `blobs/`                                 | 按内容哈希去重；至少保留最近 2–3 个版本的引用 | 差分失败、跨版本与损坏修复的全量来源 |
 
 生命周期规则应基于对象前缀分别配置，**不要对同一组对象配置冲突条件的多条规则**。
 
@@ -249,7 +302,7 @@ COS 生命周期规则可以自动沉降或删除旧对象以控制存储成本�
 - **预签名 URL 不支持断点续传**：当指定预签名 URL 的有效时间过期后，请求会中断；申请新的签名后，需要**重新执行失败请求**，不支持在同一个 URL 上续传。插件的 Fetcher 在 URL 过期后会刷新 URL 并从当前字节偏移续传，但这依赖于 Fetcher 层重新发起 Range 请求，而非 COS 自身支持。
 - **有效期受临时密钥限制**：使用临时密钥生成的预签名 URL，其过期时间由**临时密钥和预签名 URL 两个中较短者**决定。签名服务的临时密钥有效期应大于 URL 有效期。
 
-**建议配置**：预签名 URL 有效期 ≤ 15 分钟，临时密钥有效期 ≥ 30 分钟。最小权限策略只授予 `GetObject`，资源范围限制在 `manifests/` 和 `artifacts/` 前缀。
+**建议配置**：预签名 URL 有效期 ≤ 15 分钟，临时密钥有效期 ≥ 30 分钟。最小权限策略只授予 `GetObject`，资源范围限制在 `manifests/`、`artifacts/` 和 `blobs/` 前缀（`blobs/` 是差分回退、跨版本与损坏修复所需的全量对象来源）。
 
 
 ## 5. `.deltaignore` 语法
@@ -299,7 +352,7 @@ Thumbs.db
 
 ### 6.1 何时使用
 
-在正式上传 COS 之前，用 `--dry-run` 生成清单和补丁并检查体积，**不上传**。适用于：
+在正式上传 COS 之前，用 `--dry-run` 生成补丁并在内存中签名清单、检查体积，**不落盘、不上传**。适用于：
 
 - 首次验证差分管线的健康度。
 - 评估某次发布的实际流量节省效果。
@@ -348,6 +401,42 @@ delta-update verify \
 
 `verify` 会：重新下载清单、验签、抽样下载补丁、应用补丁、校验目标哈希。这确认了“发布到 COS 的内容”与“CI 生成的内容”一致，排除了上传过程中的损坏或覆盖问题。
 
+## 6.4 发布后审计
+
+`verify --sample` 只抽样少量补丁，不回答“这个版本的增量策略是否真的生效”。`inspect --from-release` 补齐这一环：它验签版本化清单，对**每个** `delta_key`/`full_key` 做 `HEAD` 大小校验（不下载对象），并输出与 `release --verbose` 同构的逐文件表格和覆盖率汇总。
+
+```bash
+delta-update inspect --from-release cos://your-bucket \
+  --version 2.1.0 \
+  --public-key ./release.pub \
+  --prefix releases
+```
+
+典型输出结尾：
+
+```text
+published 2.1.0: 128 files, delta bytes 12.4 MiB vs 210.8 MiB for patched files (saved 94.1%)
+```
+
+把它和发布时的输出对比，就能发现“清单已写但对象没传完”“上传后对象被覆盖”这类只靠 `verify --sample` 容易漏掉的问题：
+
+```bash
+delta-update release ... --verbose > before.txt
+delta-update inspect --from-release ... > after.txt
+diff before.txt after.txt
+```
+
+任何缺失或大小不符的对象会以警告列出，命令以退出码 `2` 失败，可直接作为 CI 门禁。
+
+CDN 传播与多 mirror 的清单同步有延迟，`release` 刚结束时 `doctor` 可能还看到旧版本。发布后留一个观察窗口：
+
+```bash
+delta-update doctor --endpoint https://cdn.example.com/manifests/latest.json \
+  --public-key ./release.pub --watch 600 --interval 60
+```
+
+任何一轮失败（签名、版本不一致、对象缺失）都会让命令失败；全部通过则输出 `watch finished`。
+
 
 ## 7. 回滚版本的发布
 
@@ -359,7 +448,7 @@ delta-update verify \
 
 | 场景                                       | 触发方式                                                     | 客户端行为                       |
 | ------------------------------------------ | ------------------------------------------------------------ | -------------------------------- |
-| **紧急回滚**（新版本已发布但发现严重问题） | 将 `latest.json` 的 `version` 指向旧版本，并附带 `rollback: true` 标记 | 客户端接受降级，清除崩溃循环状态 |
+| **紧急回滚**（新版本已发布但发现严重问题） | `delta-update rollback --to-version <旧版本>`（复用已有清单）或 `release --rollback`（重新构建） | 客户端接受降级，清除崩溃循环状态 |
 | **常规降级**（用户手动选择旧版本）         | 通过独立的降级通道                                           | 需要用户显式确认                 |
 
 ### 7.2 紧急回滚发布命令
@@ -385,7 +474,27 @@ delta-update release \
 3. 客户端仅在**本地版本高于 2.0.0** 时接受降级；已经在 2.0.0 或更低版本的客户端按“无更新”处理，避免同一份回滚清单把用户反复拉回。
 4. 接受降级后清除该版本的崩溃跳过标记，但**不重置启动尝试计数**。
 
-### 7.3 回滚发布的注意事项
+### 7.3 一键复用已有版本：`delta-update rollback`
+
+如果旧版本的清单和对象都还在桶里，事故响应不需要重新生成任何补丁——只需要让 `latest.json` 指向旧版本：
+
+```bash
+delta-update rollback \
+  --bucket cos://your-bucket \
+  --to-version 1.9.0 \
+  --key /tmp/release.key
+```
+
+执行内容：
+
+1. 读取 `manifests/1.9.0.json` 与 `.minisig`，用 `--key` 对应的公钥验签，确认是可信的旧清单。
+2. 在清单中设 `rollback: true`，`published_at` 更新为当前时间；`version` 与文件条目保持原样。
+3. 用 `--key` 重新签名，上传为 `manifests/latest.json` + `.minisig`。
+4. **不修改** `manifests/1.9.0.json`，审计历史保持原状；`--dry-run` 只打印将要发布的内容。
+
+与 `release --rollback` 的区别：`release --rollback` 会从 `--from` 到 `--to` 重新生成补丁和清单，语义是“发布一个版本号更低的新版本”；`rollback --to-version` 复用已发布的清单，只改变推荐版本，语义是“改变 latest 指向”。事故响应优先用后者，避免引入新的构建变量。
+
+### 7.4 回滚发布的注意事项
 
 - 回滚清单必须由**受信私钥**签名，签名覆盖范围与正常发布一致。
 - 回滚后，**不要立即重新发布被回滚的版本**。等待问题修复，以更高的版本号发布。
@@ -441,7 +550,7 @@ delta-update release \
 
 ### 9.4 COS 与权限
 
-- [ ] 运行时签名服务使用的临时密钥只有 `GetObject` 权限，范围限制在 `manifests/` 和 `artifacts/` 前缀
+- [ ] 运行时签名服务使用的临时密钥只有 `GetObject` 权限，范围限制在 `manifests/`、`artifacts/` 和 `blobs/` 前缀
 - [ ] 发布凭证与运行时凭证是不同身份
 - [ ] 预签名 URL 有效期 ≤ 15 分钟，临时密钥有效期 ≥ URL 有效期
 - [ ] 防盗链配置已启用，非授权 Referer 被拒绝
@@ -529,7 +638,7 @@ pwsh scripts/windows/sign-authenticode.ps1 `
 - [ ] 完整更新一次：应用退出后弹一次 UAC，更新完成后新版本经 Explorer 降权启动，任务管理器中的完整性级别为“中”。
 - [ ] 在提交执行到一半时强制结束 worker，再次启动应用：启动阶段弹一次 UAC，授权后 Journal 被重放或回滚，主窗口正常出现。
 - [ ] 上述启动提权选择“否”：应用以 `Failed` 启动，`journal/` 与 `.old/` 保留；再次启动仍会请求授权。
-- [ ] 连续两次不确认健康后第三次启动：自动回滚到旧版本，`skipped_version` 写入，计数归零。
+- [ ] 连续三次不确认健康后第四次启动：自动回滚到旧版本，`skipped_version` 写入，计数归零；正常关闭（超过 `exit_grace_period_secs`）会折扣一次计数。
 - [ ] perUser：确认健康后当前 commit 的 `.old` / `.trash` 被清理；perMachine：确认在用户级运行，无权限删除的残留会保留（不影响运行），需在管理员会话中人工清理。
 - [ ] 卸载后 `Program Files` 目录、注册表卸载项与用户数据目录按预期清理。
 
@@ -573,9 +682,33 @@ cargo package -p delta-update-cli --list --allow-dirty
 cd packages/plugin-api && npm pack --dry-run
 ```
 
-发布前确认：`readme`、`keywords`、`categories`、`license` 已填写；`repository` 字段在绑定公开仓库后补充（当前仓库未配置远端，不应伪造 URL）。`cargo xtask version-sync` 必须保证 workspace、插件 manifest 与 npm 包版本一致。
+发布前确认：`readme`、`keywords`、`categories`、`license` 已填写；`repository` 使用公开仓库 `https://github.com/zuoqiuning/delta-update-engine`（不要写本地路径或占位 URL）。`cargo xtask version-sync` 必须保证 workspace、插件 manifest 与 npm 包版本一致。
 
-### 13.3 密钥轮换的当前边界
+### 13.3 预发布（rc）演练
+
+`release.yml` 的 tag 触发会校验 `workspace.package.version` 与 tag（去掉 `v`）**完全一致**。因此不能用 `0.1.0` 的代码直接打 `v1.0.0-rc.1` tag——先同时修改 `Cargo.toml` 与 `packages/plugin-api/package.json` 的版本，再执行：
+
+```bash
+cargo xtask version-sync
+cargo xtask ci
+cargo test --workspace
+
+# 本地可做的打包检查（不访问网络）
+cargo package -p delta-update-engine --offline --no-verify --allow-dirty
+cd packages/plugin-api && npm publish --dry-run
+
+git tag v1.0.0-rc.1
+git push origin v1.0.0-rc.1
+```
+
+关键约束：
+
+- **依赖 engine 的 crate 无法在 engine 发布前 `--dry-run`**：`tauri-plugin-delta-update` 与 `delta-update-cli` 会报 `no matching package named delta-update-engine`。这不是配置错误，`release.yml` 的 `wait_for_crate` 正是为此存在；本地只能用 `cargo package --list` 检查打包内容。`wait_for_crate` 用 `cargo info <crate>@<version>` 读索引而不是 `cargo search`，因为 search 可能不显示 `1.0.0-rc.1` 这类预发布版本。
+- **npm 预发布走 `next` tag**：版本号含 `-` 时 `release.yml` 自动使用 `--tag next`，避免 `latest` 指向 rc；正式版恢复 `latest`。
+- **sccache/代理**：内网环境若把 crates.io 替换为镜像，`cargo publish --dry-run` 需要显式 `--registry crates-io`；镜像不可达时只能依赖 CI。
+- **rc 只接收修复**：rc 阶段不新增公开 API；发现问题后升 `rc.2`，不要原地覆盖已推送的 tag。
+
+### 13.4 密钥轮换的当前边界
 
 `key_rotation` **不是清单字段，也不在运行期生效**：清单出现该字段时按未知字段忽略，插件配置出现时只输出一条警告。信任集只来自客户端二进制内嵌的 `signing_public_keys`，因此轮换只能通过“旧密钥签名的新版本内嵌新公钥”完成，不能通过清单或配置在线扩展信任。
 
@@ -583,3 +716,9 @@ cd packages/plugin-api && npm pack --dry-run
 
 - 正常轮换必须**提前一个版本**把新公钥内嵌进客户端；如果旧客户端尚未更新，就不能只用新密钥签名。
 - 私钥在轮换生效前泄露时，系统没有带内吊销能力；不要试图用 `key_rotation` 之类的字段“热修复”信任集。
+
+轮换 runbook（详见 [compatibility.md §4](../reference/compatibility.md#4-密钥轮换的迁移路径)）：
+
+1. 用**当前签名密钥**发布桥接版本：二进制内嵌 `{旧, 新1, 新2}`，清单仍由旧密钥签名；确认目标用户版本分布已覆盖该桥接版本。
+2. 下一个版本起改用新密钥签名；运行 `delta-update verify --public-key <新公钥>` 确认对象可用。
+3. 观察一个发布周期后，再从内嵌集移除旧公钥；旧私钥离线归档，不删除历史签名。

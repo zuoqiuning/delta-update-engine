@@ -161,17 +161,24 @@ impl Release {
                 .iter()
                 .find(|(name, _)| name == path)
                 .map(|(_, bytes)| *bytes);
+
+            // Every entry points at a content-addressed blob, including
+            // unchanged files, so repair and cross-version updates work the
+            // same way as the CLI publisher.
+            let full_key = format!("blobs/{}", sha256_bytes(new_bytes));
+            if !objects.iter().any(|(key, _)| key == &full_key) {
+                objects.push((full_key.clone(), new_bytes.to_vec()));
+            }
+            full_keys.insert((*path).to_string(), full_key.clone());
+
             let entry = match previous {
                 Some(bytes) if bytes == *new_bytes => json!({
                     "sha256": sha256_bytes(new_bytes),
                     "size": new_bytes.len(),
                     "strategy": "full",
+                    "full_key": full_key,
                 }),
                 Some(bytes) => {
-                    let full_key = format!("artifacts/full/{version}/{path}");
-                    objects.push((full_key.clone(), new_bytes.to_vec()));
-                    full_keys.insert((*path).to_string(), full_key.clone());
-
                     let patch = build_patch(bytes, new_bytes);
                     let delta_key = format!("artifacts/{from_version}-to-{version}/{path}.tdp");
                     objects.push((delta_key.clone(), patch.clone()));
@@ -186,17 +193,12 @@ impl Release {
                         "full_key": full_key,
                     })
                 }
-                None => {
-                    let full_key = format!("artifacts/full/{version}/{path}");
-                    objects.push((full_key.clone(), new_bytes.to_vec()));
-                    full_keys.insert((*path).to_string(), full_key.clone());
-                    json!({
-                        "sha256": sha256_bytes(new_bytes),
-                        "size": new_bytes.len(),
-                        "strategy": "full",
-                        "full_key": full_key,
-                    })
-                }
+                None => json!({
+                    "sha256": sha256_bytes(new_bytes),
+                    "size": new_bytes.len(),
+                    "strategy": "full",
+                    "full_key": full_key,
+                }),
             };
             files.insert((*path).to_string(), entry);
         }
@@ -268,9 +270,12 @@ pub fn apply(engine: &Engine, prepared: &PreparedUpdate) -> Result<PendingCommit
     let pending = engine
         .begin_commit(prepared)
         .map_err(|err| format!("begin_commit: {err}"))?;
-    let status =
-        delta_update_engine::apply::apply_commit(&engine.config().journal_root, &pending.commit_id)
-            .map_err(|err| format!("apply journal: {err}"))?;
+    let status = delta_update_engine::apply::apply_commit_verified(
+        &engine.config().journal_root,
+        &pending.commit_id,
+        &engine.config().signing_public_keys,
+    )
+    .map_err(|err| format!("apply journal: {err}"))?;
     match status {
         CommitStatus::Completed { .. } => Ok(pending),
         other => Err(format!("unexpected commit status: {other:?}")),
@@ -317,6 +322,8 @@ pub fn assert_clean(scenario: &Scenario, version: &str) -> Result<(), String> {
     for name in [
         "commit.journal",
         "commit.status",
+        "commit.meta.json",
+        "old_hashes.json",
         "apply.json",
         "prepared.json",
     ] {
@@ -387,6 +394,7 @@ pub async fn publish_with_cli(
         channel: CHANNEL.into(),
         notes_file: None,
         mandatory: false,
+        min_supported: None,
         region: None,
         prefix: None,
         dry_run: false,
@@ -394,6 +402,11 @@ pub async fn publish_with_cli(
         delta_max_ratio: 0.60,
         patch_max_file_size: 64 * 1024 * 1024,
         verify: false,
+        self_test: false,
+        pipeline: false,
+        report: "release-report.json".into(),
+        watch: None,
+        interval: 60,
         jobs: Some(2),
         verbose: false,
     })

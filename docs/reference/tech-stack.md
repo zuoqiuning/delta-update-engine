@@ -9,8 +9,8 @@
 
 | 组件                    | 基线版本                                   | 角色                                   |
 | ----------------------- | ------------------------------------------ | -------------------------------------- |
-| **Rust (MSVC)**         | **1.99.1** `stable-x86_64-pc-windows-msvc` | 编译引擎、插件、CLI                    |
-| **Cargo**               | 1.99.1                                     | 依赖管理与构建                         |
+| **Rust (MSVC)**         | **1.90+** `stable-x86_64-pc-windows-msvc` | 编译引擎、插件、CLI                    |
+| **Cargo**               | 1.90+                                      | 依赖管理与构建                         |
 | **Tauri CLI**           | **2.12.4** (`cargo tauri`)                 | 插件项目构建与开发调试                 |
 | **Node.js**             | **24.21.0**                                | 前端构建与 pnpm 运行时                 |
 | **npm**                 | 11.19.0                                    | 仅作为 pnpm 引导，日常不使用           |
@@ -29,20 +29,20 @@
 | crate               | 版本                  | 用途                                     | 关键说明                                                     |
 | ------------------- | --------------------- | ---------------------------------------- | ------------------------------------------------------------ |
 | **`qbsdiff`**       | **1.x 最新稳定版**    | bsdiff 差分与 apply（默认管线）          | 纯 Rust，跨平台一致，无 C++ 构建依赖。大文件内存峰值需用预算约束。 |
-| **`zstd`**          | **0.14.x**            | 补丁压缩/解压，含字典模式                | 成熟稳定，解压速度快；作为默认压缩后端。                     |
-| **`hdiffpatch-rs`** | **可选，git tag 锁定** | HDiffPatch 差分与 apply（加速器）        | **未发布到 crates.io**，只能 git 依赖。仅在体积收益实测达标且构建可复现时启用。 |
-| **`zucchini`**      | **可选，精确锁定**    | PE/ELF 归一化（加速器）                  | 早期版本 API 可能演进；必须封装在 `DiffProvider` 后，禁止泄漏到上层。 |
+| **`zstd`**          | **0.13.x**            | 补丁压缩/解压，含字典模式                | 成熟稳定，解压速度快；作为默认压缩后端。                     |
+| **`hdiffpatch-rs`** | **规划中，未引入**    | HDiffPatch 差分与 apply（未来加速器）    | 当前版本没有依赖；不要在发布端生成客户端无法 apply 的策略。 |
+| **`zucchini`**      | **规划中，未引入**    | PE/ELF 归一化（未来加速器）              | 当前版本没有依赖；不要在生产清单中使用 `zucchini+zstd`。     |
 
-**管线组合**：默认 `qbsdiff → zstd`；自编译 PE 在加速器可用时走 `zucchini → qbsdiff/hdiff → zstd`；文本资源额外生成 zstd 字典候选；所有候选统一封装为 `.tdp` 容器，取字节最小者。
+**当前实现**：只实现 `qbsdiff → zstd` 单一管线；按扩展名跳过已压缩格式；补丁 ≥ 全量 60% 时回退全量。Zucchini / HDiffPatch / zstd 字典是未来规划，客户端没有对应 apply 实现，发布端不得生成这些策略。
 
-**为什么默认不用 HDiffPatch/Zucchini**：它们能显著缩小主 exe 补丁，但引入 git 依赖、C++ 工具链或早期 API 风险。把它们放在 `DiffProvider` 之后，意味着**即使某个加速器不可用，发布流水线仍然能产出合法补丁**，只是体积略大。这比“第一天就把项目绑死在一个未发布到 crates.io 的依赖上”稳健得多。
+**为什么默认不用 HDiffPatch/Zucchini**：它们能显著缩小主 exe 补丁，但引入 git 依赖、C++ 工具链或早期 API 风险。当前版本已移除未实现的 `DiffProvider` 抽象；未来引入加速器时再以 feature 隔离，避免把规划写进公开 API。
 
 ### 2.2 签名与验证
 
 | crate                 | 版本       | 用途                             | 分层原则                                                     |
 | --------------------- | ---------- | -------------------------------- | ------------------------------------------------------------ |
 | **`minisign-verify`** | **0.2.5**  | 运行侧验签。零外部依赖，流式验证 | **引擎和插件只依赖此 crate**，私钥相关代码不进入用户机器。   |
-| **`minisign`**        | **0.10.0** | 构建侧 CLI 签名                  | 仅在 `delta-update-cli` 中引入，支持 Ed25519 与密码保护私钥。 |
+| **`minisign`**        | **0.7.x**  | 构建侧 CLI 签名                  | 仅在 `delta-update-cli` 中引入，支持 Ed25519 与密码保护私钥。 |
 
 ### 2.3 序列化、错误、异步与 HTTP
 
@@ -88,21 +88,20 @@
 | **`tauri::async_runtime`** | 随 tauri             | `auto_check` 后台 prepare 的任务调度；不引入第二套运行时。 |
 | **`tracing`**             | 0.1.x 最新稳定版     | 结构化日志，字段化诊断。                   |
 
-**命令面收窄**：`build.rs` 用 `tauri_plugin::Builder` 自动生成 `allow-<command>` 权限。默认权限包只含 `check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`。**不暴露任何接收文件路径参数的 commit 命令**。
+**命令面收窄**：`build.rs` 用 `tauri_plugin::Builder` 自动生成 `allow-<command>` 权限。默认权限包只含 `check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`clear_skipped_version`。**不暴露任何接收文件路径参数的 commit 命令**。
 
 
 ## 4. 构建侧 CLI `delta-update-cli`
 
 | 依赖                       | 版本                 | 用途                                                         |
 | -------------------------- | -------------------- | ------------------------------------------------------------ |
-| **`clap`**                 | **4.6.x 最新**       | 参数解析，`derive` 特性。四个子命令：`release`、`verify`、`verify-key`、`doctor`。 |
+| **`clap`**                 | **4.6.x 最新**       | 参数解析，`derive` 特性。子命令：`release`、`verify`、`verify-key`、`key-info`、`doctor`、`inspect`、`init`。 |
 | **`minisign`**             | 0.10.0               | 清单签名。只从私钥文件路径读取，使用后清除临时文件。         |
 | **`delta-update-engine`**  | `path = "../engine"` | 复用 `Differ` 的 diff 逻辑，保证两端格式一致。               |
 | **`walkdir`**              | 2.x                  | 扫描 `--to` 目录。                                           |
 | **`serde` / `serde_json`** | 1.0.229 / 1.0.151    | 生成 `latest.json`。                                         |
 | **`anyhow`**               | 1.x 最新稳定版       | **仅 CLI 顶层**聚合错误，引擎内部仍用 `thiserror`。          |
 | **`rayon`**                | 1.x 最新稳定版       | 并行生成多个候选补丁。                                       |
-| **`indicatif`**            | 0.18.x 最新稳定版    | 发布进度终端展示（可选）。                                   |
 | **`reqwest`**              | 0.13.5               | COS `PUT Object` / `HEAD Object` / `GET Object`。            |
 | **`hmac` + `sha1`**        | 0.12 / 0.10          | COS REST 签名 v5（HMAC-SHA1）。直接用 reqwest 时必须自行签名。 |
 | **`chrono`**               | 0.4.x                | COS 签名所需的时间戳格式。                                   |
@@ -191,7 +190,6 @@ time = { version = "0.3", features = ["formatting"] }
 
 [features]
 default = []
-test-faults = []
 
 # 可选差分后端在实现 provider 时启用；当前骨架不声明依赖。
 # hdiff = ["dep:hdiffpatch-rs"]
@@ -218,14 +216,14 @@ serde = { version = "1.0.229", features = ["derive"] }
 tracing = "0.1"
 ```
 
-**插件不直接依赖 tokio**：后台任务使用 `tauri::async_runtime`，避免引入第二套运行时导致 shutdown 行为不一致。
+**插件依赖 tokio 的 `sync`/`time` 原语**（例如命令互斥量、周期 ticker），但后台任务使用 `tauri::async_runtime` 调度，不自己创建第二套运行时。
 
 ### `delta-update-cli/Cargo.toml`
 
 ```toml
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
-minisign = "0.10.0"
+minisign = "0.7"
 delta-update-engine = { path = "../engine" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -248,7 +246,7 @@ chrono = "0.4"
 - 峰值内存 ≤ `文件大小 × 2.5`，超限时能安全回退全量；
 - apply 耗时不超过同体积下载耗时的十分之一。
 
-**第二，可选加速器是否值得引入**。对同一组样本分别跑 `hdiff`、`zucchini`，只有在“体积收益 ≥ 20% 且构建可复现”时才启用对应 feature。`hdiffpatch-rs` 的 git 依赖必须锁定 tag 并在 CI 中缓存；`zucchini` 必须精确锁定版本并封装在 `DiffProvider` 后，禁止其类型出现在公开 API 中。
+**第二，可选加速器是否值得引入**。对同一组样本分别跑 `hdiff`、`zucchini`，只有在“体积收益 ≥ 20% 且构建可复现”时才启用对应 feature。引入时先设计可测试的 provider 抽象，不要让加速器类型出现在公开 API 中。
 
 **第三，COS 签名 v5 的固定测试向量**。签名实现必须用一组固定的 key/请求/时间戳断言输出完全一致，否则线上会以随机 403 的形式失败，而本地单测全绿。
 

@@ -14,7 +14,7 @@
 | **密钥集合**        | 客户端内嵌公钥       | 轮换、恢复                | 随二进制更新内嵌，无运行期写入 |
 | **补丁策略标识**    | 清单 `strategy` 字段 | 新增差分管线              | 未知策略回退全量         |
 
-**关键设计判断**：这四个维度**不共享版本号**。插件从 `0.1.0` 升级到 `0.2.0` 时，Manifest schema 可能仍然是 `1`；密钥轮换时，插件版本和 schema 都可以不变。将它们解耦，使每个维度的演进可以独立决策，避免“为了加一个命令而不得不升 schema”的连锁升级。
+**关键设计判断**：这四个维度**不共享版本号**。插件从 `1.0.0` 升级到 `1.1.0` 时，Manifest schema 可能仍然是 `1`；密钥轮换时，插件版本和 schema 都可以不变。将它们解耦，使每个维度的演进可以独立决策，避免“为了加一个命令而不得不升 schema”的连锁升级。
 
 
 ## 2. 插件版本的 SemVer 语义与双端同步
@@ -114,9 +114,9 @@ crates.io 上有关 `minVersion` 的实践给出了清晰的教训：**永远不
 
 ## 5. 补丁策略标识的前向兼容
 
-`strategy` 是开放字符串，扩展**不升 schema**，但客户端必须遵守一条规则：**遇到未知策略时，如果条目提供了 `full_key`，回退到全量；否则该条目视为不可用，`check` 返回 `available: false` 并在 `detail` 中说明**。不把发布端的向前兼容问题变成用户侧的“更新失败”。
+`strategy` 是开放字符串，扩展**不升 schema**，但客户端必须遵守一条规则：**遇到未知策略时，如果条目提供了 `full_key`，回退到全量；否则该条目在差异计算中返回 `E_MANIFEST_PARSE`（缺少全量回退）**。发布端必须为所有条目提供 `full_key`（CLI 已默认生成 `blobs/<sha256>`），这样新策略不会让旧客户端失去更新能力。
 
-这意味着发布侧在引入新策略（例如未来的 `zucchini+zstd-v2`）时，必须同时为该条目的**旧客户端**提供 `full_key` 回退。发布 CLI 应默认对带补丁的条目生成 `full_key`，除非显式标记为“不提供全量回退”。这一约束使新策略的引入**不会让旧客户端失去更新能力**——最坏情况是旧客户端多下载一些字节，而不是更新失败。
+这意味着发布侧在引入新策略（例如未来的 `zucchini+zstd-v2`）时，必须同时为该条目的**旧客户端**提供 `full_key` 回退。发布 CLI 默认对**所有条目**生成 `full_key`（blob），这是跨版本与损坏修复的基础。
 
 
 ## 6. 插件配置字段的迁移
@@ -186,7 +186,31 @@ if config.config_version < CURRENT_CONFIG_VERSION {
 回滚后，**不应立即重新发布被回滚的版本号**。原因：部分用户可能已经成功更新到该版本并调用了 `confirm_healthy()`，如果远程清单的 `version` 回退到旧版本，这些用户的客户端会拒绝降级（除非使用 `rollback: true`）。正确的做法是修复问题后发布**更高的版本号**。
 
 
-## 9. 兼容性测试矩阵
+## 9. 与官方 tauri-plugin-updater 的差异与迁移
+
+两者解决的不是同一个问题：
+
+| 维度 | 官方 `tauri-plugin-updater` | 本引擎 |
+| --- | --- | --- |
+| 更新单元 | 完整安装包 | 文件级变化（补丁 + 内容寻址全量） |
+| 签名 | Tauri 自带公钥格式，签安装包 | minisign detached 签名，签清单 |
+| 服务端 | `latest.json` 指向安装包 URL | 自定义清单 + `blobs/<sha256>` + `artifacts/*.tdp` |
+| 安装方式 | 运行安装器 | 退出后同二进制 worker 替换文件 |
+| 回滚 | 重新下载旧安装包 | 逆 Journal + `.old` 备份 |
+
+**不要同时启用两条自动更新管线**：两个插件都会在启动/退出时争抢更新时机，且签名、清单与安装方式互不兼容。
+
+从官方 updater 迁移的建议顺序：
+
+1. 移除 `tauri-plugin-updater` 的插件注册、权限与前端调用；
+2. 运行 `delta-update init --dir . --write --endpoint <HTTPS 清单地址> --public-key <minisign 公钥>`；如果项目里已有 `plugins.updater.pubkey`，`init` 会尝试复用它，但 **Tauri 公钥不是 minisign 公钥**，校验失败时会要求显式提供 `--public-key`（建议重新生成一对 minisign 密钥）；
+3. 在 `main` 开头接入 `run_applier_from_context(&context)`，并合并 `plugins.delta-update` 配置；
+4. 用 `delta-update release` 生成并发布第一份清单；首次更新会把本地未在清单中的文件视为 `Untracked`，不会删除用户数据。
+
+`endpoint` 指向的 JSON 格式完全不同，不能把官方 updater 的 `latest.json` 直接交给本引擎，也没有自动转换器。
+
+
+## 10. 兼容性测试矩阵
 
 每次发布前，以下组合必须被验证：
 
@@ -200,7 +224,22 @@ if config.config_version < CURRENT_CONFIG_VERSION {
 | 任意版本          | 任何 schema               | 只有未被信任的密钥  | 拒绝，`E_SIGNATURE_NO_TRUSTED_KEY`        |
 
 
-## 10. 设计总结
+## 11. Windows 环境矩阵（已验证 / 未验证）
+
+自动化证据只覆盖能确定性复现的部分。下面把“已经有测试或 e2e 证据”和“需要真实机器验收”分开，避免把规划写成现状。
+
+| 维度 | 已验证（自动化） | 未验证（发布前人工） |
+| --- | --- | --- |
+| Windows 版本 | 开发机 Windows 10/11 上的 workspace 测试与 e2e | Win10 22H2、Win11 23H2+、LTSC 2021、Server 2022 实机安装 |
+| 安装形态 | 普通用户可写目录、跨卷 staging（e2e `cross_volume` + `replay` 单元测试注入 `CrossesDevices` 验证 copy 回退） | `Program Files` per-machine（真实 UAC 交互）、企业 MSIX 旁加载 |
+| 文件系统 | NTFS 本地卷；云占位文件（OneDrive/Files On-Demand）检测并跳过（单元测试） | ReFS、网络共享、真实 OneDrive/同步文件夹环境、BitLocker |
+| 安全软件 | 无（文件锁重试只有单元级证据） | Defender 实时保护、企业 EDR（验证重试与“文件被占用”提示） |
+| 权限 | 普通用户写入 + 拒绝路径故障注入 | 标准用户 + UAC 关、组策略限制提权、AppLocker |
+| 磁盘 | `E_DISK_INSUFFICIENT` 预检（staging 卷与安装卷） | 真实临界空间下的整链路演练 |
+
+未验证不等于不支持，而是“没有自动化证据”。每完成一项实机验收，应把结果补回本表，并把可复现的部分沉淀为 e2e 场景。
+
+## 12. 设计总结
 
 版本兼容与迁移策略的核心判断是：**兼容性不是“尽量不破坏”，而是“在协议层提供确定的退路”**。Manifest schema 的演进通过 `schema` 和 `min_client_schema` 给出双向的确定性；密钥轮换通过“从第一天交付一组密钥 + 两槽重叠”使单把密钥的丢失不成为永久死路径；补丁策略的扩展通过 `full_key` 回退使新算法引入不阻断旧客户端；首次迁移通过 `Untracked` 分类保护用户数据。
 

@@ -95,6 +95,16 @@ describe('update controller', () => {
     controller.stop();
   });
 
+  it('drops the snapshot once the last starter stops', async () => {
+    mocks.status.mockResolvedValue(snapshot('Prepared'));
+    const controller = createUpdateController();
+
+    await controller.start();
+    expect(controller.getState()?.state).toBe('Prepared');
+    controller.stop();
+    expect(controller.getState()).toBeNull();
+  });
+
   it('keeps listening until every starter has stopped', async () => {
     mocks.status.mockResolvedValue(snapshot('Idle'));
     const controller = createUpdateController();

@@ -2,6 +2,7 @@ mod common;
 
 use delta_update_engine::journal::state::{self, ApplyConfig};
 use delta_update_engine::journal::{replay, Journal, JournalOutcome, ReplayContext};
+use delta_update_engine::ErrorAction;
 use delta_update_engine::StartupOutcome;
 
 use common::{apply, fixture, ADDED_FILE, NEW_APP, OLD_APP, REMOVED_FILE, VERSION};
@@ -227,6 +228,33 @@ fn corrupt_journal_is_not_replayed() {
     match fixture.engine.recover_and_cleanup().unwrap() {
         StartupOutcome::NeedsAttention { error } => {
             assert_eq!(error.code(), "E_JOURNAL_CORRUPT")
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read(fixture.root().join("App.exe")).unwrap(),
+        OLD_APP
+    );
+    assert!(!fixture.root().join(".old").exists());
+}
+
+/// J-09b: a journal written by a newer client is reported as an upgrade
+/// requirement (`E_JOURNAL_FORMAT_TOO_NEW`), not as corruption, and the root is
+/// left untouched.
+#[test]
+fn future_journal_format_requires_a_client_update() {
+    let fixture = fixture();
+    let journal_root = fixture.journal();
+    fixture.engine.begin_commit(&fixture.prepared).unwrap();
+    let path = journal_root.join("commit.journal");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
+    std::fs::write(&path, bytes).unwrap();
+
+    match fixture.engine.recover_and_cleanup().unwrap() {
+        StartupOutcome::NeedsAttention { error } => {
+            assert_eq!(error.code(), "E_JOURNAL_FORMAT_TOO_NEW");
+            assert_eq!(error.action(), ErrorAction::UpdateClient);
         }
         other => panic!("unexpected outcome: {other:?}"),
     }

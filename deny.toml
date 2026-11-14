@@ -3,6 +3,8 @@ yanked = "warn"
 ignore = [
     # Tauri 的 Linux/GTK 栈经 glib-macros 引入 proc-macro-error；
     # 该 crate 仅停止维护、无已知漏洞，待 tauri 升级 gtk-rs 后移除。
+    # 该依赖只在 Linux 目标编译，Windows CI 不会引入；若未来新增的
+    # Windows 依赖也用 proc-macro-error，需重新评估而不是沿用此豁免。
     { id = "RUSTSEC-2024-0370", reason = "transitive via tauri -> glib-macros on Linux" },
 ]
 

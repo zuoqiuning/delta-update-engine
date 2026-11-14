@@ -12,7 +12,8 @@ pub mod inverse;
 
 /// Roll back a completed commit by generating and replaying an inverse journal.
 pub fn rollback(config: &ApplyConfig, commit: &Journal) -> Result<(), EngineError> {
-    let ops = inverse::inverse(&config.install_root, commit)?;
+    let old_hashes = state::read_old_hashes(&config.journal_root)?;
+    let ops = inverse::inverse(&config.install_root, commit, &old_hashes)?;
     let journal = Journal::new(
         &commit.commit_id,
         &commit.from_version,
@@ -41,7 +42,10 @@ pub fn rollback(config: &ApplyConfig, commit: &Journal) -> Result<(), EngineErro
     let _ = std::fs::remove_file(&rollback_path);
     let _ = std::fs::remove_file(config.journal_root.join(COMMIT_JOURNAL));
     let _ = std::fs::remove_file(config.journal_root.join(COMMIT_STATUS));
+    let _ = std::fs::remove_file(config.journal_root.join(state::COMMIT_META));
     let _ = std::fs::remove_file(config.journal_root.join(PREPARED_JSON));
+    let _ = std::fs::remove_file(config.journal_root.join(state::APPLY_JSON));
+    state::remove_old_hashes(&config.journal_root);
     crate::fs::remove_dir_all_best_effort(&config.staging_root.join(&commit.version));
     crate::fs::remove_dir_all_best_effort(&backup_dir(&config.install_root, &commit.commit_id));
     crate::fs::remove_dir_all_best_effort(&trash_dir(&config.install_root, &commit.commit_id));

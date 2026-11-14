@@ -25,6 +25,12 @@ pub(crate) struct RecoveryRoots<'a> {
     pub crash_loop_threshold: u32,
     /// Number of unconfirmed starts including this one.
     pub attempts: u64,
+    /// Trusted minisign keys for journal/manifest binding. Empty means legacy
+    /// callers that have not opted into verification.
+    pub trusted_keys: &'a [String],
+    /// Execute journals even when no valid key is available. Production code
+    /// must keep this `false`.
+    pub accept_unsigned_journal: bool,
 }
 
 /// Whether startup must write to the install root.
@@ -64,6 +70,16 @@ pub(crate) fn recover(roots: &RecoveryRoots<'_>) -> Result<StartupOutcome, Engin
             Ok(journal) => journal,
             Err(error) => return Ok(StartupOutcome::NeedsAttention { error }),
         };
+        let config = apply_config(roots, &journal);
+        if let Err(error) = crate::journal::verify::verify_commit_journal(
+            journal_root,
+            &config,
+            &journal,
+            roots.trusted_keys,
+            roots.accept_unsigned_journal,
+        ) {
+            return Ok(StartupOutcome::NeedsAttention { error });
+        }
         let staging_root = roots.staging_root.join(&journal.version);
         let context = ReplayContext {
             install_root: roots.install_root,
@@ -73,8 +89,9 @@ pub(crate) fn recover(roots: &RecoveryRoots<'_>) -> Result<StartupOutcome, Engin
         };
         match replay(&context, &journal) {
             Ok(JournalOutcome::Replayed { .. } | JournalOutcome::AlreadyCompleted) => {
-                state::reset_attempts(journal_root)?;
-                let _ = std::fs::remove_file(&rollback_path);
+                if let Err(error) = finish_resumed_rollback(roots, &journal) {
+                    return Ok(StartupOutcome::NeedsAttention { error });
+                }
                 return Ok(StartupOutcome::RolledBack {
                     to_version: journal.version,
                     reason: "resumed rollback".into(),
@@ -98,6 +115,16 @@ pub(crate) fn recover(roots: &RecoveryRoots<'_>) -> Result<StartupOutcome, Engin
             Ok(journal) => journal,
             Err(error) => return Ok(StartupOutcome::NeedsAttention { error }),
         };
+        let config = apply_config(roots, &journal);
+        if let Err(error) = crate::journal::verify::verify_commit_journal(
+            journal_root,
+            &config,
+            &journal,
+            roots.trusted_keys,
+            roots.accept_unsigned_journal,
+        ) {
+            return Ok(StartupOutcome::NeedsAttention { error });
+        }
         let status = state::read_commit_status(journal_root)?;
         // A failed worker did not finish the journal. Retry forward first
         // (the cause may have been transient: a temporary lock or a full
@@ -200,17 +227,63 @@ pub(crate) fn recover_worker(
     config: &ApplyConfig,
     journal_root: &Path,
     crash_loop_threshold: u32,
+    trusted_keys: &[String],
 ) -> Result<(), EngineError> {
-    let attempts = state::increment_attempts(journal_root)?;
+    let attempts = state::increment_attempts(journal_root, crash_loop_threshold)?;
     match recover(&RecoveryRoots {
         install_root: &config.install_root,
         staging_root: &config.staging_root,
         journal_root,
         crash_loop_threshold,
         attempts,
+        trusted_keys,
+        accept_unsigned_journal: false,
     })? {
         StartupOutcome::NeedsAttention { error } => Err(error),
         _ => Ok(()),
+    }
+}
+
+fn finish_resumed_rollback(
+    roots: &RecoveryRoots<'_>,
+    journal: &Journal,
+) -> Result<(), EngineError> {
+    let journal_root = roots.journal_root;
+    // Persist the skip marker before removing the evidence. If this fails we
+    // keep the rollback journal and retry on the next start.
+    state::write_skipped_version(journal_root, &journal.from_version)?;
+    state::reset_attempts(journal_root)?;
+    for path in [
+        journal_root.join(COMMIT_JOURNAL),
+        journal_root.join(state::COMMIT_STATUS),
+        journal_root.join(state::COMMIT_META),
+        journal_root.join(PREPARED_JSON),
+        journal_root.join(state::APPLY_JSON),
+        journal_root.join(ROLLBACK_JOURNAL),
+    ] {
+        remove_file_if_exists(&path)?;
+    }
+    state::remove_old_hashes(journal_root);
+    crate::fs::remove_dir_all_best_effort(&roots.staging_root.join(&journal.from_version));
+    crate::fs::remove_dir_all_best_effort(&rollback::backup_dir(
+        roots.install_root,
+        &journal.commit_id,
+    ));
+    crate::fs::remove_dir_all_best_effort(&rollback::trash_dir(
+        roots.install_root,
+        &journal.commit_id,
+    ));
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), EngineError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(EngineError::Internal(format!(
+            "cleanup {}: {err}",
+            path.display()
+        ))),
     }
 }
 
@@ -272,6 +345,8 @@ mod tests {
             journal_root: dir.path(),
             crash_loop_threshold: 2,
             attempts: 1,
+            trusted_keys: &[],
+            accept_unsigned_journal: true,
         };
         assert!(matches!(recover(&roots).unwrap(), StartupOutcome::Clean));
         assert_eq!(state::read_attempts(dir.path()), 0);

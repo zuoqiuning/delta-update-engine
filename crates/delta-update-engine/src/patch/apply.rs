@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 
+use crate::crypto::sha256_bytes;
 use crate::error::{EngineError, PatchError};
 use crate::limits::Limits;
 
@@ -25,6 +26,30 @@ pub fn apply_patch(
         .into());
     }
 
+    let source_size = std::fs::metadata(source)
+        .map_err(|err| EngineError::Internal(format!("source {}: {err}", source.display())))?
+        .len();
+    let patch_size = std::fs::metadata(patch)
+        .map_err(|err| EngineError::Internal(format!("patch {}: {err}", patch.display())))?
+        .len();
+    // The source, the compressed patch and the decompressed payload are held
+    // in memory at the same time. Keep the configured factor meaningful
+    // instead of only checking the file-size ceiling. The default factor (2.5)
+    // is calibrated against qbsdiff's current memory model
+    // (`max(source, target) * factor >= source + 2 * payload`); re-validate it
+    // when qbsdiff crosses a major version or the container codec changes.
+    let budget = (source_size.max(header.target_size) as f64 * limits.patch_memory_factor as f64)
+        .max(16.0 * 1024.0 * 1024.0) as u64;
+    let payload_size = patch_size.saturating_sub(PATCH_HEADER_LEN as u64);
+    let required = source_size.saturating_add(payload_size.saturating_mul(2));
+    if required > budget {
+        return Err(PatchError::MemoryBudget {
+            file_size: source_size.max(header.target_size),
+            budget,
+        }
+        .into());
+    }
+
     let patch_bytes = std::fs::read(patch)
         .map_err(|err| EngineError::Internal(format!("read patch {}: {err}", patch.display())))?;
     if patch_bytes.len() < PATCH_HEADER_LEN {
@@ -34,6 +59,14 @@ pub fn apply_patch(
 
     let source_bytes = std::fs::read(source)
         .map_err(|err| EngineError::Internal(format!("read source {}: {err}", source.display())))?;
+    // Hash the bytes that are actually applied. This replaces a separate
+    // pre-read in the caller and removes the window between hash and use.
+    if sha256_bytes(&source_bytes) != hex::encode(header.source_sha256) {
+        return Err(PatchError::SourceMismatch(
+            "local source hash does not match the patch".into(),
+        )
+        .into());
+    }
 
     let mut target = std::fs::File::create(dest)
         .map_err(|err| EngineError::PermissionDenied(format!("{}: {err}", dest.display())))?;

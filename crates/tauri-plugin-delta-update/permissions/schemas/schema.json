@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the check command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_skipped_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-skipped-version",
+          "markdownDescription": "Enables the clear_skipped_version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_skipped_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-skipped-version",
+          "markdownDescription": "Denies the clear_skipped_version command without any pre-configured scope."
+        },
+        {
           "description": "Enables the confirm_healthy command without any pre-configured scope.",
           "type": "string",
           "const": "allow-confirm-healthy",
@@ -329,6 +341,42 @@
           "type": "string",
           "const": "deny-confirm-healthy",
           "markdownDescription": "Denies the confirm_healthy command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-diagnostics",
+          "markdownDescription": "Enables the export_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_diagnostics command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-diagnostics",
+          "markdownDescription": "Denies the export_diagnostics command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_update_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-update-history",
+          "markdownDescription": "Enables the get_update_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_update_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-update-history",
+          "markdownDescription": "Denies the get_update_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_diagnostics_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-diagnostics-folder",
+          "markdownDescription": "Enables the open_diagnostics_folder command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_diagnostics_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-diagnostics-folder",
+          "markdownDescription": "Denies the open_diagnostics_folder command without any pre-configured scope."
         },
         {
           "description": "Enables the prepare command without any pre-configured scope.",
@@ -367,10 +415,22 @@
           "markdownDescription": "Denies the status command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the delta-update plugin\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`",
+          "description": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the delta-update plugin\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`"
+          "markdownDescription": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`"
+        },
+        {
+          "description": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`",
+          "type": "string",
+          "const": "manage",
+          "markdownDescription": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`"
+        },
+        {
+          "description": "Read-only update monitoring.\n\nOnly allows `check`, `status` and `get_update_history`; the frontend can\ndisplay update availability, progress and past outcomes but cannot prepare or\ninstall anything.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-get-update-history`",
+          "type": "string",
+          "const": "monitor",
+          "markdownDescription": "Read-only update monitoring.\n\nOnly allows `check`, `status` and `get_update_history`; the frontend can\ndisplay update availability, progress and past outcomes but cannot prepare or\ninstall anything.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-get-update-history`"
         }
       ]
     }

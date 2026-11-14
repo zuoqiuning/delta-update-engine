@@ -49,7 +49,10 @@ impl S3Publisher {
         }
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(300))
+            // A release object can be hundreds of megabytes. A 300s total
+            // timeout makes slow CI uplinks fail mid-upload; rely on the
+            // connect timeout and a generous overall ceiling instead.
+            .timeout(Duration::from_secs(1800))
             .build()
             .context("build S3 http client")?;
         Ok(Self {

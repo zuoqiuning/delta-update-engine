@@ -9,7 +9,6 @@ use crate::cli::InitArgs;
 
 const PLACEHOLDER_ENDPOINT: &str =
     "https://your-bucket.cos.ap-guangzhou.myqcloud.com/manifests/latest.json";
-const PLACEHOLDER_KEY: &str = "RWQ...your-minisign-public-key...";
 
 struct Existing {
     endpoint: Option<String>,
@@ -75,9 +74,10 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         }
     }
     if keys.is_empty() {
-        keys = vec![PLACEHOLDER_KEY.to_string()];
+        anyhow::bail!(
+            "at least one --public-key is required; a placeholder key would make the app fail to start"
+        );
     }
-    let keys_are_placeholder = keys.len() == 1 && keys[0] == PLACEHOLDER_KEY;
 
     if let Some(existing) = &existing {
         println!(
@@ -85,7 +85,19 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
             existing.source.display(),
             notes.join("、")
         );
+        if existing.official_key.is_some() {
+            println!(
+                "检测到官方 updater 配置：迁移后请移除 tauri-plugin-updater 依赖、plugins.updater 配置与 updater 权限；同一应用不要同时启用两套更新通道。\n"
+            );
+        }
     }
+
+    println!("下一步（3 项）：");
+    println!("1. 生成密钥：minisign -G -p release.pub -s release.key；用 `delta-update key-info --key release.key` 取出公钥填入 signing_public_keys，私钥离线保管。");
+    println!("2. 用 `BuilderExt` 接入：`.plugin(tauri_plugin_delta_update::init()).run_with_delta_update(context)`；它会先处理 worker 模式，避免顺序漏接。");
+    println!(
+        "3. endpoint 必须是 HTTPS；只有本地调试才用 allow_insecure_http（仅放行 loopback）。\n"
+    );
 
     let config = serde_json::json!({
         "plugins": {
@@ -95,27 +107,45 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
                 "signing_public_keys": keys,
                 "channel": args.channel.clone(),
                 "auto_check": true,
-                "auto_apply": true,
-                "auto_confirm": true
+                "auto_apply": false,
+                "auto_confirm": false
             }
         }
     });
     let capabilities = serde_json::json!({
         "identifier": "default",
         "windows": ["main"],
-        "permissions": ["core:default", "delta-update:default"]
+        "permissions": [
+            "core:default",
+            format!("delta-update:{}", args.permission_set)
+        ]
     });
+    if args.write {
+        crate::scaffold::write_capability(&args.dir, &capabilities)?;
+    }
 
-    println!("将以下配置合并到 src-tauri/tauri.conf.json：\n");
+    println!(
+        "将以下 `plugins.delta-update` 子对象合并到 src-tauri/tauri.conf.json 的顶层 `plugins`：\n"
+    );
     println!("{}\n", serde_json::to_string_pretty(&config)?);
-    println!("将以下权限合并到 src-tauri/capabilities/default.json：\n");
+    println!("将以下权限项追加到 src-tauri/capabilities/default.json 的 `permissions` 数组：\n");
     println!("{}\n", serde_json::to_string_pretty(&capabilities)?);
-    println!("接入检查：");
-    println!("1. 在 main 开头调用 run_applier_from_args()，worker 模式不加载 WebView。");
-    println!("2. 前端安装 tauri-plugin-delta-update-api，并订阅 delta-update://state。");
-    println!("3. 用 delta-update release 发布清单、签名与对象。");
-    if endpoint_is_placeholder || keys_are_placeholder {
-        println!("\n提示：当前输出包含占位值，请用 --endpoint 与 --public-key 重新生成。");
+    if args.permission_set == "default" {
+        println!(
+            "注：default 是兼容集，含 confirm_healthy 等全部命令；生产环境建议改用 manage 或 monitor。\n"
+        );
+    } else if args.permission_set == "manage" {
+        println!(
+            "注：manage 不含 confirm_healthy；若前端需要调用 confirm_healthy，请显式使用 --permission-set default，或在关键初始化完成后由 Rust 调用。\n"
+        );
+    }
+    println!("其余：");
+    println!("- 前端安装 tauri-plugin-delta-update-api，并订阅 delta-update://state。");
+    println!("- 用 delta-update release 发布清单、签名与对象。");
+    println!("- 当前插件仅支持 Windows 桌面；其他平台请使用官方安装器/包管理器。");
+    println!("- auto_confirm 默认关闭；复杂应用应在关键初始化完成后调用 confirm_healthy()。");
+    if endpoint_is_placeholder {
+        println!("\n提示：endpoint 仍是占位值，请用 --endpoint 重新生成。");
     }
     Ok(())
 }

@@ -8,6 +8,7 @@ describe('state protocol', () => {
   });
 
   it('contains every state that the plugin can emit', () => {
+    expect(STATE_NAMES).toContain('UpdateRequired');
     expect(STATE_NAMES).toContain('Prepared');
     expect(STATE_NAMES).toContain('Cancelled');
     expect(STATE_NAMES).toContain('RolledBack');

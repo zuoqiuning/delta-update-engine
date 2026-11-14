@@ -39,6 +39,39 @@ fn rejects_windows_drive_and_illegal_characters() {
 }
 
 #[test]
+fn manifest_rejects_bookkeeping_paths() {
+    for path in [
+        ".old/App.exe",
+        ".OLD/App.exe",
+        ".trash/App.exe",
+        ".Trash/App.exe",
+    ] {
+        let mut files = serde_json::Map::new();
+        files.insert(
+            path.to_string(),
+            serde_json::json!({
+                "sha256": "a".repeat(64),
+                "size": 1,
+                "strategy": "full",
+                "full_key": "blobs/aa"
+            }),
+        );
+        let body = serde_json::json!({
+            "schema": 1,
+            "version": "2.1.0",
+            "min_client_schema": 1,
+            "files": files
+        });
+        let error = delta_update_engine::manifest::parse_manifest(
+            body.to_string().as_bytes(),
+            &delta_update_engine::Limits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "E_PATH_INVALID", "{path}");
+    }
+}
+
+#[test]
 fn manifest_rejects_uppercase_hashes() {
     let body = serde_json::json!({
         "schema": 1,

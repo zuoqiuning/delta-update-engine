@@ -112,6 +112,12 @@ impl Journal {
             return Err(corrupt("invalid journal magic"));
         }
         let format = u16::from_le_bytes([bytes[4], bytes[5]]);
+        if format > JOURNAL_FORMAT {
+            return Err(EngineError::JournalFormatTooNew {
+                client: JOURNAL_FORMAT,
+                actual: format,
+            });
+        }
         if format != JOURNAL_FORMAT {
             return Err(corrupt(format!("unsupported format {format}")));
         }
@@ -372,6 +378,17 @@ mod tests {
         bytes[len - 1] ^= 0xff;
         let error = Journal::decode(&bytes).unwrap_err();
         assert_eq!(error.code(), "E_JOURNAL_CORRUPT");
+    }
+
+    #[test]
+    fn newer_format_is_reported_as_upgrade_required() {
+        let journal = Journal::new(Uuid::new_v4().to_string(), "2.0.0", "1.0.0", vec![]);
+        let mut bytes = journal.encode().unwrap();
+        bytes[4] = (JOURNAL_FORMAT + 1).to_le_bytes()[0];
+        bytes[5] = (JOURNAL_FORMAT + 1).to_le_bytes()[1];
+        let error = Journal::decode(&bytes).unwrap_err();
+        assert_eq!(error.code(), "E_JOURNAL_FORMAT_TOO_NEW");
+        assert_eq!(error.action(), crate::error::ErrorAction::UpdateClient);
     }
 
     #[test]

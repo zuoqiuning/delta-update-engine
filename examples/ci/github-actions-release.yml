@@ -1,0 +1,53 @@
+# Copy to .github/workflows/release.yml and replace the build step.
+#
+# The pipeline needs the previous release's build output as --from. In a real
+# workflow, download it from the previous tag's artifact or a build cache.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build application
+        run: cargo build --release
+
+      - name: Publish delta update
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/release.key"
+          version="${GITHUB_REF_NAME#v}"
+          delta-update release \
+            --from build/previous \
+            --to target/release \
+            --version "$version" \
+            --from-version "$(cat build/previous-version)" \
+            --bucket "cos://${{ vars.COS_BUCKET }}" \
+            --key "$RUNNER_TEMP/release.key" \
+            --pipeline --report release-report.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-report
+          path: release-report.json
+
+# Exit codes: 1 = retry the job, 2 = needs a human, 3 = report a bug.
+# See docs/cli-contract.md.

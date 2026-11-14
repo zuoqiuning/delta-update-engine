@@ -230,7 +230,7 @@ fn maybe_crash_for_test() {
 | ---- | ---------------------------- | ------------------------------------- | ----------------------------------------------------- |
 | R-01 | 正常启动                     | 无注入                                | `confirm_healthy` 后计数归零                          |
 | R-02 | 单次启动崩溃                 | `TEST_CRASH_ON_STARTUP=1` 一次        | 计数 +1，不触发回滚                                   |
-| R-03 | 连续两次启动崩溃             | 两次注入                              | 第三次启动触发回滚                                    |
+| R-03 | 连续三次启动崩溃             | 三次注入                              | 第四次启动触发回滚                                    |
 | R-04 | 回滚后可用                   | R-03 后启动                           | 以旧版本成功启动，计数归零                            |
 | R-05 | 回滚后跳过同一远程版本       | R-04 后触发 check                     | 不自动 prepare 同一版本                               |
 | R-06 | 回滚后远程有新版本           | R-04 后远程发布 2.2.0                 | 正常 prepare 2.2.0                                    |
@@ -298,9 +298,9 @@ fn maybe_crash_for_test() {
 | P-02 | `auto_check: true` 时后台 prepare        | 主线程不被阻塞，UI 正常显示         |
 | P-03 | prepare 完成发出 `delta-update://state`  | 前端收到 `state = Prepared` 事件    |
 | P-04 | `auto_check: false` 时不自动 prepare     | 只暴露命令，不后台执行              |
-| P-05 | 六个命令的默认权限                       | `delta-update:default` 允许六个命令 |
+| P-05 | 全部命令的默认权限                       | `delta-update:default` 允许全部命令 |
 | P-06 | 未授予权限时命令调用被拒绝               | Tauri 运行时拒绝                    |
-| P-07 | 状态机非法迁移                           | `E_INVALID_TRANSITION`              |
+| P-07 | 命令入口非法并发（busy） | 返回 busy/`E_INVALID_TRANSITION`；完整状态机表目前只在单元测试覆盖，插件尚未强制 `transition_to` |
 | P-09 | 配置缺少必填字段                         | `E_CONFIG_INVALID`                  |
 | P-10 | 配置 `endpoint` 非 HTTPS                 | `E_ENDPOINT_INSECURE`               |
 | P-11 | 崩溃循环检测在 setup 中执行              | 窗口创建前完成回滚判断              |
@@ -311,14 +311,18 @@ fn maybe_crash_for_test() {
 | P-16 | 启动期 UAC 取消                          | 状态为 `Failed`，Journal/回滚素材保留 |
 | P-17 | `check_interval_secs` 定时检查           | 到点后空闲状态执行 check+prepare，失败可重试 |
 | P-18 | 启动期自动回滚                           | 发出 `RolledBack` 状态，UI 可提示回滚版本 |
-| P-19 | 忘记调用 `run_applier_from_args()`       | setup 返回 `E_CONFIG_INVALID`，不静默开第二个实例 |
+| P-19 | 忘记调用 `run_applier_from_context()`       | setup 返回 `E_CONFIG_INVALID`，不静默开第二个实例 |
 | P-20 | `check` 后立即 `prepare`                 | 复用验签结果，清单与签名各只请求一次 |
 | P-21 | prepare 持锁期间自动健康确认             | `confirm_healthy` 仍重置启动计数，不被 `E_UPDATE_LOCKED` 阻塞 |
 
-**平台范围**：Windows 10+ x64 为完整验收基线（per-user / per-machine、UAC、真实替换）；Linux AppImage/tar 与 macOS 未签名包按 [API 平台矩阵](../reference/api.md) 提供有限支持，当前 CI 门禁只在 Windows 执行。非桌面平台仍由注册期检查返回 `E_UNSUPPORTED_PLATFORM`，避免误用时静默失败。
+**平台范围**：**仅 Windows 10+ x64 桌面**为支持与验收基线（per-user / per-machine、UAC、真实替换）。macOS/Linux 在插件 setup 阶段进入 Disabled/Failed 并返回 `E_UNSUPPORTED_PLATFORM`，不下载、不替换；CI 门禁只运行 Windows。非 Windows 引擎/CLI 仍可独立编译使用，但不属于插件支持范围。
 
 
 ## 8. L4：端到端验收测试
+
+> **当前自动化边界**：`cargo run -p delta-update-e2e` 是 L4 的替身，使用真实文件系统、真实 CLI 产物和本地 Mock HTTP，但**不启动真实 Tauri 窗口、不执行真实 UAC、不连接真实 COS**；这些仍属于发布前手动验收。不要把它当作完整 L4 覆盖。
+>
+> `crates/delta-update-testkit/tests/worker_process.rs` 补充了跨进程 worker 自动化：把 `worker_harness` 二进制复制进临时安装根，以 `--delta-update-apply` 或 `--delta-update-recover` 启动，验证 `install_root` 精确匹配、`apply.json` 交接、签名清单复验、Journal 提交/恢复与错误密钥拒绝。它不覆盖 UAC 提权交互与真实 Tauri `Context`，这两项仍需手动验收。
 
 ### 8.1 端到端测试环境
 
@@ -350,7 +354,25 @@ fn maybe_crash_for_test() {
 | E2E-10 | 首次从“无清单旧版本”迁移                       | 只做新增/修改，不删除用户文件      |
 | E2E-11 | `Program Files` 安装中断提交后启动             | 启动时 UAC → 恢复完成后主窗口出现；取消则状态 `Failed` 且 Journal 保留 |
 
-**自动化覆盖状态**：`cargo run -p delta-update-e2e` 覆盖 E2E-01/02/04/07/08/09，并以 5xx 注入验证 E2E-03 的重试路径；E2E-05 由 L2 验签契约测试覆盖；E2E-06 与 E2E-11 的真实 UAC 交互需要提权环境手动执行（`uac_cancelled` 覆盖取消授权后撤销提交点、保留 PREPARED 并重试的语义）；E2E-10 不在此二进制内。场景清单与断言见 [e2e/README.md](../../e2e/README.md)。
+**自动化覆盖状态**：`cargo run -p delta-update-e2e` 覆盖 E2E-01/02/04/07/08/09，并以 5xx 注入验证 E2E-03 的重试路径；所有场景都走生产 worker 路径 `apply_commit_verified`，对象布局为 `blobs/<sha256>`（含未变化条目）；E2E-05 由 L2 验签契约测试覆盖；worker 进程路径（参数、scope、签名绑定、提交/拒绝）由 `worker_process.rs` 覆盖；E2E-06 与 E2E-11 的真实 UAC 交互需要提权环境手动执行（`uac_cancelled` 覆盖取消授权后撤销提交点、保留 PREPARED 并重试的语义）；E2E-10 不在此二进制内。场景清单与断言见 [e2e/README.md](../../e2e/README.md)。
+
+
+### 8.3 真实环境手动验收清单
+
+自动化测试证明代码逻辑正确，但不证明真实 Windows 环境下的行为。以下环境**必须在发布前人工走一遍**，每项失败都应以“诊断包 + 日志”作为证据归档，再决定修代码还是改文档。
+
+| 环境 | 步骤 | 失败时应产出 |
+| ---- | ---- | ------------ |
+| **A. `Program Files` + 标准用户 + UAC** | `check → prepare → restart_to_apply` 弹 UAC；**拒绝前记录 `journal/prepared.json` 的 SHA-256 与 `staging` 目录 mtime**；拒绝后应用不退出、状态 `Failed`、`E_PERMISSION_UAC_CANCELLED`、`prepared.json` 保留；再次调用 **`restart_to_apply`（不是 `prepare`）**，断言 `prepared.json` 哈希与 staging mtime 均未变；接受后替换成功、`confirm_healthy` 清理 `.old`/`.trash` | `inspect --export --redact` + `worker.log` 尾部 + 两次 `prepared.json` 哈希 |
+| **B. `%LocalAppData%` + Defender 实时保护** | 完整链路成功；先按原样执行一次并记录 `worker.log` 的 `retries N`。若 `N = 0`（Defender 未恰好扫描），用辅助步骤人为制造占用再验证：`prepare` 后执行 `$f = [IO.File]::Open("<staging 下的某个文件>", 'Open', 'Read', 'None')`，保持句柄 → `restart_to_apply` → 断言 `retries ≥ 1` → `$f.Close()`；`FileShare.None` 是制造 32/33 的关键，`Read` 或 `ReadWrite` 不影响效果，用 `Read` 可避免只读文件/只读卷上的 `UnauthorizedAccessException`；等价于 D 项的人为锁 | `worker.log` 成功行或失败行的 `retries` 字段 |
+| **C. OneDrive 同步的安装目录** | 占位文件存在时 `check` 的 `cloud_placeholders_skipped > 0`；更新后该文件未被误删；随后**右键文件 → “始终保留在此设备上” → 等待图标变为绿色勾**，再 `check`，计数归零（只“打开文件”可能仍保留 recall 标志，会导致误判） | `check` 的 JSON + `(Get-Item <file>).Attributes` |
+| **D. 跨卷（安装根 C:，staging D:）** | 完整链路成功；在 `prepare` 后手动锁定 staging 文件再替换，验证跨卷 copy/rename 的 32/33 重试 | `worker.log` + `inspect --export --redact` |
+| **E. 磁盘临界** | 构造“staging 卷够、安装根不够”，确认 `prepare` 在下载前返回 `E_DISK_INSUFFICIENT`，且没有对象请求 | `prepare` 错误 JSON + `Get-PSDrive` 输出 |
+| **F. 长期运行** | 反复制造失败，确认 `worker.log` 超过 1 MiB 后裁剪到 256 KiB 且可读；诊断包能从 `app_log_dir` 取出并打开 | 裁剪前后的 `worker.log` 大小与尾部内容 |
+
+A、B、C 为必做项（提权、杀软、云同步是最高频的真实故障源）；D、E、F 为加分项。做完后把“和预期不符的瞬间”记录为 issue，不要直接改代码猜测原因。
+
+**当前状态**：A/B/C/D/E/F 均未在真实环境执行；A 的取消语义与 C 的跳过行为已由自动化测试覆盖（`uac_cancelled`、`fs::is_cloud_placeholder` 单测），但不能替代实机验收。
 
 
 ## 9. 发布门禁：最小测试集
@@ -372,6 +394,7 @@ fn maybe_crash_for_test() {
 
 - [ ] 全部 L1 + L2 + L3
 - [ ] L4 端到端 E2E-01 至 E2E-11
+- [ ] 真实环境验收 §§8.3 的 A/B/C 全部通过（D/E/F 为加分项）
 - [ ] 真实版本发布 dry-run（CLI 生成 + 上传 + 客户端验证）
 - [ ] 故障注入全矩阵连续 3 次运行无 flaky
 

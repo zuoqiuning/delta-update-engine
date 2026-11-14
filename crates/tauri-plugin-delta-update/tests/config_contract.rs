@@ -12,10 +12,11 @@ fn config_uses_snake_case_and_defaults() {
     )
     .unwrap();
 
-    assert!(config.auto_apply);
-    assert!(config.auto_confirm);
+    assert!(!config.auto_apply);
+    assert!(!config.auto_confirm);
     assert_eq!(config.channel, "stable");
-    assert_eq!(config.crash_loop_threshold, 2);
+    assert_eq!(config.crash_loop_threshold, 3);
+    assert_eq!(config.exit_grace_period_secs, 10);
     assert_eq!(config.check_interval_secs, None);
     assert!(config.validate().is_ok());
 }
@@ -51,6 +52,21 @@ fn check_interval_requires_a_sane_minimum() {
 
     assert!(parse(59).validate().is_err());
     assert!(parse(60).validate().is_ok());
+}
+
+#[test]
+fn least_privilege_permission_sets_are_narrow() {
+    let monitor = include_str!("../permissions/monitor.toml");
+    assert!(monitor.contains("allow-check"));
+    assert!(monitor.contains("allow-status"));
+    assert!(monitor.contains("allow-get-update-history"));
+    assert!(!monitor.contains("allow-prepare"));
+    assert!(!monitor.contains("allow-restart-to-apply"));
+
+    let manage = include_str!("../permissions/manage.toml");
+    assert!(manage.contains("allow-prepare"));
+    assert!(manage.contains("allow-restart-to-apply"));
+    assert!(!manage.contains("allow-confirm-healthy"));
 }
 
 #[test]
@@ -148,7 +164,7 @@ fn unknown_fields_are_ignored_without_failing_validation() {
     assert!(config.validate().is_ok());
 }
 
-/// P-05: the default permission set covers all six commands.
+/// P-05: the default permission set covers every command.
 #[test]
 fn default_permissions_cover_all_commands() {
     let text = include_str!("../permissions/default.toml");
@@ -159,6 +175,10 @@ fn default_permissions_cover_all_commands() {
         "status",
         "confirm-healthy",
         "restart-to-apply",
+        "export-diagnostics",
+        "open-diagnostics-folder",
+        "get-update-history",
+        "clear-skipped-version",
     ] {
         assert!(
             text.contains(&format!("\"allow-{command}\"")),

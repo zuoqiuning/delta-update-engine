@@ -20,7 +20,14 @@ async fn fixture(content: &[u8]) -> Fixture {
 }
 
 async fn fixture_with(files: &[(&str, &[u8])], max_concurrent: usize) -> Fixture {
-    fixture_with_client(files, max_concurrent, reqwest::Client::new(), Vec::new()).await
+    fixture_with_client(
+        files,
+        max_concurrent,
+        reqwest::Client::new(),
+        Vec::new(),
+        FetchLimits::default(),
+    )
+    .await
 }
 
 async fn fixture_with_client(
@@ -28,6 +35,7 @@ async fn fixture_with_client(
     max_concurrent: usize,
     client: reqwest::Client,
     headers: Vec<(String, String)>,
+    fetch_limits: FetchLimits,
 ) -> Fixture {
     let keys = TestKeyPair::generate();
     let mut manifest_files = serde_json::Map::new();
@@ -76,20 +84,12 @@ async fn fixture_with_client(
     }
     let endpoint = Url::parse(&server.url("manifests/latest.json")).unwrap();
     let fetcher = if headers.is_empty() {
-        HttpFetcher::new(
-            client,
-            endpoint.clone(),
-            None,
-            FetchLimits::default(),
-            None,
-            true,
-        )
-        .unwrap()
+        HttpFetcher::new(client, endpoint.clone(), None, fetch_limits, None, true).unwrap()
     } else {
         HttpFetcher::new_with_options(
             endpoint.clone(),
             None,
-            FetchLimits::default(),
+            fetch_limits,
             None,
             true,
             None,
@@ -220,7 +220,14 @@ async fn slow_responses_time_out() {
         .read_timeout(std::time::Duration::from_millis(200))
         .build()
         .unwrap();
-    let fixture = fixture_with_client(&[("App.exe", &content)], 4, client, Vec::new()).await;
+    let fixture = fixture_with_client(
+        &[("App.exe", &content)],
+        4,
+        client,
+        Vec::new(),
+        FetchLimits::default(),
+    )
+    .await;
 
     fixture.engine.check().await.unwrap();
     fixture.server.set_delay(1_000);
@@ -325,6 +332,50 @@ async fn large_objects_use_parallel_ranges() {
     );
 }
 
+/// Custom fetch limits must change the actual chunking, not just be accepted.
+#[tokio::test]
+async fn custom_range_limits_control_chunking() {
+    let content = vec![0x33_u8; 4 * 1024 * 1024];
+    let fixture = fixture_with_client(
+        &[("App.exe", &content)],
+        2,
+        reqwest::Client::new(),
+        Vec::new(),
+        FetchLimits {
+            range_chunk_threshold: 1024 * 1024,
+            range_chunk_size: 1024 * 1024,
+            range_concurrency: 2,
+            ..FetchLimits::default()
+        },
+    )
+    .await;
+
+    fixture.engine.check().await.unwrap();
+    let prepared = fixture.engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap(),
+        content
+    );
+
+    let mut ranges: Vec<String> = fixture
+        .server
+        .ranges()
+        .into_iter()
+        .filter(|(path, _)| path == OBJECT_KEY)
+        .map(|(_, range)| range)
+        .collect();
+    ranges.sort();
+    assert_eq!(
+        ranges,
+        vec![
+            "bytes=0-1048575",
+            "bytes=1048576-2097151",
+            "bytes=2097152-3145727",
+            "bytes=3145728-4194303",
+        ]
+    );
+}
+
 /// Custom headers authenticate manifest/signature requests and must never be
 /// forwarded to third-party object hosts.
 #[tokio::test]
@@ -335,6 +386,7 @@ async fn custom_headers_only_reach_manifest_and_signature() {
         2,
         reqwest::Client::new(),
         vec![("x-api-key".into(), "secret".into())],
+        FetchLimits::default(),
     )
     .await;
 

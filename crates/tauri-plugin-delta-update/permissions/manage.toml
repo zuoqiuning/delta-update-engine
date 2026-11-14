@@ -1,0 +1,22 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "manage"
+description = """
+Full update management without the health acknowledgement shortcut.
+
+Allows check, status, prepare, cancel and restart. `confirm_healthy` is
+intentionally excluded: health confirmation should be wired to a code path
+that knows the application actually initialized successfully.
+"""
+permissions = [
+    "allow-check",
+    "allow-status",
+    "allow-prepare",
+    "allow-cancel-prepare",
+    "allow-restart-to-apply",
+    "allow-export-diagnostics",
+    "allow-open-diagnostics-folder",
+    "allow-get-update-history",
+    "allow-clear-skipped-version",
+]

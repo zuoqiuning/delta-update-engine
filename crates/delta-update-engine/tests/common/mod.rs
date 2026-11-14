@@ -94,19 +94,22 @@ impl Fixture {
         plan.save(&journal.join("prepared.json")).unwrap();
 
         let endpoint: url::Url = "https://example.com/latest.json".parse().unwrap();
-        let engine = Engine::new(EngineConfig {
-            endpoint,
-            signing_public_keys: vec!["test-key".into()],
-            channel: "stable".into(),
-            current_version: "1.0.0".into(),
-            install_root,
-            staging_root: staging_base,
-            journal_root: journal,
-            limits: Limits::default(),
-            fetcher: Arc::new(StubFetcher),
-            allow_insecure_http: false,
-            crash_loop_threshold,
-        })
+        let engine = Engine::new_legacy(
+            EngineConfig {
+                endpoint,
+                signing_public_keys: vec!["test-key".into()],
+                channel: "stable".into(),
+                current_version: "1.0.0".into(),
+                install_root,
+                staging_root: staging_base,
+                journal_root: journal,
+                limits: Limits::default(),
+                fetcher: Arc::new(StubFetcher),
+                allow_insecure_http: false,
+                crash_loop_threshold,
+            },
+            true,
+        )
         .unwrap();
 
         let prepared = PreparedUpdate {
@@ -131,6 +134,26 @@ impl Fixture {
 
     pub fn staging(&self) -> PathBuf {
         self.dir.path().join("staging").join(VERSION)
+    }
+
+    /// A production-engine view of the same roots: `Engine::new` never accepts
+    /// an unsigned journal, unlike the fixture's `new_legacy` engine.
+    pub fn strict_engine(&self) -> Engine {
+        let endpoint: url::Url = "https://example.com/latest.json".parse().unwrap();
+        Engine::new(EngineConfig {
+            endpoint,
+            signing_public_keys: vec!["test-key".into()],
+            channel: "stable".into(),
+            current_version: "1.0.0".into(),
+            install_root: self.root(),
+            staging_root: self.dir.path().join("staging"),
+            journal_root: self.journal(),
+            limits: Limits::default(),
+            fetcher: Arc::new(StubFetcher),
+            allow_insecure_http: false,
+            crash_loop_threshold: 2,
+        })
+        .unwrap()
     }
 }
 

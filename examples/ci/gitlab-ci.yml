@@ -1,0 +1,32 @@
+# Copy into .gitlab-ci.yml. Assumes a Windows runner with PowerShell.
+#
+# The pipeline needs the previous release's build output as --from. Fetch it
+# from the previous tag's artifact before this job runs.
+stages:
+  - release
+
+delta-update:
+  stage: release
+  tags: [windows]
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - Set-Content -Path release.key -Value $env:MINISIGN_SECRET_KEY -NoNewline
+    - $version = $env:CI_COMMIT_TAG.TrimStart('v')
+    - $previous = Get-Content build/previous-version
+    - >-
+      delta-update release
+      --from build/previous
+      --to target/release
+      --version $version
+      --from-version $previous
+      --bucket "cos://$env:COS_BUCKET"
+      --key release.key
+      --pipeline --report release-report.json
+  artifacts:
+    when: always
+    paths:
+      - release-report.json
+
+# Exit codes: 1 = retry the job, 2 = needs a human, 3 = report a bug.
+# See docs/cli-contract.md.

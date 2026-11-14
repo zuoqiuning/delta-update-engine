@@ -30,7 +30,7 @@ impl CosPublisher {
         validate_region(&region)?;
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(300))
+            .timeout(Duration::from_secs(1800))
             .build()
             .context("build COS http client")?;
         Ok(Self {
@@ -90,6 +90,14 @@ impl CosPublisher {
         if !response.status().is_success() {
             let status = response.status();
             let detail = response.text().unwrap_or_default();
+            if status == reqwest::StatusCode::FORBIDDEN
+                && (detail.contains("RequestTimeTooSkewed")
+                    || detail.contains("Request has expired"))
+            {
+                bail!(
+                    "COS returned {status} (clock skew or expired signature); check NTP/system time on the release machine: {detail}"
+                );
+            }
             bail!("COS returned {status}: {detail}");
         }
         Ok(response)
@@ -131,8 +139,10 @@ impl Publisher for CosPublisher {
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| {
+                anyhow::anyhow!("COS HEAD response is missing a valid Content-Length")
+            })?;
         Ok(Some(length))
     }
 

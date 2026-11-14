@@ -1,356 +1,59 @@
-use std::path::{Path, PathBuf};
-
-use delta_update_engine::journal::{state, CommitStatus, FileOp, Journal};
-use delta_update_engine::staging::PreparedPlan;
-use serde::Serialize;
+use anyhow::Context;
+use delta_update_engine::diagnostics::{self, DiagnosticReport};
+use delta_update_engine::journal::CommitStatus;
 
 use crate::cli::InspectArgs;
 
-#[derive(Debug, Serialize)]
-struct Report {
-    journal_dir: PathBuf,
-    apply: Option<ApplyInfo>,
-    status: Option<CommitStatus>,
-    journal: Option<JournalInfo>,
-    rollback_journal: Option<JournalInfo>,
-    prepared: Option<PreparedInfo>,
-    attempts: u64,
-    skipped_version: Option<String>,
-    warnings: Vec<String>,
-    diagnosis: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ApplyInfo {
-    version: String,
-    commit_id: String,
-    install_root: PathBuf,
-    staging_root: PathBuf,
-    parent_pid: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct JournalInfo {
-    file: String,
-    commit_id: String,
-    version: String,
-    from_version: String,
-    ops: usize,
-    backup: usize,
-    place: usize,
-    trash: usize,
-    restore: usize,
-    remove_trash: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ops_detail: Option<Vec<OpInfo>>,
-}
-
-#[derive(Debug, Serialize)]
-struct OpInfo {
-    kind: String,
-    path: String,
-    status: String,
-}
-
-#[derive(Debug, Serialize)]
-struct PreparedInfo {
-    version: String,
-    changed_files: usize,
-    removed_files: usize,
-    all_files: usize,
-    staging_exists: bool,
-}
-
-impl JournalInfo {
-    fn from_journal(
-        file: &str,
-        journal: &Journal,
-        install_root: Option<&Path>,
-        verbose: bool,
-    ) -> Self {
-        let mut info = Self {
-            file: file.to_string(),
-            commit_id: journal.commit_id.clone(),
-            version: journal.version.clone(),
-            from_version: journal.from_version.clone(),
-            ops: journal.ops.len(),
-            backup: 0,
-            place: 0,
-            trash: 0,
-            restore: 0,
-            remove_trash: 0,
-            ops_detail: None,
-        };
-        let mut details = Vec::new();
-        for op in &journal.ops {
-            let (kind, path, status) = match op {
-                FileOp::Backup { src, dst } => {
-                    info.backup += 1;
-                    (
-                        "Backup",
-                        src.clone(),
-                        if install_root.is_some_and(|root| root.join(dst).exists()) {
-                            "backed_up"
-                        } else {
-                            "pending"
-                        },
-                    )
-                }
-                FileOp::Place { dst, .. } => {
-                    info.place += 1;
-                    (
-                        "Place",
-                        dst.clone(),
-                        if install_root.is_some_and(|root| root.join(dst).exists()) {
-                            "landed"
-                        } else {
-                            "pending"
-                        },
-                    )
-                }
-                FileOp::Trash { src, trash_dst } => {
-                    info.trash += 1;
-                    let moved = install_root.is_some_and(|root| {
-                        !root.join(src).exists() || root.join(".trash").join(trash_dst).exists()
-                    });
-                    (
-                        "Trash",
-                        src.clone(),
-                        if moved { "landed" } else { "pending" },
-                    )
-                }
-                FileOp::Restore { dst, .. } => {
-                    info.restore += 1;
-                    (
-                        "Restore",
-                        dst.clone(),
-                        if install_root.is_some_and(|root| root.join(dst).exists()) {
-                            "landed"
-                        } else {
-                            "pending"
-                        },
-                    )
-                }
-                FileOp::RemoveTrash { trash_path } => {
-                    info.remove_trash += 1;
-                    let removed = install_root
-                        .is_none_or(|root| !root.join(".trash").join(trash_path).exists());
-                    (
-                        "RemoveTrash",
-                        trash_path.clone(),
-                        if removed { "landed" } else { "pending" },
-                    )
-                }
-                _ => ("Unknown", String::new(), "unknown"),
-            };
-            if verbose {
-                details.push(OpInfo {
-                    kind: kind.into(),
-                    path,
-                    status: status.into(),
-                });
-            }
-        }
-        if verbose {
-            info.ops_detail = Some(details);
-        }
-        info
-    }
-}
+/// Identifies the producer in the bundle; the plugin reuses the same code.
+const TOOL: &str = "delta-update-cli";
 
 pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
-    if !args.journal_dir.is_dir() {
+    if let Some(bundle) = &args.bundle {
+        return crate::pipeline::bundle::inspect_bundle(args, bundle);
+    }
+    if args.from_release.is_some() {
+        return crate::pipeline::inspect_release(args);
+    }
+    let journal_dir = args
+        .journal_dir
+        .as_deref()
+        .context("--journal-dir is required")?;
+    if !journal_dir.is_dir() {
         anyhow::bail!(
             "journal directory does not exist: {}",
-            args.journal_dir.display()
+            journal_dir.display()
         );
     }
-    let report = inspect(&args.journal_dir, args.verbose)?;
+    let report = diagnostics::collect(journal_dir, args.verbose)?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        let mut value = serde_json::to_value(&report)?;
+        if let Some(map) = value.as_object_mut() {
+            map.insert("v".into(), 1.into());
+            map.insert("tool".into(), TOOL.into());
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         print_human(&report);
     }
-    if !report.warnings.is_empty() {
+    if let Some(path) = &args.export {
+        diagnostics::write_bundle(journal_dir, args.verbose, TOOL, path, None, args.redact)?;
+        println!("诊断包已写入 {}", path.display());
+    }
+    if report.needs_manual_attention() {
         eprintln!(
             "inspect: {} warning(s); corrupt or unreadable state needs manual attention",
             report.warnings.len()
         );
         std::process::exit(2);
     }
-    if report.journal.is_some() || report.rollback_journal.is_some() {
+    if report.has_pending_journal() {
         eprintln!("inspect: unfinished update journal; restart the app to recover or retry");
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn inspect(dir: &Path, verbose: bool) -> anyhow::Result<Report> {
-    let mut warnings = Vec::new();
-
-    let apply = match state::read_apply_config(dir) {
-        Ok(config) => config.map(|config| ApplyInfo {
-            version: config.version,
-            commit_id: config.commit_id,
-            install_root: config.install_root,
-            staging_root: config.staging_root,
-            parent_pid: config.parent_pid,
-        }),
-        Err(error) => {
-            warnings.push(format!("apply.json 无法读取：{error}"));
-            None
-        }
-    };
-    let status = match state::read_commit_status(dir) {
-        Ok(status) => status,
-        Err(error) => {
-            warnings.push(format!("commit.status 无法读取：{error}"));
-            None
-        }
-    };
-    let install_root = apply.as_ref().map(|apply| apply.install_root.clone());
-    let journal = load_journal(
-        dir,
-        state::COMMIT_JOURNAL,
-        &mut warnings,
-        install_root.as_deref(),
-        verbose,
-    );
-    let rollback_journal = load_journal(
-        dir,
-        state::ROLLBACK_JOURNAL,
-        &mut warnings,
-        install_root.as_deref(),
-        verbose,
-    );
-    let prepared = load_prepared(dir, &mut warnings);
-    let attempts = state::read_attempts(dir);
-    let skipped_version = state::read_skipped_version(dir);
-
-    let diagnosis = diagnose(
-        journal.as_ref(),
-        &status,
-        prepared.as_ref(),
-        skipped_version.as_deref(),
-        &warnings,
-    );
-
-    Ok(Report {
-        journal_dir: dir.to_path_buf(),
-        apply,
-        status,
-        journal,
-        rollback_journal,
-        prepared,
-        attempts,
-        skipped_version,
-        warnings,
-        diagnosis,
-    })
-}
-
-fn load_journal(
-    dir: &Path,
-    file: &str,
-    warnings: &mut Vec<String>,
-    install_root: Option<&Path>,
-    verbose: bool,
-) -> Option<JournalInfo> {
-    let path = dir.join(file);
-    if !path.exists() {
-        return None;
-    }
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            warnings.push(format!("{file} 无法读取：{error}"));
-            return None;
-        }
-    };
-    match Journal::decode(&bytes) {
-        Ok(journal) => Some(JournalInfo::from_journal(
-            file,
-            &journal,
-            install_root,
-            verbose,
-        )),
-        Err(error) => {
-            warnings.push(format!("{file} 损坏：{error}"));
-            None
-        }
-    }
-}
-
-fn load_prepared(dir: &Path, warnings: &mut Vec<String>) -> Option<PreparedInfo> {
-    let path = dir.join(state::PREPARED_JSON);
-    if !path.exists() {
-        return None;
-    }
-    match PreparedPlan::load(&path) {
-        Ok(plan) => Some(PreparedInfo {
-            staging_exists: plan.staging_root.is_dir(),
-            version: plan.version,
-            changed_files: plan.files.len(),
-            removed_files: plan.removed.len(),
-            all_files: plan.all_files.len(),
-        }),
-        Err(error) => {
-            warnings.push(format!("prepared.json 损坏：{error}"));
-            None
-        }
-    }
-}
-
-fn diagnose(
-    journal: Option<&JournalInfo>,
-    status: &Option<CommitStatus>,
-    prepared: Option<&PreparedInfo>,
-    skipped_version: Option<&str>,
-    warnings: &[String],
-) -> String {
-    if !warnings.is_empty() {
-        return "检测到损坏或不可读的状态文件；保留 journal 目录并上报，不要手动改写 Journal。"
-            .into();
-    }
-    if let Some(journal) = journal {
-        return match status {
-            Some(CommitStatus::Completed { .. }) => {
-                format!(
-                    "{} 已完成替换，等待健康确认；确认后会清理备份与 Journal。",
-                    journal.version
-                )
-            }
-            Some(CommitStatus::Failed { op_index, message }) => format!(
-                "{} 替换在第 {} 个操作失败（{message}）；下次启动会重试，仍失败则回滚。",
-                journal.version, op_index
-            ),
-            None => format!(
-                "{} 存在未完成的提交日志；下次启动会幂等重放并完成替换。",
-                journal.version
-            ),
-        };
-    }
-    if let Some(CommitStatus::Completed { version, .. }) = status {
-        return format!("{version} 已完成替换（Journal 已清理），等待健康确认。");
-    }
-    if let Some(CommitStatus::Failed { op_index, message }) = status {
-        return format!(
-            "提交失败记录在第 {op_index} 个操作（{message}），但找不到 commit.journal；保留目录并上报。"
-        );
-    }
-    if let Some(prepared) = prepared {
-        return format!(
-            "{} 已准备完成，将在应用退出或 restart_to_apply 后应用。",
-            prepared.version
-        );
-    }
-    if let Some(version) = skipped_version {
-        return format!("上次更新已回滚，当前跳过版本 {version}。");
-    }
-    "没有待处理的更新状态。".into()
-}
-
-fn print_human(report: &Report) {
+fn print_human(report: &DiagnosticReport) {
     println!("日志目录: {}", report.journal_dir.display());
     match &report.apply {
         Some(apply) => println!(
@@ -415,6 +118,12 @@ fn print_human(report: &Report) {
         None => println!("PREPARED: 无"),
     }
     println!("启动尝试: {}", report.attempts);
+    if let Some(threshold) = report.crash_loop_threshold {
+        println!("崩溃循环阈值: {threshold}");
+        if report.attempts.saturating_add(1) > u64::from(threshold) {
+            println!("警告: 下一次未确认启动将回滚到上一版本");
+        }
+    }
     println!(
         "跳过版本: {}",
         report.skipped_version.as_deref().unwrap_or("无")

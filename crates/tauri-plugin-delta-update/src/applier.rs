@@ -282,9 +282,9 @@ fn spawn_elevated_and_wait(
     unsafe { CloseHandle(info.hProcess) };
     match wait {
         WAIT_OBJECT_0 => Ok(()),
-        WAIT_TIMEOUT => Err(EngineError::ApplyHelperFailed(format!(
-            "elevated recovery did not finish within {timeout_ms} ms"
-        ))),
+        WAIT_TIMEOUT => Err(EngineError::ElevatedRecoveryTimeout {
+            timeout_ms: timeout_ms.into(),
+        }),
         other => Err(EngineError::ApplyHelperFailed(format!(
             "waiting for elevated recovery failed with code {other}"
         ))),

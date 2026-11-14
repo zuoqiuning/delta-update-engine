@@ -1,6 +1,10 @@
 pub mod doctor;
 pub mod init;
 pub mod inspect;
+pub mod key_info;
+pub mod migrate;
 pub mod release;
+pub mod report;
+pub mod rollback;
 pub mod verify;
 pub mod verify_key;

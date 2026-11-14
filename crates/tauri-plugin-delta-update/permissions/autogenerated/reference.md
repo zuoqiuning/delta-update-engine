@@ -1,6 +1,6 @@
 ## Default Permission
 
-Default permissions for the delta-update plugin
+Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).
 
 #### This default permission set includes the following:
 
@@ -10,6 +10,10 @@ Default permissions for the delta-update plugin
 - `allow-status`
 - `allow-confirm-healthy`
 - `allow-restart-to-apply`
+- `allow-export-diagnostics`
+- `allow-open-diagnostics-folder`
+- `allow-get-update-history`
+- `allow-clear-skipped-version`
 
 ## Permission Table
 
@@ -75,6 +79,32 @@ Denies the check command without any pre-configured scope.
 <tr>
 <td>
 
+`delta-update:allow-clear-skipped-version`
+
+</td>
+<td>
+
+Enables the clear_skipped_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:deny-clear-skipped-version`
+
+</td>
+<td>
+
+Denies the clear_skipped_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `delta-update:allow-confirm-healthy`
 
 </td>
@@ -94,6 +124,84 @@ Enables the confirm_healthy command without any pre-configured scope.
 <td>
 
 Denies the confirm_healthy command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:allow-export-diagnostics`
+
+</td>
+<td>
+
+Enables the export_diagnostics command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:deny-export-diagnostics`
+
+</td>
+<td>
+
+Denies the export_diagnostics command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:allow-get-update-history`
+
+</td>
+<td>
+
+Enables the get_update_history command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:deny-get-update-history`
+
+</td>
+<td>
+
+Denies the get_update_history command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:allow-open-diagnostics-folder`
+
+</td>
+<td>
+
+Enables the open_diagnostics_folder command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:deny-open-diagnostics-folder`
+
+</td>
+<td>
+
+Denies the open_diagnostics_folder command without any pre-configured scope.
 
 </td>
 </tr>
@@ -172,6 +280,42 @@ Enables the status command without any pre-configured scope.
 <td>
 
 Denies the status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:manage`
+
+</td>
+<td>
+
+Full update management without the health acknowledgement shortcut.
+
+Allows check, status, prepare, cancel and restart. `confirm_healthy` is
+intentionally excluded: health confirmation should be wired to a code path
+that knows the application actually initialized successfully.
+
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:monitor`
+
+</td>
+<td>
+
+Read-only update monitoring.
+
+Only allows `check`, `status` and `get_update_history`; the frontend can
+display update availability, progress and past outcomes but cannot prepare or
+install anything.
+
 
 </td>
 </tr>

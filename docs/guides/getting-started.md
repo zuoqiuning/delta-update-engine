@@ -13,7 +13,25 @@
 - **更新失败时自动回退**：如果新版本启动即崩溃，自动回滚到上一个可用版本。
 - **细粒度差分**：只下载变化的文件，已压缩/未变化的文件零传输。
 
-你需要做的只有三步：注册插件、写三项配置、授予默认权限。
+你需要做的只有四步：注册插件、在 `main` 最前面处理 worker 模式、写配置、授予默认权限。
+
+### 1.1 先看效果：5 分钟跑一次真实更新
+
+不想先读文档，可以直接跑仓库里的真实更新演示（不需要 Tauri 界面，也不需要 COS）。前置条件只有 PowerShell 7+、Rust stable 与 Python 3（用于本地静态文件服务）：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\real-test\run.ps1
+```
+
+脚本依次完成：生成测试密钥 → 编译演示程序 → 构造 v1/v2 两个安装目录 → 用真实 `delta-update release` 生成补丁、清单与签名 → 启动本地 HTTP 服务 → 安装 v1 并执行更新 → 健康确认。
+
+看到以下输出即表示整条链路可用：
+
+- `resources/payload.bin` 的策略是 `qbsdiff+zstd`，补丁远小于 2 MiB；
+- 更新后 `demo-app version` 打印 `Demo App v2.0.0`；
+- 确认后 `real-test/work/state/journal` 中的 Journal/PREPARED 被清理。
+
+产物保留在 `real-test/work/`，清单、签名、补丁与全量对象都可以直接打开对照。完整说明见 [real-test/README.md](../../real-test/README.md)。
 
 
 ## 2. 前置条件
@@ -24,10 +42,10 @@
 | -------- | -------------------------------------------------------------------- |
 | Tauri    | 2.x                                                                  |
 | Rust     | stable（与 Tauri 2 要求一致）                                        |
-| 平台     | Windows 10+ x64；Linux AppImage/tar；macOS 仅未签名开发包             |
-| 打包格式 | Windows：NSIS / MSI / 绿色版；Linux：AppImage；macOS：不签名的 .app |
+| 平台     | **仅 Windows 10+ x64 桌面**（per-user / per-machine / 便携版）        |
+| 打包格式 | Windows：NSIS / MSI / 绿色版                                         |
 
-**不支持的形态会在注册期或下载前直接拒绝**：Linux `deb`/`rpm`、Flatpak/Snap、macOS 签名/公证 `.app` 返回 `E_UNSUPPORTED_FORMAT`，移动端返回 `E_UNSUPPORTED_PLATFORM`。原因见 API 文档平台矩阵——签名 `.app` 内部文件被替换后代码签名会失效，`deb`/`rpm` 的目录属于包管理器。
+**不支持平台/形态会在注册期直接禁用更新并返回 `E_UNSUPPORTED_PLATFORM`，不会下载任何字节**：macOS、Linux、移动端、deb/rpm/Flatpak/Snap 均不在本插件范围内。原因：文件级替换会破坏 macOS 代码签名、只读 AppImage 与包管理器所有权。其他平台请使用官方安装器/包管理器。
 
 ### 2.2 你需要准备的三样东西
 
@@ -52,9 +70,9 @@ minisign -G -p release-2.pub -s release-2.key
 `delta-update-cli` 在你的 CI 中运行，负责扫描产物、生成清单、生成补丁、签名、上传。没有它，增量更新无法自动化。
 
 
-## 3. 三步接入
+## 3. 四步接入
 
-### 3.1 第一步：添加依赖并注册插件
+### 3.1 第一步与第二步：依赖/插件注册 + worker 入口
 
 **Cargo.toml**
 
@@ -66,22 +84,20 @@ tauri-plugin-delta-update = "0.1"
 **src-tauri/src/main.rs（或 lib.rs）**
 
 ```rust
-fn main() {
-    // 替换进程入口：必须在 Tauri 启动之前，worker 模式不加载 WebView。
-    if let Some(code) = tauri_plugin_delta_update::run_applier_from_args() {
-        std::process::exit(code);
-    }
+use tauri_plugin_delta_update::BuilderExt;
 
+fn main() {
+    // run_with_delta_update 先处理替换/恢复 worker（不加载 WebView），再启动 GUI。
     tauri::Builder::default()
         .plugin(tauri_plugin_delta_update::init())
-        .run(tauri::generate_context!())
+        .run_with_delta_update(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 ```
 
-`run_applier_from_args()` 在进程以 `--delta-update-apply` 或 `--delta-update-recover` 启动时返回 `Some`：提交 worker 会等待主进程退出、读取 Journal 并完成文件替换；启动期恢复 worker 会直接重放/回滚并退出。缺少这段入口时，插件 setup 会直接返回 `E_CONFIG_INVALID` 并提示“worker mode was not handled”，而不是静默开第二个实例。除此之外与普通 Tauri 插件一致，**没有额外的 builder 链，没有必须实现的自定义 trait**。
+`BuilderExt::run_with_delta_update()` 在进程以 `--delta-update-apply` 或 `--delta-update-recover` 启动时先执行 worker 并退出，因此不会漏掉入口顺序。需要自定义启动流程时，仍可在 `Builder::run` 之前直接调用 `run_applier_from_context()`：它在 worker 模式返回 `Some`，从 `tauri::generate_context!()` 的内嵌配置读取公钥，攻击者无法通过改写 `apply.json`、journal 或工作目录里的 key 文件绕过。旧 API `run_applier_from_args()` 仍存在，但**没有公钥时会失败关闭**，迁移请使用 `run_applier_from_context` 或 `run_applier_with_keys`。缺少入口时，插件 setup 会返回 `E_CONFIG_INVALID` 并提示 “worker mode was not handled”，而不是静默开第二个实例。
 
-### 3.2 第二步：写配置
+### 3.2 第三步：写配置
 
 **tauri.conf.json**
 
@@ -96,8 +112,8 @@ fn main() {
         "RWQ...release-2-public-key..."
       ],
       "auto_check": true,
-      "auto_apply": true,
-      "auto_confirm": true,
+      "auto_apply": false,
+      "auto_confirm": false,
       "channel": "stable"
     }
   }
@@ -109,7 +125,9 @@ fn main() {
 | `config_version`      | 是   | 固定 `1`                                                     |
 | `endpoint`            | 是   | 清单 URL，**必须 HTTPS**                                     |
 | `signing_public_keys` | 是   | 至少 1 把，建议 2 把。内容为 minisign 公钥文件的 base64 字符串 |
-| `auto_check`          | 否   | `true`（默认）：setup 后自动后台准备；`false`：仅暴露命令    |
+| `auto_check`          | 否   | `true`（默认）：setup 后自动后台检查/准备；`false`：仅暴露命令 |
+| `auto_apply`          | 否   | `false`（默认）：退出时静默替换；显式设为 `true` 才启用 |
+| `auto_confirm`        | 否   | `false`（默认）：不自动健康确认；显式设为 `true` 才启用 |
 | `channel`             | 否   | 默认 `stable`，与清单的 `channel` 比对                       |
 
 **获取公钥字符串**：打开 `release-1.pub`，去掉注释行，取 base64 主体部分（通常以 `RWQ` 开头的一整行）。
@@ -123,9 +141,9 @@ delta-update init \
   --public-key RWQ...release-2...
 ```
 
-它会打印 `plugins.delta-update` 配置、`capabilities/default.json` 权限片段与接入检查清单。`--dir` 默认当前目录：如果存在 `src-tauri/tauri.conf.json`，会优先复用已有的 `plugins.delta-update` 配置；从官方 updater 迁移时，也会把 `plugins.updater.pubkey` 作为默认公钥（endpoint 仍需显式提供）。
+它会打印 `plugins.delta-update` 配置、`capabilities/default.json` 权限片段与接入检查清单。`--dir` 默认当前目录：如果存在 `src-tauri/tauri.conf.json`，会优先复用已有的 `plugins.delta-update` 配置；从官方 updater 迁移时，也会把 `plugins.updater.pubkey` 作为默认公钥（endpoint 仍需显式提供）。加 `--write` 会在 `src-tauri/capabilities/delta-update.json` 生成一个独立 capability（identifier 为 `delta-update`，不覆盖已有文件），但**不会改写 `tauri.conf.json`**——插件配置仍需按上面的片段合并。
 
-### 3.3 第三步：授予默认权限
+### 3.3 第四步：授予默认权限
 
 **src-tauri/capabilities/default.json**
 
@@ -140,9 +158,16 @@ delta-update init \
 }
 ```
 
-`delta-update:default` 包含六个命令的允许权限：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`。
+`delta-update:default` 包含全部命令的允许权限：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`clear_skipped_version`。
 
-**完成。** 如果 `auto_check` 与 `auto_apply` 都为 `true` 且你没有额外的 UI 需求，此时已经获得完整的“后台自动准备、退出时自动应用、下次启动即新版本”体验。下面章节解释如何自定义 UI、监听事件和排查问题。
+生产环境若需要更小授权，可改用预定义权限集：
+
+- `delta-update:monitor`：仅 `check`、`status`，前端只能查看更新状态；
+- `delta-update:manage`：`check`、`status`、`prepare`、`cancel_prepare`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`clear_skipped_version`，故意不包含 `confirm_healthy`，健康确认应由应用在关键初始化完成后自行触发。
+
+`delta-update init` **默认生成 `manage`**（不含 `confirm_healthy`）。生产环境建议保持 `monitor` 或 `manage`；如果前端确实需要调用 `confirm_healthy`，显式使用 `--permission-set default`。
+
+**完成。** 默认 `auto_check=true`、`auto_apply=false`、`auto_confirm=false`：后台只检查/准备，是否在退出时静默替换、是否自动健康确认必须由应用显式开启。这样可以避免“一个可选更新功能把主应用启动搞坏”或“坏更新被过早确认”。需要全自动体验时，把 `auto_apply` 与 `auto_confirm` 设为 `true`，并确保健康确认时机符合业务实际。下面章节解释如何自定义 UI、监听事件和排查问题。
 
 ### 3.4 本地开发注意
 
@@ -330,9 +355,9 @@ onMounted(async () => {
 setTimeout(confirmHealthy, 3000);
 ```
 
-**为什么不调用会出问题**：默认阈值 `2` 的判定是 `attempts > 2`——连续两次启动都未确认健康，**第三次启动时判定新版本失败并自动回滚**。**这是自愈机制，但对正常应用会造成误回滚**。启动较慢的应用应提高 `crash_loop_threshold` 或调大 `confirm_delay_ms`。
+**为什么不调用会出问题**：默认阈值 `3` 的判定是 `attempts > 3`——连续三次启动都未确认健康，**第四次启动时判定新版本失败并自动回滚**。**这是自愈机制，但对正常应用会造成误回滚**。正常关闭会折扣一次计数（`exit_grace_period_secs`，默认 10 秒），所以“打开看一眼就关掉”不会累计；只有崩溃或极短会话才计入。启动较慢的应用应提高 `crash_loop_threshold` 或调大 `confirm_delay_ms`。
 
-**如果使用 `auto_confirm: true`（默认）且不写任何前端代码**，插件层会在主窗口页面加载后延迟 `confirm_delay_ms` 自动调用一次 `confirm_healthy` 作为兜底。但如果你希望“应用真正可用”才确认，**请显式调用并覆盖默认行为**。
+**默认 `auto_confirm=false`**：插件不会替应用判断“已经健康”。你必须在 UI 就绪、核心数据加载完成后调用 `confirm_healthy()`；否则达到崩溃阈值会回滚。只有显式设置 `auto_confirm: true` 时，插件才会在主窗口页面加载后延迟 `confirm_delay_ms` 自动确认一次作为兜底。对启动较慢的应用，应提高 `crash_loop_threshold` 或调大 `confirm_delay_ms`。
 
 ### 5.3 手动检查与准备
 
@@ -523,7 +548,7 @@ my-tauri-app/
 
 | 可能原因                    | 排查方式                                                     |
 | --------------------------- | ------------------------------------------------------------ |
-| 安装目录定位错误            | 检查注册表 `InstallLocation` 是否指向正确路径                |
+| 安装目录定位错误            | 更新器只以当前 exe 所在目录为准；确认启动的是同一安装路径，检查 `install_dir` 是否精确指向 exe 父目录 |
 | Commit 阶段权限不足         | 错误码应为 `E_PERMISSION_DENIED`，检查是否安装在 `Program Files` |
 | `.old/` 目录残留导致状态异常 | 检查安装目录下是否有 `.old/<commit_id>/` 目录，确认对应 Journal 状态 |
 | 重启的是另一个安装实例      | 确认启动的是同一个安装路径                                   |
@@ -560,7 +585,8 @@ my-tauri-app/
 {
   "plugins": {
     "delta-update": {
-      "crash_loop_threshold": 2,
+      "crash_loop_threshold": 3,
+      "exit_grace_period_secs": 10,
       "staging_dir": "custom/path",
       "journal_dir": "custom/path",
       "max_concurrent_downloads": 4,
@@ -572,11 +598,12 @@ my-tauri-app/
 
 | 字段                       | 默认值                                       | 何时修改                               |
 | -------------------------- | -------------------------------------------- | -------------------------------------- |
-| `crash_loop_threshold`     | `2`                                          | 应用启动较慢或初始化复杂时，可提高到 3 |
+| `crash_loop_threshold`     | `3`                                          | 应用启动较慢或初始化复杂时提高；数值越大越宽松 |
+| `exit_grace_period_secs`   | `10`                                         | 正常退出折扣计数的观察窗口；0 表示任何正常退出都折扣 |
 | `confirm_delay_ms`         | `3000`                                       | 启动慢、首屏晚时调大；0 表示不自动确认 |
 | `staging_dir`              | `app_local_data_dir()/delta-update/staging/` | 磁盘空间紧张且想放到其他盘（可跨卷）   |
 | `journal_dir`              | `app_local_data_dir()/delta-update/journal/` | 同上                                   |
-| `install_dir`              | 自动解析                                     | 默认为当前可执行文件所在目录（开发时是 `target/debug`），便携版等解析失败时显式指定 |
+| `install_dir`              | 当前 exe 所在目录                            | 生产构建必须精确等于 exe 父目录；debug 开发可指向临时目录 |
 | `max_concurrent_downloads` | `4`                                          | 网络环境差时降低，强网可提高           |
 | `staging_size_limit`       | `2 GiB`                                      | 磁盘空间严格受限时降低                 |
 | `max_patch_file_size`      | `256 MiB`                                    | 有超大 sidecar 且希望差分时提高        |
@@ -600,7 +627,7 @@ my-tauri-app/
 - [ ] 监听 `delta-update://state` 事件并展示 `Prepared` 状态提示
 - [ ] CI 中 `delta-update release` 能完整执行并上传到 COS
 - [ ] 测试机安装旧版本 → 发布新版本 → 观察 `state = Prepared` → 退出再启动 → 版本更新
-- [ ] 测试机新版本启动崩溃 → 连续两次未确认 → 第三次启动自动回滚
+- [ ] 测试机新版本启动崩溃 → 连续三次未确认 → 第四次启动自动回滚
 - [ ] 安装在 `Program Files` 时，更新流程能正确处理 UAC
 - [ ] 安装在 `Program Files` 且提交被中断后，下次启动能提权恢复（取消则保留 Journal）
 - [ ] 断网后恢复网络，更新能续传并完成
@@ -610,13 +637,13 @@ my-tauri-app/
 
 | 插件版本 | 支持的 Tauri 版本 | 文件级替换支持的形态                              | 协议 schema |
 | -------- | ----------------- | ------------------------------------------------- | ----------- |
-| 0.1.x    | 2.x               | Windows 10+ x64、Linux AppImage/tar、macOS 未签名包 | 1           |
+| 1.0.x    | 2.x               | Windows 10+ x64 桌面（per-user / per-machine / 便携版） | 1           |
 
 **插件版本语义化**：
 
-- **Patch**（0.1.0 → 0.1.1）：Bug 修复，命令和配置不变。
-- **Minor**（0.1.x → 0.2.0）：新增命令或配置字段，向后兼容。旧配置无需修改。
-- **Major**（0.x → 1.0）：可能包含命令或配置的破坏性变更，会提供迁移指南。
+- **Patch**（1.0.0 → 1.0.1）：Bug 修复，命令和配置不变。
+- **Minor**（1.0.x → 1.1.0）：新增命令或配置字段，向后兼容。旧配置无需修改。
+- **Major**（1.x → 2.0）：可能包含命令或配置的破坏性变更，会提供迁移指南。
 
 **协议 schema 独立于插件版本**。清单 schema 演进规则见协议与数据格式规范。插件会拒绝 `min_client_schema` 高于自身支持值的清单，并给出明确错误。
 

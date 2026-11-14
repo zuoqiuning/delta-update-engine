@@ -97,6 +97,9 @@ export function createUpdateController(): UpdateController {
     unlisten?.();
     unlisten = null;
     starting = null;
+    // A stopped listener no longer guarantees the snapshot is current; drop it
+    // so a later subscriber does not render a stale Prepared/Committed state.
+    state = null;
   };
 
   return {

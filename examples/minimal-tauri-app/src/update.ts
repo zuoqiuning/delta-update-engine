@@ -8,6 +8,9 @@ const statusLine = document.querySelector<HTMLParagraphElement>('#status');
 const restart = document.querySelector<HTMLButtonElement>('#restart');
 const controller = createUpdateController();
 
+/** Placeholder only: a real app should confirm after its own init completes. */
+const CONFIRM_DELAY_MS = 3000;
+
 function render(payload: UpdateStatePayload | null): void {
   if (!statusLine || !payload) return;
 
@@ -26,12 +29,17 @@ function render(payload: UpdateStatePayload | null): void {
 /** 订阅状态事件并接线到页面元素；应用每次启动只需调用一次。 */
 export function mountUpdateUi(): void {
   controller.subscribe(render);
+  controller.subscribe((payload) => {
+    if (payload?.state === 'Committed') {
+      // The app has just restarted into the new version. This fixed delay is a
+      // placeholder: a real app must call confirm() after its critical
+      // initialization (user data loaded, main window ready), not on a timer.
+      window.setTimeout(() => void controller.confirm(), CONFIRM_DELAY_MS);
+    }
+  });
   void controller.start();
 
   restart?.addEventListener('click', () => {
     void controller.restart();
   });
-
-  // 示例延迟 1 秒确认；真实应用应在关键界面和业务初始化完成后再确认。
-  window.setTimeout(() => void controller.confirm(), 1000);
 }

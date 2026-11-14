@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::error::EngineError;
 use crate::limits::Limits;
-use crate::path::validate_rel_path;
+use crate::path::{validate_install_path, validate_rel_path};
 
 use super::model::Manifest;
 
@@ -39,6 +39,18 @@ pub fn parse_manifest(raw: &[u8], limits: &Limits) -> Result<Manifest, EngineErr
     if semver::Version::parse(&manifest.version).is_err() {
         return Err(EngineError::VersionInvalid(manifest.version.clone()));
     }
+    if let Some(min) = &manifest.min_supported_version {
+        let min_version = semver::Version::parse(min).map_err(|_| {
+            EngineError::ManifestInvalid(format!("min_supported_version {min} is not SemVer"))
+        })?;
+        let version = semver::Version::parse(&manifest.version)
+            .map_err(|_| EngineError::VersionInvalid(manifest.version.clone()))?;
+        if min_version > version {
+            return Err(EngineError::ManifestInvalid(
+                "min_supported_version must not exceed version".into(),
+            ));
+        }
+    }
     if manifest
         .notes
         .as_ref()
@@ -58,7 +70,7 @@ pub fn parse_manifest(raw: &[u8], limits: &Limits) -> Result<Manifest, EngineErr
 
     let mut seen = HashSet::new();
     for (path, entry) in &manifest.files {
-        validate_rel_path(path)?;
+        validate_install_path(path)?;
         let key = path.to_ascii_lowercase();
         if !seen.insert(key) {
             return Err(EngineError::PathCollision(path.clone()));

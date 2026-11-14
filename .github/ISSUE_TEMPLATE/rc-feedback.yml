@@ -1,0 +1,40 @@
+name: 1.0.0-rc feedback
+description: 试用 1.0.0-rc.1 后的接入反馈
+title: "[rc.1] "
+labels: ["rc-feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢试用 1.0 候选版。三个问题按实际情况回答即可，不需要完整。
+  - type: textarea
+    id: stuck
+    attributes:
+      label: 接入时卡在哪一步？
+      description: 依赖与插件注册、worker 入口、配置、权限、首次发布、客户端 check/prepare
+    validations:
+      required: true
+  - type: textarea
+    id: cli
+    attributes:
+      label: init / migrate 的输出是否够清楚？
+      description: 哪一段需要反复查文档，或直接复制后失败
+  - type: textarea
+    id: worker-log
+    attributes:
+      label: 有没有遇到看不懂的 worker.log 或错误码？
+      description: 贴出错误码与上下几行日志，请先脱敏
+  - type: input
+    id: versions
+    attributes:
+      label: 版本与环境
+      description: 插件/crate 版本、应用版本、Windows 版本、per-user / Program Files / 便携版
+    validations:
+      required: true
+  - type: dropdown
+    id: migration
+    attributes:
+      label: 接入来源
+      options:
+        - 新接入
+        - 从官方 updater 迁移
+        - 从其他增量方案迁移

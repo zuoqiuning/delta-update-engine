@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Build-side release CLI for delta-update-engine"
+description = "Build-side release CLI for delta-update-engine (Windows targets)"
 readme = "README.md"
 keywords = ["tauri", "updater", "delta", "release", "cli"]
 categories = ["command-line-utilities", "development-tools"]
@@ -15,14 +15,13 @@ name = "delta-update"
 path = "src/main.rs"
 
 [dependencies]
-delta-update-engine = { path = "../delta-update-engine", version = "0.1.0" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.1" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true
 rayon.workspace = true
-indicatif.workspace = true
 reqwest.workspace = true
 url.workspace = true
 qbsdiff.workspace = true
@@ -36,6 +35,7 @@ sha2.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd = "2"

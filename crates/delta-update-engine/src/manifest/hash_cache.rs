@@ -4,6 +4,10 @@
 //! for large installs. Entries are reused only when path, size and mtime all
 //! match. Any load/save failure degrades to hashing the full tree.
 //!
+//! Writes are atomic, but `check` does not hold `update.lock`; two concurrent
+//! checks in different processes can lose entries (last writer wins). Losing
+//! cache entries only costs hashing time and never affects correctness.
+//!
 //! A stale entry cannot make the updater accept a tampered file: `prepare`
 //! re-hashes every unchanged file before the commit point, so a local file
 //! that was modified without changing its size and mtime makes the update fail

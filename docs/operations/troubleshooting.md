@@ -26,10 +26,11 @@ fn main() {
         )
         .init();
 
-    if let Some(code) = tauri_plugin_delta_update::run_applier_from_args() {
+    let context = tauri::generate_context!();
+    if let Some(code) = tauri_plugin_delta_update::run_applier_from_context(&context) {
         std::process::exit(code);
     }
-    // ... tauri::Builder
+    // ... tauri::Builder::default().run(context)
 }
 ```
 
@@ -55,6 +56,11 @@ fn main() {
     ├── skipped_version            # 回滚后跳过的版本
     ├── known_files.json           # 历史官方文件集合
     ├── hash_cache.json            # 安装根文件哈希缓存
+    ├── old_hashes.json            # 提交前旧文件哈希快照（回滚校验）
+    ├── commit.meta.json           # journal ↔ 签名清单绑定
+    ├── verified_manifest.json(.minisig)  # 最近验签通过的清单
+    ├── installed_manifest.json(.minisig) # 已确认健康版本的清单
+    ├── worker.log                 # 替换/恢复 worker 的执行记录（成功与失败都追加）
     ├── commit.status              # 替换进程执行结果
     ├── commit.journal             # 提交日志（内部含 commit_id）
     └── rollback.journal           # 回滚逆日志
@@ -62,19 +68,29 @@ fn main() {
 
 `staging/` 存放 prepare 阶段物化的变化文件；未变化文件不复制，prepare 时在安装目录原地校验。`journal/` 存放提交日志、状态文件与跨进程锁。**这些文件/目录的存在与内容，是判断更新处于哪个阶段的最直接物理证据**。
 
+`worker.log` 的行格式：worker 成功时 `apply commit <id> ok in <ms> (version <v>, retries <n>)` / `recovery ok in <ms> (retries <n>)`，失败时 `apply commit <id> failed after <ms> (retries <n>): ...` / `recovery failed after <ms> (retries <n>): ...`；启动时还会先写 `apply started commit=<id> ...` / `recovery started ...`。`prepare` 阶段每个补丁回退也会追加 `patch fallback: <path>: <code>`。`retries` 是该进程本次提交/恢复中文件占用重试的次数，**成功与失败都会记录**，因此验收时用 `retries ≥ 1` 判断“重试确实发生过”，用 `retries = 0` 判断“没有重试”。
+
+**用 `inspect --bundle` 读取**：把诊断包和远端清单一起传给它，会输出“文件 × manifest 策略 × journal 操作 × 回退证据”的对照表，不需要手工 grep：
+
+```bash
+delta-update inspect --bundle delta-update-diagnostics-<ts>.json \
+  --from-release cos://your-bucket --version 2.0.0 --public-key release.pub
+```
+
 **为什么放在 Local 而不是 Roaming**：暂存区可能是数百 MB 甚至 GB 级，放在漫游配置目录会触发不必要的同步，拖慢登录并放大磁盘占用。
 
-### 1.3 注册表位置
+### 1.3 安装目录定位
 
-安装目录的定位**以当前运行 exe 所在目录为准**，注册表只用于交叉校验与诊断。相关键位：
+安装目录**只以当前运行 exe 所在目录为准**；插件不读取注册表，也不接受“包含 exe 的任意祖先目录”。生产构建中 `install_dir` 必须精确等于 exe 父目录，否则更新功能会禁用并报 `E_CONFIG_INVALID`。
+
+手工排查时可对照注册表卸载项（仅供参考，不是信任源）：
 
 ```
-HKCU\Software\<AppName>\InstallPath
 HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<AppName>\InstallLocation
 HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<AppName>\InstallLocation
 ```
 
-**注册表不是信任源**：即使注册表指向另一个目录，只有当前 exe 确实位于该目录下才会被采用；否则忽略并记录告警。若更新器定位到的安装目录与实际不符，先确认启动的是哪一份 exe，再检查此处。
+**注册表不是信任源**：如果它指向另一个目录，以当前 exe 实际位置为准；先确认启动的是哪一份 exe。
 
 ### 1.4 离线诊断：`delta-update inspect`
 
@@ -84,9 +100,16 @@ HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\<AppName>\InstallLocati
 delta-update inspect --journal-dir "%LOCALAPPDATA%\com.example.app\delta-update\journal"
 delta-update inspect --journal-dir ... --verbose
 delta-update inspect --journal-dir ... --json > update-report.json
+delta-update inspect --journal-dir ... --export support-bundle.json
 ```
 
 输出包括：`apply.json` 配置、`commit.status`、`commit.journal` / `rollback.journal` 的版本与操作统计、`prepared.json`、启动尝试次数、跳过版本，以及一句结论（未完成提交 / 等待健康确认 / 失败重试 / 已准备 / 已回滚）。`--verbose` 会逐条列出 `FileOp` 及其当前状态（`landed` / `pending` / `backed_up`）。损坏的状态文件会列为警告而不是让命令崩溃；上报时附上该输出与目录文件列表即可。
+
+`--export <PATH>` 额外写一个**单文件诊断包**（JSON）：上面的报告、`worker.log` 最后 64 KiB、journal 目录的文件名与大小、系统信息（Windows 版本、安装形态）与 CLI 版本。它不包含文件内容，可直接附到工单；单文件比目录更容易让用户上传。加 `--redact` 会把 `install_root`、`staging_root`、`journal_root` 与用户主目录前缀替换为 `<install_root>` 等占位符，并在 `redacted` 字段标记为 `true`。
+
+**用户自助导出**：应用可以调用 `plugin:delta-update|export_diagnostics`（前端封装为 `exportDiagnostics()`），把同样的诊断包写到应用日志目录并返回路径。这不需要用户找到 journal 目录，也不需要安装 CLI；适合做成“导出诊断”按钮。该命令**始终脱敏**。
+
+**注意日志目录可能被同步**：企业环境常把 `%LOCALAPPDATA%` 下的日志纳入 OneDrive/SharePoint 同步。诊断包包含安装路径（`--redact` 可去除）与日志尾部，附到工单前请确认目标目录不会被自动同步到云端。
 
 **退出码**：`0` = 无待处理状态；`1` = 存在未完成/回滚 Journal，重启应用通常可自动恢复或重试；`2` = Journal/状态文件损坏，需要人工介入。CI 与运维脚本可据此区分“自动修复”和“发告警”。
 
@@ -98,6 +121,7 @@ delta-update inspect --journal-dir ... --json > update-report.json
 | 状态          | 含义                                   | 正常停留时间         | 异常信号                                                     |
 | ------------- | -------------------------------------- | -------------------- | ------------------------------------------------------------ |
 | `Idle`        | 无更新活动。                           | 持久状态             | —                                                            |
+| `UpdateRequired` | 本地版本低于发布者 `min_supported_version`。 | 持久状态 | **不是故障**。应用可选择限制功能；检查 `min_supported_version` 是否发布者写错，或确认更新为何未准备完成 |
 | `Checking`    | 正在获取并验签清单。                   | 秒级                 | 超过 30 秒未迁移，检查 `endpoint` 可达性或验签耗时           |
 | `Downloading` | 正在下载补丁或全量对象。               | 取决于网络与体积     | 长时间停在相同 `progress.completed` 值，可能网络中断或 URL 过期 |
 | `Preparing`   | 正在将补丁应用到暂存区并逐文件校验。   | 取决于文件数量和大小 | 长时间无进展，可能磁盘 I/O 阻塞或内存不足                    |
@@ -128,6 +152,8 @@ delta-update inspect --journal-dir ... --json > update-report.json
 
 **COS 403 专项**：`E_NETWORK_HTTP_4XX` 或 `E_NETWORK_PRESIGN_EXPIRED` 在 COS 场景下最常见的原因是签名过期或本机时间偏差。排查时先确认**业务是否允许签发、临时凭据是否有效、实际请求是否与签名条件一致**，不要一遇到 403 就延长有效期或把桶改成公有读。如果重新生成签名仍报 403，检查用户机器的系统时间是否准确（是否开启 NTP 同步），以及代理是否改写了请求头。
 
+**发布端时间偏差**：`delta-update release` 上传对象时若 COS/S3 返回 403 且响应体含 `RequestTimeTooSkewed` / `Request has expired`，是**发布机**时钟偏差（COS 默认容忍约 15 分钟）。同步 NTP 后重试即可；不要通过放宽桶权限或放宽签名有效期来绕过。
+
 ### 3.2 签名与清单类（`E_SIGNATURE_*`、`E_VERSION_*`、`E_MANIFEST_*`）
 
 | 错误码                       | 含义                       | 建议动作                                                     |
@@ -140,6 +166,10 @@ delta-update inspect --journal-dir ... --json > update-report.json
 | `E_MANIFEST_PARSE`           | 清单 JSON 解析失败         | 检查 `endpoint` 返回的是否为合法 JSON；可能是 CDN 或代理返回了错误页面 |
 
 签名类错误**不可自动重试**，因为它们不因时间或网络变化而消失。支持人员应优先核对密钥配对和签名流程。
+
+**轮换期间的 `E_SIGNATURE_NO_TRUSTED_KEY` 是预期的**：桥接版本尚未覆盖到的旧客户端只信任旧公钥，自然会拒绝新公钥签名的清单。它不是攻击信号——确认发布端按 [密钥轮换 runbook](release.md#133-密钥轮换的当前边界) 操作，等待客户端更新即可；不要因此回退签名密钥。
+
+**`fetch_signature` 返回 `E_NETWORK_HTTP_4XX`**：说明客户端无法读取 `.minisig` 对象。按顺序检查 (a) bucket policy / 对象 ACL 是否允许读取 `latest.json.minisig`，(b) 使用预签名地址时 `signing_endpoint` 是否配置正确且未被改写，(c) 对象键是否与 `release --prefix` 一致。配置了 signing service 时 403 会自动刷新重试，通常不会以该错误暴露给用户。
 
 ### 3.3 路径与安全类（`E_PATH_*`）
 
@@ -156,18 +186,21 @@ delta-update inspect --journal-dir ... --json > update-report.json
 | `E_DISK_STAGING_LIMIT`       | 暂存区超过配置上限 | 检查 `staging/` 大小；可能是历史残留未清理，见 §5 手动清理 |
 | `E_PERMISSION_DENIED`        | 写入被拒绝         | 如果安装在 `Program Files`，确认替换进程或启动期恢复的 UAC 授权是否被拒绝；**不要让主进程整体以管理员运行**；检查安全软件是否拦截 |
 | `E_APPLY_HELPER_FAILED`      | 替换进程未能启动或异常退出 | 检查安全软件是否拦截同一二进制的 `--delta-update-apply` 或 `--delta-update-recover` 模式；保留的 PREPARED/Journal 可重试 |
+| `E_APPLY_RECOVERY_TIMEOUT`   | 提权恢复等待超时，worker 可能仍在运行 | **重启应用**让下一次启动幂等收敛；不要手动删除 Journal 或 `.old` |
 | `E_UPDATE_LOCKED`            | 另一个进程正在提交或恢复 | 等待对方完成；若长期占锁，检查是否有残留进程 |
 | `E_ENDPOINT_INSECURE`        | 配置的更新地址不是 HTTPS | 修正 `endpoint` / `signing_endpoint`；生产构建禁用 `allow_insecure_http` |
-| `E_UNSUPPORTED_FORMAT`       | 当前安装形态不支持 | deb/rpm/Flatpak/Snap 或签名 `.app` 改用全量安装包或系统包管理器 |
+| `E_UNSUPPORTED_PLATFORM`     | 当前平台/安装形态不受支持 | 插件仅支持 Windows 10+ 桌面；macOS/Linux/移动端改用官方安装器或包管理器 |
 | `E_PERMISSION_UAC_CANCELLED` | 用户取消了 UAC     | 用户主动取消。提交阶段取消会保留 PREPARED，下次退出应用时重新尝试；启动恢复阶段取消会保留 Journal 与回滚素材，下次启动时重新请求授权 |
 
 权限问题的一个常见混淆来源是：prepare 阶段成功（写入的是用户可写的暂存区），但 Commit 阶段失败（写入的是可能受保护的安装目录）。**看到 `Prepared` 之后、退出应用时出现 `E_PERMISSION_DENIED`，指向的是替换进程的提权问题，而非下载问题**。
 
 **启动阶段弹 UAC 是恢复流程，不是重新下载更新**：只有上次提交/回滚中断、且恢复需要写安装根时才会出现。允许授权后 worker 会完成 Journal 重放或回滚，主窗口随后才创建；取消授权则状态进入 `Failed`，Journal 与回滚素材保留，下次启动会再次请求。不要在用户级删除 `journal/` 或 `.old/` 来“绕过”提示。
 
+**提权恢复等待超时**：如果 UAC 提示停留超过 worker 等待上限，启动会记录 `elevated recovery did not finish` 并继续启动；worker 可能仍在后台运行。`update.lock` 与 Journal 保证下一次启动幂等收敛，无需手工删除任何文件。若长期反复超时，检查安全软件是否拦截提权子进程，或 UAC 是否被策略静默拒绝。
+
 **UAC 使用其他管理员账户时**：journal 位于当前用户的 `%LOCALAPPDATA%`，另一个管理员账户可能没有读取权限，worker 会报 `E_NOT_PREPARED` 或权限错误。应使用同一账户完成提权（split token），不要放开 journal 目录的 ACL。
 
-### 3.5 补丁类（`E_PATCH_*`、`E_UNKNOWN_STRATEGY`）
+### 3.5 补丁类（`E_PATCH_*`、`E_MANIFEST_PARSE`）
 
 | 错误码                         | 含义                                     | 建议动作                                                     |
 | ------------------------------ | ---------------------------------------- | ------------------------------------------------------------ |
@@ -175,7 +208,7 @@ delta-update inspect --journal-dir ... --json > update-report.json
 | `E_PATCH_APPLY_FAILED`         | 补丁应用过程失败                         | 回退全量；持续出现说明差分管线或本地文件异常                 |
 | `E_PATCH_TARGET_HASH_MISMATCH` | 补丁应用后目标哈希不匹配                 | 回退全量；如果全量仍不匹配，可能是 COS 对象损坏或清单哈希错误 |
 | `E_PATCH_MEMORY_BUDGET`        | 内存预算超限                             | 大文件差分时内存不足；可尝试在磁盘空间允许的情况下回退全量，或调整内存预算配置 |
-| `E_UNKNOWN_STRATEGY`           | 未知策略且条目没有 `full_key`            | 正常情况下 `check` 会返回 `available: false` 而不是报错；检查清单是否为带补丁的条目生成了 `full_key`，或升级客户端 |
+| `E_MANIFEST_PARSE`（该条目缺少 full_key） | 未知策略且没有全量回退 | 发布端应为所有条目生成 `full_key`（CLI 默认 `blobs/<sha256>`）；不要生成客户端未实现的策略 |
 
 **补丁类错误的设计意图是“可回退”** 。大多数 `E_PATCH_*` 都标记为 `retryable: true`，因为插件会自动尝试全量回退。如果回退成功，用户可能甚至不会感知到错误，只在日志中留下一条记录。
 
@@ -184,6 +217,7 @@ delta-update inspect --journal-dir ... --json > update-report.json
 | 错误码                    | 含义                   | 建议动作                                                     |
 | ------------------------- | ---------------------- | ------------------------------------------------------------ |
 | `E_JOURNAL_CORRUPT`       | Journal checksum 失败  | **不尝试重放**。检查 `journal/` 目录；如果根目录状态不确定，需要人工判断。收集 Journal 文件并上报 |
+| `E_JOURNAL_FORMAT_TOO_NEW` | Journal 格式高于当前客户端支持 | Journal 由更新版本的应用写入，旧客户端不能重放。**升级应用后重启**，让新版本完成恢复；不要删除 Journal |
 | `E_JOURNAL_REPLAY_FAILED` | 重放时遇到不可恢复错误 | 同上；通常意味着文件系统状态与 Journal 预期严重不一致        |
 | `E_ROLLBACK_FAILED`       | 回滚自身失败           | **最高严重级别**。用户可能处于“新版本不可用、旧版本也回不去”的状态。需要人工介入恢复备份 |
 
@@ -222,6 +256,25 @@ Windows 上 `rename` 或替换失败的一个常见原因是文件被其他进�
 
 **注意**：rename-then-replace 的设计本身可以处理“运行中的 exe/dll 被进程映射”的情况，因为 rename 不破坏内存映像。如果替换仍然失败，锁定源通常不是主进程，而是**安全软件或外部工具**。在排查时优先怀疑杀毒软件的实时扫描。
 
+Journal 重放遇到 OS 错误 32/33（sharing/lock violation）时，`E_JOURNAL_REPLAY_FAILED` 的 `message` 会明确指出“文件正被其他进程占用，常见于杀毒软件实时扫描或旧进程尚未退出；稍后重试”。这属于可重试状态：下一次启动会幂等重放，不需要删除 Journal。
+
+### 4.6 旧版本客户端遇到更高格式的 Journal
+
+用户在更新途中把应用降级回旧版本时，旧版本可能读到新版本写入的 Journal：
+
+- 旧版本返回 `E_JOURNAL_FORMAT_TOO_NEW`（`action = update_client`），**不会**尝试重放，也不会破坏安装目录。
+- 正确处理是**先升级回新版本完成恢复**，再执行降级；如果业务上必须立即降级，只能在应用退出后手工移除 `journal/` 与 `.old/`（对应声明中的“手工介入”路径），代价是失去这次提交的回滚素材。
+- 不要把 Journal 的 `format` 字段手工改小：校验和会失配，结果退化为 `E_JOURNAL_CORRUPT`。
+
+### 4.7 `apply.json` 损坏
+
+`apply.json` 记录 `install_root`、`staging_root`、`commit_id` 与父进程 PID，是替换进程定位 Journal 的依据。它损坏时：
+
+1. `inspect` 会把 `apply.json` 列为警告并继续输出其余状态；
+2. 启动恢复返回 `NeedsAttention`（`E_JOURNAL_CORRUPT`），不会在根因不明时猜测路径；
+3. 修复方式是在应用内重新 `check` + `prepare`（会重写 `apply.json`）；若 `commit.journal` 仍存在且安装目录状态不确定，先保留目录并上报，不要手工构造 `apply.json`。
+
+
 ### 4.4 磁盘占用异常增长
 
 `staging/` 在 prepare 成功后应保持到退出后替换完成并确认健康，然后被清理。如果它持续增长：
@@ -237,6 +290,36 @@ Windows 上 `rename` 或替换失败的一个常见原因是文件被其他进�
 
 - 检查 `skipped_version` 是否正确写入与应用（没有时间窗口配置）。
 - 检查远程是否发布了**不同版本号但内容相同**的构建——版本单调性只比较版本字符串，如果发布端递增了版本号，客户端会将其视为新更新。
+
+
+### 4.6 旧版本客户端遇到更高格式的 Journal
+
+用户在更新途中把应用降级回旧版本时，旧版本可能读到新版本写入的 Journal：
+
+- 旧版本返回 `E_JOURNAL_FORMAT_TOO_NEW`（`action = update_client`），**不会**尝试重放，也不会破坏安装目录。
+- 正确处理是**先升级回新版本完成恢复**，再执行降级；如果业务上必须立即降级，只能在应用退出后手工移除 `journal/` 与 `.old/`（对应声明中的“手工介入”路径），代价是失去这次提交的回滚素材。
+- 不要把 Journal 的 `format` 字段手工改小：校验和会失配，结果退化为 `E_JOURNAL_CORRUPT`。
+
+### 4.7 `apply.json` 损坏
+
+`apply.json` 记录 `install_root`、`staging_root`、`commit_id` 与父进程 PID，是替换进程定位 Journal 的依据。它损坏时：
+
+1. `inspect` 会把 `apply.json` 列为警告并继续输出其余状态；
+2. 启动恢复返回 `NeedsAttention`（`E_JOURNAL_CORRUPT`），不会在根因不明时猜测路径；
+3. 修复方式是在应用内重新 `check` + `prepare`（会重写 `apply.json`）；若 `commit.journal` 仍存在且安装目录状态不确定，先保留目录并上报，不要手工构造 `apply.json`。
+
+
+### 4.8 检查更新很慢或日志提示跳过了云占位文件
+
+OneDrive / Files On-Demand 的占位文件在读取时才下载内容。为避免 `check` 触发整树水合，`scan_local` 会检测 `RECALL_ON_DATA_ACCESS` / `OFFLINE` 属性并跳过该文件，同时输出 `skipping cloud placeholder` 警告；`check` 结果的 `cloud_placeholders_skipped` 会给出被跳过的数量，便于 UI 解释下载量。行为是确定的：
+
+- 被跳过的文件**不会**参与本次 diff；不会因此被删除；
+- 若清单里仍有该文件，会按缺失文件从内容寻址的全量对象修复（相当于重新下载一份）；
+- 需要让该文件参与差异计算时，先让 OneDrive 在本地保留一份（右键 → “始终保留在此设备上”），再重新 `check`。
+
+只检测 `RECALL_ON_DATA_ACCESS` 与 `OFFLINE`，**不检测 `RECALL_ON_OPEN`**：后者可能残留在已完整下载的文件上，用它判断会把本地可读文件误判为占位文件。
+
+这也是诊断包里 `system.install_form` 只能给出启发式分类的原因之一：云同步目录可能不在标准的 `Program Files` / `%LOCALAPPDATA%` 下。
 
 
 ## 5. 手动清理的安全步骤

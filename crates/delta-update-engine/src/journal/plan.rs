@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::error::EngineError;
-use crate::path::validate_rel_path;
+use crate::path::validate_install_path;
 
 use super::format::{FileOp, Journal, JOURNAL_MAX_OPS};
 use crate::staging::PreparedPlan;
@@ -19,7 +19,7 @@ pub fn build(
 ) -> Result<Journal, EngineError> {
     let mut ops = Vec::with_capacity(plan.files.len() * 2 + plan.removed.len());
     for file in &plan.files {
-        validate_rel_path(&file.path)?;
+        validate_install_path(&file.path)?;
         if install_root.join(&file.path).exists() {
             ops.push(FileOp::Backup {
                 src: file.path.clone(),
@@ -34,7 +34,7 @@ pub fn build(
         });
     }
     for path in &plan.removed {
-        validate_rel_path(path)?;
+        validate_install_path(path)?;
         ops.push(FileOp::Trash {
             src: path.clone(),
             trash_dst: path.clone(),

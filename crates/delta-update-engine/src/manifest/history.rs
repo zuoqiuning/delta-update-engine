@@ -38,8 +38,4 @@ impl KnownFiles {
     pub fn contains(&self, path: &str) -> bool {
         self.files.contains(path)
     }
-
-    pub fn extend(&mut self, manifest: &super::model::Manifest) {
-        self.files.extend(manifest.files.keys().cloned());
-    }
 }

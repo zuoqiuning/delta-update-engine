@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::crypto::sha256_file;
 use crate::error::EngineError;
 use crate::fs::{FileSystem, RealFs};
-use crate::path::validate_rel_path;
+use crate::path::{validate_install_path, validate_rel_path};
 
 use super::format::{FileOp, Journal, JOURNAL_MAX_OPS};
 
@@ -85,14 +85,14 @@ fn is_done(context: &ReplayContext<'_>, op: &FileOp) -> Result<bool, String> {
         // been repopulated by a later Place. A missing source also means there
         // was nothing to back up.
         FileOp::Backup { src, dst } => Ok(resolve(context.install_root, dst)?.exists()
-            || !resolve(context.install_root, src)?.exists()),
+            || !resolve_install(context.install_root, src)?.exists()),
         FileOp::Place {
             dst, sha256, size, ..
         }
         | FileOp::Restore {
             dst, sha256, size, ..
         } => {
-            let dest = resolve(context.install_root, dst)?;
+            let dest = resolve_install(context.install_root, dst)?;
             if !dest.exists() {
                 return Ok(false);
             }
@@ -101,7 +101,7 @@ fn is_done(context: &ReplayContext<'_>, op: &FileOp) -> Result<bool, String> {
         // Same reasoning as Backup: a later op may have repopulated src.
         FileOp::Trash { src, trash_dst } => {
             Ok(trash_root(context).join(validate(trash_dst)?).exists()
-                || !resolve(context.install_root, src)?.exists())
+                || !resolve_install(context.install_root, src)?.exists())
         }
         FileOp::RemoveTrash { trash_path } => {
             Ok(!trash_root(context).join(validate(trash_path)?).exists())
@@ -112,7 +112,7 @@ fn is_done(context: &ReplayContext<'_>, op: &FileOp) -> Result<bool, String> {
 fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Result<(), String> {
     match op {
         FileOp::Backup { src, dst } => {
-            let source = resolve(context.install_root, src)?;
+            let source = resolve_install(context.install_root, src)?;
             let dest = resolve(context.install_root, dst)?;
             if !source.exists() {
                 return Err(format!("backup source is missing: {src}"));
@@ -126,7 +126,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
             size,
         } => {
             let source = resolve(context.staging_root, staging_src)?;
-            let dest = resolve(context.install_root, dst)?;
+            let dest = resolve_install(context.install_root, dst)?;
             if !source.exists() {
                 return Err(format!("staged source is missing: {staging_src}"));
             }
@@ -141,7 +141,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
             Ok(())
         }
         FileOp::Trash { src, trash_dst } => {
-            let source = resolve(context.install_root, src)?;
+            let source = resolve_install(context.install_root, src)?;
             let dest = trash_root(context).join(validate(trash_dst)?);
             if !source.exists() {
                 return Err(format!("trash source is missing: {src}"));
@@ -155,7 +155,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
             size,
         } => {
             let source = backup_source(context, backup_src)?;
-            let dest = resolve(context.install_root, dst)?;
+            let dest = resolve_install(context.install_root, dst)?;
             if !source.exists() {
                 return Err(format!("backup source is missing: {backup_src}"));
             }
@@ -182,7 +182,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
 
 fn backup_source(context: &ReplayContext<'_>, value: &str) -> Result<PathBuf, String> {
     if let Some(rest) = value.strip_prefix("old/") {
-        let rest = validate(rest)?;
+        let rest = validate_install(rest)?;
         return Ok(context
             .install_root
             .join(".old")
@@ -190,7 +190,7 @@ fn backup_source(context: &ReplayContext<'_>, value: &str) -> Result<PathBuf, St
             .join(rest));
     }
     if let Some(rest) = value.strip_prefix("trash/") {
-        let rest = validate(rest)?;
+        let rest = validate_install(rest)?;
         return Ok(trash_root(context).join(rest));
     }
     Err(format!("invalid backup source prefix: {value}"))
@@ -204,8 +204,17 @@ fn resolve(root: &Path, value: &str) -> Result<PathBuf, String> {
     Ok(root.join(validate(value)?))
 }
 
+fn resolve_install(root: &Path, value: &str) -> Result<PathBuf, String> {
+    Ok(root.join(validate_install(value)?))
+}
+
 fn validate(value: &str) -> Result<PathBuf, String> {
     validate_rel_path(value).map_err(|err| err.to_string())?;
+    Ok(PathBuf::from(value))
+}
+
+fn validate_install(value: &str) -> Result<PathBuf, String> {
+    validate_install_path(value).map_err(|err| err.to_string())?;
     Ok(PathBuf::from(value))
 }
 
@@ -229,15 +238,20 @@ fn move_path(
         if !overwrite {
             return Err(format!("destination already exists: {}", dest.display()));
         }
-        fs.remove(dest)
-            .map_err(|err| format!("remove {}: {err}", dest.display()))?;
+        crate::fs::retry_file_in_use(|| fs.remove(dest)).map_err(|err| {
+            format!(
+                "remove {}: {}",
+                dest.display(),
+                crate::fs::describe_io_error(&err)
+            )
+        })?;
     }
     if let Some(parent) = dest.parent() {
         fs.create_dir_all(parent)
             .map_err(|err| format!("create {}: {err}", parent.display()))?;
     }
 
-    match fs.rename(source, dest) {
+    match crate::fs::retry_file_in_use(|| fs.rename(source, dest)) {
         Ok(()) => {
             sync_parent(fs, dest);
             return Ok(());
@@ -248,9 +262,10 @@ fn move_path(
         Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {}
         Err(err) => {
             return Err(format!(
-                "rename {} -> {}: {err}",
+                "rename {} -> {}: {}",
                 source.display(),
-                dest.display()
+                dest.display(),
+                crate::fs::describe_io_error(&err)
             ))
         }
     }
@@ -260,13 +275,24 @@ fn move_path(
         .and_then(|name| name.to_str())
         .unwrap_or("object");
     let temp = dest.with_file_name(format!(".{name}.tmp-{}", Uuid::new_v4()));
-    std::fs::copy(source, &temp).map_err(|err| format!("copy {}: {err}", source.display()))?;
+    crate::fs::retry_file_in_use(|| std::fs::copy(source, &temp)).map_err(|err| {
+        format!(
+            "copy {}: {}",
+            source.display(),
+            crate::fs::describe_io_error(&err)
+        )
+    })?;
     if let Ok(file) = std::fs::File::open(&temp) {
         let _ = file.sync_all();
     }
-    fs.rename(&temp, dest)
-        .map_err(|err| format!("rename {}: {err}", temp.display()))?;
-    fs.remove(source)
+    crate::fs::retry_file_in_use(|| fs.rename(&temp, dest)).map_err(|err| {
+        format!(
+            "rename {}: {}",
+            temp.display(),
+            crate::fs::describe_io_error(&err)
+        )
+    })?;
+    crate::fs::retry_file_in_use(|| fs.remove(source))
         .map_err(|err| format!("remove {}: {err}", source.display()))?;
     sync_parent(fs, dest);
     Ok(())
@@ -275,5 +301,92 @@ fn move_path(
 fn sync_parent(fs: &dyn FileSystem, path: &Path) {
     if let Some(parent) = path.parent() {
         let _ = fs.sync_dir(parent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+
+    /// Delegates to the real filesystem but reports the first rename as a
+    /// cross-volume move, so the copy fallback is exercised on any volume.
+    struct CrossDeviceOnce {
+        inner: RealFs,
+        failed: AtomicBool,
+    }
+
+    impl FileSystem for CrossDeviceOnce {
+        fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+            self.inner.create_dir_all(path)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            if !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(io::Error::from(io::ErrorKind::CrossesDevices));
+            }
+            self.inner.rename(from, to)
+        }
+
+        fn write_atomic(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+            self.inner.write_atomic(path, data)
+        }
+
+        fn remove(&self, path: &Path) -> io::Result<()> {
+            self.inner.remove(path)
+        }
+
+        fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+            self.inner.read(path)
+        }
+
+        fn sync_dir(&self, path: &Path) -> io::Result<()> {
+            self.inner.sync_dir(path)
+        }
+    }
+
+    #[test]
+    fn crosses_devices_falls_back_to_copy_and_removes_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(staging.join("files")).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        let bytes = b"cross-device payload";
+        std::fs::write(staging.join("files/App.exe"), bytes).unwrap();
+
+        let journal = Journal::new(
+            "00000000-0000-4000-8000-000000000001",
+            "2.0.0",
+            "1.0.0",
+            vec![FileOp::Place {
+                staging_src: "files/App.exe".into(),
+                dst: "App.exe".into(),
+                sha256: crate::crypto::sha256_bytes(bytes),
+                size: bytes.len() as u64,
+            }],
+        );
+        let journal_root = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_root).unwrap();
+        let context = ReplayContext {
+            install_root: &install,
+            staging_root: &staging,
+            journal_root: &journal_root,
+            commit_id: &journal.commit_id,
+        };
+        let fs = CrossDeviceOnce {
+            inner: RealFs,
+            failed: AtomicBool::new(false),
+        };
+
+        let outcome = replay_with_fs(&context, &journal, &fs).unwrap();
+        assert_eq!(outcome, JournalOutcome::Replayed { ops_completed: 1 });
+        assert_eq!(std::fs::read(install.join("App.exe")).unwrap(), bytes);
+        assert!(
+            !staging.join("files/App.exe").exists(),
+            "copy fallback should remove the source after the rename"
+        );
     }
 }

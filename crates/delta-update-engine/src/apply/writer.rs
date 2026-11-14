@@ -30,13 +30,33 @@ impl DirectWriter {
         journal_path: &Path,
         fs: &dyn FileSystem,
     ) -> Result<CommitStatus, EngineError> {
-        let _lock = UpdateLock::acquire(&config.journal_root.join(state::UPDATE_LOCK))?;
         let bytes = std::fs::read(journal_path)
             .map_err(|err| EngineError::JournalCorrupt(format!("read journal: {err}")))?;
         let journal = Journal::decode(&bytes)?;
+        self.apply_decoded_journal_with_fs(config, &journal, fs)
+    }
+
+    /// Execute an already-decoded journal.
+    ///
+    /// The verified worker path calls this so the bytes that were checked are
+    /// exactly the operations that run; re-reading the file here would leave a
+    /// verify/execute gap for an attacker with write access to the journal
+    /// directory.
+    pub fn apply_decoded_journal_with_fs(
+        &self,
+        config: &ApplyConfig,
+        journal: &Journal,
+        fs: &dyn FileSystem,
+    ) -> Result<CommitStatus, EngineError> {
+        let _lock = UpdateLock::acquire(&config.journal_root.join(state::UPDATE_LOCK))?;
         if journal.commit_id != config.commit_id {
             return Err(EngineError::JournalCorrupt(
                 "commit_id does not match apply.json".into(),
+            ));
+        }
+        if journal.version != config.version {
+            return Err(EngineError::JournalCorrupt(
+                "journal version does not match apply.json".into(),
             ));
         }
 
@@ -48,7 +68,7 @@ impl DirectWriter {
             commit_id: &journal.commit_id,
         };
 
-        let status = match replay_with_fs(&context, &journal, fs)? {
+        let status = match replay_with_fs(&context, journal, fs)? {
             JournalOutcome::Replayed { .. } | JournalOutcome::AlreadyCompleted => {
                 CommitStatus::Completed {
                     version: journal.version.clone(),
@@ -86,7 +106,34 @@ impl PrivilegedWriter for DirectWriter {
     }
 }
 
+/// Execute the journal that `begin_commit` persisted after verifying that every
+/// target is bound to the signed manifest. This is the production worker path.
+pub fn apply_commit_verified(
+    journal_root: &Path,
+    commit_id: &str,
+    keys: &[String],
+) -> Result<CommitStatus, EngineError> {
+    let config = state::read_apply_config(journal_root)?.ok_or(EngineError::NotPrepared)?;
+    if config.commit_id != commit_id {
+        return Err(EngineError::JournalCorrupt(
+            "commit_id does not match apply.json".into(),
+        ));
+    }
+    let bytes = std::fs::read(journal_root.join(COMMIT_JOURNAL))
+        .map_err(|err| EngineError::JournalCorrupt(format!("read journal: {err}")))?;
+    let journal = Journal::decode(&bytes)?;
+    crate::journal::verify::verify_commit_journal(journal_root, &config, &journal, keys, false)?;
+    DirectWriter.apply_decoded_journal_with_fs(&config, &journal, &RealFs)
+}
+
 /// Execute the journal that `begin_commit` persisted.
+///
+/// # Security
+///
+/// This is a low-level legacy entry point that does **not** verify the journal
+/// against a signed manifest. It exists for tests and migration tooling only;
+/// a production worker must call [`apply_commit_verified`] so a forged
+/// `commit.journal` cannot place arbitrary files.
 pub fn apply_commit(journal_root: &Path, commit_id: &str) -> Result<CommitStatus, EngineError> {
     let config = state::read_apply_config(journal_root)?.ok_or(EngineError::NotPrepared)?;
     if config.commit_id != commit_id {

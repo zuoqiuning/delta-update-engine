@@ -15,10 +15,24 @@ const PARENT_WAIT_LIMIT: Duration = Duration::from_secs(600);
 /// process to exit, then reads `apply.json` and executes the journal. When
 /// `relaunch` is set (the `restart_to_apply` path), the new binary is started
 /// after the files have been replaced.
+///
+/// This wrapper has no keys and therefore **fails closed**; use
+/// [`run_applier_with_keys`] or the plugin's `run_applier_from_context`.
 pub fn run_applier(
     journal_root: &Path,
     commit_id: &str,
     relaunch: bool,
+) -> Result<(), EngineError> {
+    run_applier_with_keys(journal_root, commit_id, relaunch, &[])
+}
+
+/// Same as [`run_applier`], but verifies the journal against the signed
+/// manifest with the embedded public keys before executing it.
+pub fn run_applier_with_keys(
+    journal_root: &Path,
+    commit_id: &str,
+    relaunch: bool,
+    keys: &[String],
 ) -> Result<(), EngineError> {
     let exe = std::env::current_exe()
         .map_err(|err| EngineError::ApplyHelperFailed(format!("current exe: {err}")))?;
@@ -30,7 +44,7 @@ pub fn run_applier(
     }
     validate_scope(&exe, &config)?;
     wait_for_parent(config.parent_pid)?;
-    super::writer::apply_commit(journal_root, commit_id)?;
+    super::writer::apply_commit_verified(journal_root, commit_id, keys)?;
 
     if relaunch {
         // The file at `exe` is the new version now. Spawning it must not use
@@ -48,7 +62,18 @@ pub fn run_applier(
 /// that cannot be replayed with the current user token. The worker reads
 /// `apply.json` for the roots, re-validates them against its own executable,
 /// and counts this process as the startup attempt.
+///
+/// This wrapper has no keys and therefore **fails closed**; use
+/// [`run_recovery_with_keys`].
 pub fn run_recovery(journal_root: &Path, crash_loop_threshold: u32) -> Result<(), EngineError> {
+    run_recovery_with_keys(journal_root, crash_loop_threshold, &[])
+}
+
+pub fn run_recovery_with_keys(
+    journal_root: &Path,
+    crash_loop_threshold: u32,
+    keys: &[String],
+) -> Result<(), EngineError> {
     if crash_loop_threshold == 0 {
         return Err(EngineError::ConfigInvalid(
             "crash_loop_threshold must be at least 1".into(),
@@ -63,12 +88,17 @@ pub fn run_recovery(journal_root: &Path, crash_loop_threshold: u32) -> Result<()
         ));
     }
     validate_scope(&exe, &config)?;
-    crate::recovery::recover_worker(&config, journal_root, crash_loop_threshold)
+    crate::recovery::recover_worker(&config, journal_root, crash_loop_threshold, keys)
 }
 
 /// Detect replacement or recovery mode from process arguments. Returns
 /// `None` for a normal application start.
 pub fn run_applier_from_args() -> Option<i32> {
+    run_applier_from_args_with_keys(&[])
+}
+
+/// Parse worker arguments and verify the journal against `keys` when provided.
+pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
     let mut args = std::env::args_os().skip(1);
     let mode = args.next()?;
     if mode == std::ffi::OsStr::new("--delta-update-recover") {
@@ -88,13 +118,46 @@ pub fn run_applier_from_args() -> Option<i32> {
         let Ok(threshold) = threshold.to_string_lossy().parse::<u32>() else {
             return Some(usage());
         };
-        return Some(match run_recovery(Path::new(&journal_root), threshold) {
-            Ok(()) => 0,
-            Err(error) => {
-                eprintln!("delta update recovery failed: {error}");
-                1
-            }
-        });
+        // Each worker process runs one mode only; resetting here keeps the
+        // recovery line scoped to this pass instead of inheriting unknown state.
+        crate::fs::reset_retry_count();
+        crate::worker_log::append(
+            Path::new(&journal_root),
+            &format!(
+                "recovery started journal={} exe={}",
+                journal_root.display(),
+                current_exe_display()
+            ),
+        );
+        let started = Instant::now();
+        return Some(
+            match run_recovery_with_keys(Path::new(&journal_root), threshold, keys) {
+                Ok(()) => {
+                    crate::worker_log::append(
+                        Path::new(&journal_root),
+                        &format!(
+                            "recovery ok in {} ms (retries {})",
+                            started.elapsed().as_millis(),
+                            crate::fs::retry_count()
+                        ),
+                    );
+                    0
+                }
+                Err(error) => {
+                    crate::worker_log::append(
+                        Path::new(&journal_root),
+                        &format!(
+                            "recovery failed after {} ms (retries {}): {}",
+                            started.elapsed().as_millis(),
+                            crate::fs::retry_count(),
+                            crate::worker_log::oneline(&error.to_string())
+                        ),
+                    );
+                    eprintln!("delta update recovery failed: {error}");
+                    1
+                }
+            },
+        );
     }
     if mode != std::ffi::OsStr::new("--delta-update-apply") {
         return None;
@@ -119,13 +182,61 @@ pub fn run_applier_from_args() -> Option<i32> {
         return Some(usage());
     }
     let commit_id = commit_id.to_string_lossy();
-    match run_applier(Path::new(&journal_root), &commit_id, relaunch) {
-        Ok(()) => Some(0),
+    let journal_path = Path::new(&journal_root);
+    crate::fs::reset_retry_count();
+    // Write this before any fallible step: if the worker aborts later (panic or
+    // `std::process::abort` in a harness), the bundle still shows that it ran.
+    crate::worker_log::append(
+        journal_path,
+        &format!(
+            "apply started commit={commit_id} journal={} exe={}",
+            journal_root.display(),
+            current_exe_display()
+        ),
+    );
+    let started = Instant::now();
+    match run_applier_with_keys(journal_path, &commit_id, relaunch, keys) {
+        Ok(()) => {
+            // Success is silent by design, but support staff still need a
+            // durable record that this commit ran and how long it took.
+            let version = state::read_commit_status(journal_path)
+                .ok()
+                .flatten()
+                .and_then(|status| match status {
+                    state::CommitStatus::Completed { version, .. } => Some(version),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "unknown".into());
+            crate::worker_log::append(
+                journal_path,
+                &format!(
+                    "apply commit {commit_id} ok in {} ms (version {version}, retries {})",
+                    started.elapsed().as_millis(),
+                    crate::fs::retry_count()
+                ),
+            );
+            Some(0)
+        }
         Err(error) => {
+            crate::worker_log::append(
+                journal_path,
+                &format!(
+                    "apply commit {commit_id} failed after {} ms (retries {}): {}",
+                    started.elapsed().as_millis(),
+                    crate::fs::retry_count(),
+                    crate::worker_log::oneline(&error.to_string())
+                ),
+            );
             eprintln!("delta update apply failed: {error}");
             Some(1)
         }
     }
+}
+
+fn current_exe_display() -> String {
+    std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 /// A worker must never write outside the installation that contains it. This
@@ -145,21 +256,43 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
             )));
         }
     }
-    if !exe.starts_with(&config.install_root) {
+    let install_root = dunce::canonicalize(&config.install_root).map_err(|err| {
+        EngineError::ConfigInvalid(format!(
+            "install_root ({}) is not accessible: {err}",
+            config.install_root.display()
+        ))
+    })?;
+    let exe_parent = exe
+        .parent()
+        .ok_or_else(|| {
+            EngineError::ApplyHelperFailed(format!(
+                "worker executable has no parent: {}",
+                exe.display()
+            ))
+        })
+        .and_then(|parent| {
+            dunce::canonicalize(parent).map_err(|err| {
+                EngineError::ApplyHelperFailed(format!(
+                    "cannot resolve worker directory ({}): {err}",
+                    parent.display()
+                ))
+            })
+        })?;
+    if exe_parent != install_root {
         return Err(EngineError::ApplyHelperFailed(format!(
-            "install_root ({}) does not contain the worker executable ({})",
-            config.install_root.display(),
-            exe.display()
+            "install_root ({}) must be the worker executable's directory ({})",
+            install_root.display(),
+            exe_parent.display()
         )));
     }
-    if config.staging_root.starts_with(&config.install_root)
-        || config.journal_root.starts_with(&config.install_root)
+    if config.staging_root.starts_with(&install_root)
+        || config.journal_root.starts_with(&install_root)
     {
         return Err(EngineError::ConfigInvalid(format!(
             "staging_root ({}) and journal_root ({}) must stay outside install_root ({})",
             config.staging_root.display(),
             config.journal_root.display(),
-            config.install_root.display()
+            install_root.display()
         )));
     }
     Ok(())
@@ -195,12 +328,16 @@ fn spawn_detached(exe: &Path) -> std::io::Result<()> {
 }
 
 fn wait_for_parent(pid: u32) -> Result<(), EngineError> {
+    wait_for_parent_with_limit(pid, PARENT_WAIT_LIMIT)
+}
+
+fn wait_for_parent_with_limit(pid: u32, limit: Duration) -> Result<(), EngineError> {
     if pid == 0 || pid == std::process::id() {
         return Ok(());
     }
     let target = Pid::from_u32(pid);
     let mut system = System::new();
-    let deadline = Instant::now() + PARENT_WAIT_LIMIT;
+    let deadline = Instant::now() + limit;
     loop {
         system.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
         if system.process(target).is_none() {
@@ -260,5 +397,25 @@ mod tests {
         let exe = install.join("app.exe");
         let config = apply_config(&install, PathBuf::from("staging"), PathBuf::from("journal"));
         assert!(validate_scope(&exe, &config).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parent_wait_timeout_reports_a_helper_failure() {
+        // A child that deliberately outlives the wait limit proves the worker
+        // gives up instead of hanging forever behind a wedged parent.
+        let mut child = Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let error = wait_for_parent_with_limit(child.id(), Duration::from_millis(50)).unwrap_err();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(error, EngineError::ApplyHelperFailed(_)),
+            "unexpected error: {error:?}"
+        );
     }
 }

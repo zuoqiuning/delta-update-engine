@@ -98,6 +98,21 @@ pub(crate) fn validate(value: &str) -> Result<String, EngineError> {
     Ok(value.to_string())
 }
 
+pub(crate) fn validate_install(value: &str) -> Result<String, EngineError> {
+    let validated = validate(value)?;
+    let first = validated.split('/').next().unwrap_or_default();
+    if is_bookkeeping_name(first) {
+        return Err(EngineError::PathInvalid(format!(
+            "path uses a reserved update directory: {value}"
+        )));
+    }
+    Ok(validated)
+}
+
+fn is_bookkeeping_name(segment: &str) -> bool {
+    segment.eq_ignore_ascii_case(".old") || segment.eq_ignore_ascii_case(".trash")
+}
+
 fn is_reserved_name(segment: &str) -> bool {
     let stem = segment.split('.').next().unwrap_or(segment);
     let upper = stem.to_ascii_uppercase();

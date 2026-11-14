@@ -2,9 +2,13 @@ mod common;
 
 use delta_update_engine::journal::state;
 use delta_update_engine::journal::{Journal, JournalOutcome, ReplayContext};
-use delta_update_engine::{CommitStatus, DirectWriter, PrivilegedWriter, StartupOutcome};
+use delta_update_engine::{
+    CommitStatus, DirectWriter, PrivilegedWriter, StartupOutcome, UpdateResult,
+};
 
-use common::{apply, fixture, ADDED_FILE, NEW_APP, OLD_APP, REMOVED_FILE, VERSION};
+use common::{
+    apply, fixture, fixture_with_threshold, ADDED_FILE, NEW_APP, OLD_APP, REMOVED_FILE, VERSION,
+};
 
 /// A worker that never started must not leave a commit journal behind: the
 /// next start has to reuse PREPARED instead of replaying it unelevated.
@@ -100,6 +104,109 @@ fn rollback_restores_old_and_removes_new_files() {
     assert!(!pending.journal_path.exists());
 }
 
+#[test]
+fn resumed_rollback_cleans_commit_state_and_marks_version_skipped() {
+    let fixture = fixture();
+    let (_config, pending, _status) = apply(&fixture);
+    let commit = Journal::decode(&std::fs::read(&pending.journal_path).unwrap()).unwrap();
+    let old_hashes = state::read_old_hashes(&fixture.journal()).unwrap();
+    let ops =
+        delta_update_engine::rollback::inverse::inverse(&fixture.root(), &commit, &old_hashes)
+            .unwrap();
+    let rollback = Journal::new(
+        &commit.commit_id,
+        &commit.from_version,
+        &commit.version,
+        ops,
+    );
+    rollback
+        .write_atomic(&fixture.journal().join("rollback.journal"))
+        .unwrap();
+
+    // Simulate a crash after the rollback journal was replayed but before the
+    // cleanup ran.
+    let staging = fixture.staging();
+    let context = ReplayContext {
+        install_root: &fixture.root(),
+        staging_root: &staging,
+        journal_root: &fixture.journal(),
+        commit_id: &commit.commit_id,
+    };
+    assert!(matches!(
+        delta_update_engine::journal::replay(&context, &rollback).unwrap(),
+        JournalOutcome::Replayed { .. }
+    ));
+    assert_eq!(
+        std::fs::read(fixture.root().join("App.exe")).unwrap(),
+        OLD_APP
+    );
+
+    match fixture.engine.recover_and_cleanup().unwrap() {
+        StartupOutcome::RolledBack { to_version, .. } => assert_eq!(to_version, "1.0.0"),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+    assert_eq!(
+        state::read_skipped_version(&fixture.journal()).as_deref(),
+        Some(VERSION)
+    );
+    assert_eq!(state::read_attempts(&fixture.journal()), 0);
+    for name in [
+        state::COMMIT_JOURNAL,
+        state::COMMIT_STATUS,
+        state::APPLY_JSON,
+        state::OLD_HASHES,
+        state::PREPARED_JSON,
+        state::ROLLBACK_JOURNAL,
+    ] {
+        assert!(
+            !fixture.journal().join(name).exists(),
+            "{name} should be cleaned after a resumed rollback"
+        );
+    }
+    assert!(!staging.exists());
+    assert!(!fixture.root().join(".old").join(&commit.commit_id).exists());
+
+    // The next start must be clean, never "Committed" with old files.
+    assert!(matches!(
+        fixture.engine.recover_and_cleanup().unwrap(),
+        StartupOutcome::Clean
+    ));
+}
+
+#[test]
+fn rollback_rejects_a_corrupted_old_backup() {
+    let fixture = fixture();
+    let (config, pending, _status) = apply(&fixture);
+    let commit = Journal::decode(&std::fs::read(&pending.journal_path).unwrap()).unwrap();
+    let backup = fixture
+        .root()
+        .join(".old")
+        .join(&commit.commit_id)
+        .join("App.exe");
+    std::fs::write(&backup, b"corrupted-backup").unwrap();
+
+    let error = delta_update_engine::rollback::rollback(&config, &commit).unwrap_err();
+    assert_eq!(error.code(), "E_JOURNAL_REPLAY_FAILED");
+    assert_eq!(
+        std::fs::read(fixture.root().join("App.exe")).unwrap(),
+        NEW_APP,
+        "a corrupt backup must not overwrite the new file"
+    );
+    assert!(
+        backup.exists(),
+        "rollback must keep the bad backup for diagnosis"
+    );
+}
+
+#[test]
+fn a_second_pending_commit_is_rejected() {
+    let fixture = fixture();
+    fixture.engine.begin_commit(&fixture.prepared).unwrap();
+    let error = fixture.engine.begin_commit(&fixture.prepared).unwrap_err();
+    assert_eq!(error.code(), "E_UPDATE_LOCKED");
+    fixture.engine.discard_pending_commit().unwrap();
+}
+
 /// An in-flight prepare holds the cross-process lock for the whole download.
 /// Health confirmation must still reset the startup counter, otherwise two
 /// slow launches would look like a crash loop.
@@ -145,6 +252,61 @@ fn recovery_replays_pending_journal() {
     );
 }
 
+/// A production engine (`Engine::new`) must refuse a journal that is not bound
+/// to a signed manifest. Only the hidden `new_legacy` constructor can execute
+/// one, and the plugin/CLI never call it.
+#[test]
+fn production_engine_refuses_a_journal_without_commit_meta() {
+    let fixture = fixture();
+    fixture.engine.begin_commit(&fixture.prepared).unwrap();
+    assert!(!fixture.journal().join("commit.meta.json").exists());
+
+    let strict = fixture.strict_engine();
+    match strict.recover_and_cleanup().unwrap() {
+        StartupOutcome::NeedsAttention { .. } => {}
+        other => panic!("expected NeedsAttention, got {other:?}"),
+    }
+}
+
+/// Confirmed updates are persisted for the host application's monitoring.
+#[test]
+fn confirmed_updates_are_recorded_in_history() {
+    let fixture = fixture();
+    apply(&fixture);
+    fixture.engine.confirm_healthy().unwrap();
+
+    let history = fixture.engine.update_history(10);
+    let record = history.last().expect("one completed record");
+    assert_eq!(record.result, UpdateResult::Completed);
+    assert_eq!(record.version, VERSION);
+    assert_eq!(record.from_version.as_deref(), Some("1.0.0"));
+    assert!(record.duration_ms.is_some());
+}
+
+/// A crash-loop rollback is recorded with its reason so operators can see it.
+#[test]
+fn rollbacks_are_recorded_in_history() {
+    let fixture = fixture();
+    apply(&fixture);
+    for _ in 0..3 {
+        fixture.engine.recover_and_cleanup().unwrap();
+    }
+
+    let history = fixture.engine.update_history(10);
+    let record = history.last().expect("one rolled_back record");
+    assert_eq!(record.result, UpdateResult::RolledBack);
+    assert_eq!(record.version, VERSION);
+    assert!(
+        record
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unconfirmed starts"),
+        "reason: {:?}",
+        record.reason
+    );
+}
+
 #[test]
 fn crash_loop_triggers_rollback_on_third_start() {
     let fixture = fixture();
@@ -172,6 +334,46 @@ fn crash_loop_triggers_rollback_on_third_start() {
     assert_eq!(
         std::fs::read_to_string(fixture.journal().join("attempts")).unwrap(),
         "0"
+    );
+}
+
+/// A clean exit after the grace period means this session did not crash, so it
+/// must not accumulate towards a rollback. The counter never goes negative.
+#[test]
+fn clean_exit_discounts_one_unconfirmed_start() {
+    let fixture = fixture();
+    apply(&fixture);
+    assert!(matches!(
+        fixture.engine.recover_and_cleanup().unwrap(),
+        StartupOutcome::Committed { .. }
+    ));
+    assert_eq!(state::read_attempts(&fixture.journal()), 1);
+
+    fixture.engine.discount_clean_exit().unwrap();
+    assert_eq!(state::read_attempts(&fixture.journal()), 0);
+
+    fixture.engine.discount_clean_exit().unwrap();
+    assert_eq!(state::read_attempts(&fixture.journal()), 0);
+}
+
+/// Without a committed update there is no crash loop to discount.
+#[test]
+fn clean_exit_ignores_an_update_that_is_not_awaiting_confirmation() {
+    let fixture = fixture();
+    std::fs::write(fixture.journal().join("attempts"), "2").unwrap();
+    fixture.engine.discount_clean_exit().unwrap();
+    assert_eq!(state::read_attempts(&fixture.journal()), 2);
+}
+
+/// The threshold is persisted so offline `inspect` can show "N / M".
+#[test]
+fn startup_records_the_threshold_for_offline_diagnostics() {
+    let fixture = fixture_with_threshold(3);
+    apply(&fixture);
+    fixture.engine.recover_and_cleanup().unwrap();
+    assert_eq!(
+        state::read_crash_loop_threshold(&fixture.journal()),
+        Some(3)
     );
 }
 

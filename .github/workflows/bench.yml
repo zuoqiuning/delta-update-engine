@@ -1,0 +1,41 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # criterion compares against whatever baseline lives in target/criterion,
+      # so PRs restore the newest main baseline before measuring.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/criterion
+          key: bench-baseline-main-${{ github.sha }}
+          restore-keys: bench-baseline-main-
+
+      - name: Measure
+        shell: bash
+        run: |
+          if [ -d target/criterion ] && [ -n "$(ls -A target/criterion 2>/dev/null)" ]; then
+            cargo bench --workspace -- --baseline main
+          else
+            cargo bench --workspace -- --save-baseline main
+          fi
+
+      - name: Check for regressions
+        run: cargo run -p xtask -- bench-check --threshold 0.10
+
+      - name: Save main baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: target/criterion
+          key: bench-baseline-main-${{ github.sha }}

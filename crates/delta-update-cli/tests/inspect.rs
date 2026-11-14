@@ -94,3 +94,135 @@ fn accepts_a_clean_journal_directory() {
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("没有待处理的更新状态"));
 }
+
+#[test]
+fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_path = dir.path().join("bundle.json");
+    let bundle = serde_json::json!({
+        "tool": "tauri-plugin-delta-update",
+        "report": {
+            "journal_dir": "<journal_root>",
+            "apply": {
+                "version": "2.0.0",
+                "commit_id": COMMIT_ID,
+                "install_root": "<install_root>",
+                "staging_root": "<staging_root>",
+                "parent_pid": 1
+            },
+            "status": { "state": "completed", "version": "2.0.0", "commit_id": COMMIT_ID },
+            "journal": {
+                "file": "commit.journal",
+                "commit_id": COMMIT_ID,
+                "version": "2.0.0",
+                "from_version": "1.0.0",
+                "ops": 2,
+                "backup": 0,
+                "place": 1,
+                "trash": 1,
+                "restore": 0,
+                "remove_trash": 0,
+                "ops_detail": [
+                    { "kind": "Place", "path": "App.exe", "status": "landed" },
+                    { "kind": "Trash", "path": "legacy.txt", "status": "landed" }
+                ]
+            },
+            "rollback_journal": null,
+            "prepared": null,
+            "attempts": 1,
+            "skipped_version": null,
+            "warnings": [],
+            "diagnosis": "ok"
+        },
+        "worker_log": "apply started commit=x\npatch fallback: bin/core.dll: E_PATCH_APPLY_FAILED\n"
+    });
+    std::fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--bundle"])
+        .arg(&bundle_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["v"], 1);
+    assert_eq!(report["tool"], "delta-update-cli");
+    assert_eq!(report["version"], "2.0.0");
+    assert_eq!(report["fell_back"], 1);
+    assert_eq!(report["removed"], 1);
+
+    let files = report["files"].as_array().unwrap();
+    let row = |path: &str| {
+        files
+            .iter()
+            .find(|file| file["path"] == path)
+            .unwrap_or_else(|| panic!("missing row for {path}: {files:?}"))
+    };
+    assert_eq!(row("App.exe")["ops"], serde_json::json!(["Place (landed)"]));
+    assert_eq!(
+        row("bin/core.dll")["fallbacks"],
+        serde_json::json!(["E_PATCH_APPLY_FAILED"])
+    );
+    assert_eq!(
+        row("legacy.txt")["ops"],
+        serde_json::json!(["Trash (landed)"])
+    );
+}
+
+#[test]
+fn bundle_conflicts_with_a_journal_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--bundle"])
+        .arg(dir.path().join("bundle.json"))
+        .args(["--journal-dir"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
+}
+
+#[test]
+fn export_writes_a_support_bundle_with_the_worker_log_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("worker.log"), "apply commit x failed: locked\n").unwrap();
+    std::fs::write(root.join("attempts"), "1").unwrap();
+    let bundle_path = root.join("out/bundle.json");
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(root)
+        .arg("--json")
+        .arg("--export")
+        .arg(&bundle_path)
+        .arg("--redact")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("诊断包已写入"));
+
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&bundle_path).unwrap()).unwrap();
+    assert_eq!(bundle["tool"], "delta-update-cli");
+    assert_eq!(bundle["report"]["attempts"], 1);
+    assert_eq!(bundle["redacted"], true);
+    assert_eq!(bundle["report"]["journal_dir"], "<journal_root>");
+    assert!(bundle["system"]["os"].is_string());
+    assert!(bundle["worker_log"].as_str().unwrap().contains("locked"));
+    let names: Vec<&str> = bundle["journal_dir_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"worker.log"));
+    assert!(names.contains(&"attempts"));
+}

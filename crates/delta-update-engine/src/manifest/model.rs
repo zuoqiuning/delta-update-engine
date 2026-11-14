@@ -129,6 +129,21 @@ pub struct Manifest {
     pub files: HashMap<String, FileEntry>,
     #[serde(default)]
     pub rollback: bool,
+    /// Oldest client version the publisher still supports. Older clients see
+    /// `update_required` in `check`; the application decides how strict to be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_supported_version: Option<String>,
+}
+
+impl Manifest {
+    /// Whether `current` is below the publisher's minimum supported version.
+    /// Malformed values are ignored (parse_manifest already rejects them).
+    pub fn is_update_required(&self, current: &semver::Version) -> bool {
+        self.min_supported_version
+            .as_deref()
+            .and_then(|value| semver::Version::parse(value).ok())
+            .is_some_and(|min| *current < min)
+    }
 }
 
 fn is_false(value: &bool) -> bool {

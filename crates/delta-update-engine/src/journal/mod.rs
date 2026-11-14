@@ -5,6 +5,7 @@ pub mod lock;
 pub mod plan;
 pub mod replay;
 pub mod state;
+pub mod verify;
 
 pub use format::{FileOp, Journal, JOURNAL_MAX_OPS};
 pub use lock::UpdateLock;

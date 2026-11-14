@@ -2,6 +2,7 @@ export const STATE_EVENT = 'delta-update://state';
 
 export const STATE_NAMES = [
   'Idle',
+  'UpdateRequired',
   'Checking',
   'Downloading',
   'Preparing',
@@ -19,6 +20,8 @@ export type UpdateStateName = (typeof STATE_NAMES)[number];
 export interface UpdateProgress {
   total: number;
   completed: number;
+  /** Meaning of total/completed. `Prepared` payloads omit it. */
+  unit?: 'bytes' | 'files' | 'ops';
   /** File currently being downloaded or verified, when the plugin reports one. */
   file?: string | null;
 }
@@ -34,7 +37,8 @@ export type ErrorAction =
   | 'report_security'
   | 'recover_backup'
   | 'fix_config'
-  | 'unsupported';
+  | 'unsupported'
+  | 'restart';
 
 export interface UpdateError {
   code: string;
@@ -52,6 +56,8 @@ export interface UpdateStatePayload {
   version: string | null;
   progress: UpdateProgress | null;
   error: UpdateError | null;
+  /** Set only in `UpdateRequired`: the oldest version the publisher supports. */
+  min_supported_version?: string | null;
   timestamp: string;
 }
 
@@ -65,6 +71,16 @@ export interface CheckResult {
   total_bytes: number;
   notes: string | null;
   mandatory: boolean;
+  /** The running version is below the publisher's `min_supported_version`. */
+  update_required?: boolean;
+  /** Oldest version the publisher still supports; absent when unset. */
+  min_supported_version?: string | null;
+  /**
+   * Files skipped because they are cloud placeholders (OneDrive/Files
+   * On-Demand). If the manifest lists them, they are downloaded in full.
+   * Older plugin versions omit this field; treat a missing value as 0.
+   */
+  cloud_placeholders_skipped?: number;
 }
 
 export interface PrepareResult {
@@ -86,8 +102,65 @@ export interface RestartResult {
   version: string;
 }
 
+export interface DiagnosticsResult {
+  /** Absolute path of the JSON support bundle written next to the app logs. */
+  path: string;
+}
+
+export interface ClearSkipResult {
+  /** Whether a rollback skip marker existed and was removed. */
+  cleared: boolean;
+}
+
+/** One terminal update outcome from `get_update_history`. */
+export interface UpdateRecord {
+  v: number;
+  version: string;
+  from_version?: string | null;
+  started_at_unix?: number | null;
+  finished_at_unix: number;
+  result: 'completed' | 'rolled_back' | 'failed';
+  duration_ms?: number | null;
+  reason?: string | null;
+  error_code?: string | null;
+}
+
 export function isPrepared(
   payload: UpdateStatePayload,
 ): payload is UpdateStatePayload & { state: 'Prepared'; version: string } {
   return payload.state === 'Prepared' && payload.version !== null;
 }
+
+export const isCommitted = (
+  payload: UpdateStatePayload | null,
+): payload is UpdateStatePayload & { state: 'Committed'; version: string } =>
+  payload?.state === 'Committed' && payload.version !== null;
+
+export const isRolledBack = (
+  payload: UpdateStatePayload | null,
+): payload is UpdateStatePayload & { state: 'RolledBack' } =>
+  payload?.state === 'RolledBack';
+
+export const isFailed = (
+  payload: UpdateStatePayload | null,
+): payload is UpdateStatePayload & { state: 'Failed'; error: UpdateError } =>
+  payload?.state === 'Failed' && payload.error !== null;
+
+export const isUpdateRequired = (
+  payload: UpdateStatePayload | null,
+): payload is UpdateStatePayload & {
+  state: 'UpdateRequired';
+  min_supported_version: string;
+} => payload?.state === 'UpdateRequired' && !!payload.min_supported_version;
+
+const BUSY_STATES: ReadonlySet<UpdateStateName> = new Set([
+  'Checking',
+  'Downloading',
+  'Preparing',
+  'Committing',
+  'RollingBack',
+]);
+
+/** The plugin is doing work; commands that need the same gate will fail. */
+export const isBusy = (payload: UpdateStatePayload | null): boolean =>
+  payload !== null && BUSY_STATES.has(payload.state);

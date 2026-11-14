@@ -11,7 +11,7 @@
 | `manifest`  | 清单解析、字段校验、文件差异                     |
 | `crypto`    | SHA-256 流式校验、detached 签名验证              |
 | `fetch`     | 清单/签名/对象下载、Range 续传、预签名 URL       |
-| `patch`     | `.tdp` 容器、流式应用、构建侧差分                |
+| `patch`     | `.tdp` 容器、补丁应用（有内存预算）、构建侧差分 |
 | `staging`   | 只物化变化文件、暂存校验                         |
 | `journal`   | 提交日志格式、幂等重放、跨进程锁                 |
 | `apply`     | 替换进程入口、`PrivilegedWriter`                 |

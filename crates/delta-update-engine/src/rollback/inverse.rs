@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::crypto::sha256_file;
 use crate::error::EngineError;
+use crate::journal::state::OldHashes;
 use crate::journal::{FileOp, Journal};
 
 /// Build the inverse operation list for a commit journal.
@@ -10,7 +11,16 @@ use crate::journal::{FileOp, Journal};
 /// Backups that were never created (crash before the op) are skipped: the old
 /// file is still in place, so there is nothing to restore. New files without a
 /// backup are trashed.
-pub fn inverse(install_root: &Path, commit: &Journal) -> Result<Vec<FileOp>, EngineError> {
+///
+/// `old_hashes` is the pre-commit snapshot of the files that were replaced or
+/// removed. Restore operations must verify against that snapshot, not against
+/// the backup file's current bytes; otherwise a corrupted backup would be
+/// accepted as the old version.
+pub fn inverse(
+    install_root: &Path,
+    commit: &Journal,
+    old_hashes: &OldHashes,
+) -> Result<Vec<FileOp>, EngineError> {
     let backups: HashSet<&str> = commit
         .ops
         .iter()
@@ -26,8 +36,18 @@ pub fn inverse(install_root: &Path, commit: &Journal) -> Result<Vec<FileOp>, Eng
             FileOp::Place { dst, .. } => {
                 if backups.contains(dst.as_str()) {
                     let backup = install_root.join(".old").join(&commit.commit_id).join(dst);
-                    let Some((sha256, size)) = hash_if_exists(&backup)? else {
+                    let Some((backup_hash, backup_size)) = hash_if_exists(&backup)? else {
                         continue;
+                    };
+                    let (sha256, size) = match old_hashes.get(dst) {
+                        Some(expected) => (expected.sha256.clone(), expected.size),
+                        None => {
+                            tracing::warn!(
+                                %dst,
+                                "old hash snapshot is missing; rollback will trust the backup file"
+                            );
+                            (backup_hash, backup_size)
+                        }
                     };
                     ops.push(FileOp::Restore {
                         backup_src: format!("old/{dst}"),
@@ -44,8 +64,18 @@ pub fn inverse(install_root: &Path, commit: &Journal) -> Result<Vec<FileOp>, Eng
             }
             FileOp::Trash { src, trash_dst } => {
                 let trashed = trash_path(install_root, &commit.commit_id, trash_dst);
-                let Some((sha256, size)) = hash_if_exists(&trashed)? else {
+                let Some((trash_hash, trash_size)) = hash_if_exists(&trashed)? else {
                     continue;
+                };
+                let (sha256, size) = match old_hashes.get(src) {
+                    Some(expected) => (expected.sha256.clone(), expected.size),
+                    None => {
+                        tracing::warn!(
+                            %src,
+                            "old hash snapshot is missing; rollback will trust the trashed file"
+                        );
+                        (trash_hash, trash_size)
+                    }
                 };
                 ops.push(FileOp::Restore {
                     backup_src: format!("trash/{trash_dst}"),

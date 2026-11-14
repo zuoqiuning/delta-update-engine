@@ -1,15 +1,21 @@
 use delta_update_engine::EngineError;
 
-/// Desktop platforms that can replace files in a user-writable install root.
+/// The file-level replacement plugin is intentionally Windows-only.
+///
+/// macOS signed bundles and Linux package-manager/AppImage installs have
+/// different integrity models (code signing, read-only mounts, package
+/// ownership). Pretending to update them with a generic file replacement would
+/// be worse than refusing the update.
 pub fn ensure_supported() -> Result<(), EngineError> {
-    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         Ok(())
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(target_os = "windows"))]
     {
         Err(EngineError::UnsupportedPlatform(
-            "file-level replacement is only supported on desktop platforms".into(),
+            "delta-update supports Windows desktop only; use the platform installer/package manager elsewhere"
+                .into(),
         ))
     }
 }

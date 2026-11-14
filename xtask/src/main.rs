@@ -7,11 +7,15 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "ci" => tasks::ci::run(),
         "docs-check" => tasks::docs_links::run(),
+        "contract-check" => tasks::contract::run(),
+        "bench-check" => tasks::bench_check::run(),
         "version-sync" => tasks::version_sync::run(),
         "fixtures" => tasks::fixtures::run(),
         other => {
             eprintln!("unknown task: {other}");
-            eprintln!("available: ci, docs-check, version-sync, fixtures");
+            eprintln!(
+                "available: ci, docs-check, contract-check, bench-check, version-sync, fixtures"
+            );
             return ExitCode::FAILURE;
         }
     };

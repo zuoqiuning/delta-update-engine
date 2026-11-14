@@ -17,5 +17,6 @@ pub fn run() -> Result<(), String> {
         &[("CARGO_INCREMENTAL", "0")],
     )?;
     run_command("cargo", &["test", "--workspace"])?;
+    super::contract::run()?;
     Ok(())
 }

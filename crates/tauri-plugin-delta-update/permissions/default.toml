@@ -1,5 +1,5 @@
 [default]
-description = "Default permissions for the delta-update plugin"
+description = "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only)."
 permissions = [
     "allow-check",
     "allow-prepare",
@@ -7,4 +7,8 @@ permissions = [
     "allow-status",
     "allow-confirm-healthy",
     "allow-restart-to-apply",
+    "allow-export-diagnostics",
+    "allow-open-diagnostics-folder",
+    "allow-get-update-history",
+    "allow-clear-skipped-version",
 ]

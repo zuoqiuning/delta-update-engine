@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Test fixtures for delta-update-engine and tauri-plugin-delta-update"
+description = "Windows test fixtures for delta-update-engine and tauri-plugin-delta-update"
 publish = false
 
 [dependencies]
-delta-update-engine = { path = "../delta-update-engine", version = "0.1.0" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.1" }
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -17,6 +18,7 @@ minisign-verify.workspace = true
 minisign.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+url.workspace = true
 futures-util.workspace = true
 axum = "0.8"
 
@@ -27,3 +29,7 @@ path = "src/bin/crash_harness.rs"
 [[bin]]
 name = "testkeygen"
 path = "src/bin/testkeygen.rs"
+
+[[bin]]
+name = "worker_harness"
+path = "src/bin/worker_harness.rs"

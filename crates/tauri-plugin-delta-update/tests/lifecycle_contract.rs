@@ -217,7 +217,7 @@ async fn setup_recovers_committed_update_and_rolls_back_crash_loop() {
     let server = release_server(&keys, NEW_VERSION, &new).await;
     install_unconfirmed(&layout, &server, &keys).await;
 
-    for attempt in 1..=2 {
+    for attempt in 1..=3 {
         let app = build_app(&plugin_config(&layout, &server, &keys, false, false), &[]);
         let state = plugin_state(&app);
         assert!(
@@ -250,6 +250,80 @@ async fn setup_recovers_committed_update_and_rolls_back_crash_loop() {
         state::read_skipped_version(&layout.journal()).as_deref(),
         Some(NEW_VERSION)
     );
+}
+
+/// Add `exit_grace_period_secs` to a plugin config.
+fn with_grace(mut config: serde_json::Value, grace: u64) -> serde_json::Value {
+    config["exit_grace_period_secs"] = serde_json::json!(grace);
+    config
+}
+
+/// Build a committed-but-unconfirmed install and return the built mock app.
+async fn committed_app(
+    layout: &Layout,
+    keys: &TestKeyPair,
+    server: &MockServer,
+    grace: u64,
+) -> tauri::App<MockRuntime> {
+    tree::write_tree(&layout.root(), &[("App.exe", b"build 0.1.0".as_slice())])
+        .expect("seed install");
+    install_unconfirmed(layout, server, keys).await;
+    build_app(
+        &with_grace(plugin_config(layout, server, keys, false, false), grace),
+        &[],
+    )
+}
+
+/// A clean exit after the grace period discounts the unconfirmed start. This is
+/// the shared tail of the window-close and `app.exit(0)` paths.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_exit_after_grace_discounts_attempts() {
+    let _serial = SERIAL.lock().await;
+    let layout = Layout::new();
+    let keys = TestKeyPair::generate();
+    let server = release_server(&keys, NEW_VERSION, b"build 0.2.0").await;
+    let app = committed_app(&layout, &keys, &server, 0).await;
+    let state = plugin_state(&app);
+    assert!(matches!(state.snapshot(), EngineState::Committed { .. }));
+    assert_eq!(state::read_attempts(&layout.journal()), 1);
+
+    tauri_plugin_delta_update::lifecycle::on_exit(app.handle());
+
+    assert_eq!(state::read_attempts(&layout.journal()), 0);
+}
+
+/// Exiting inside the grace window keeps the attempt counted: a crash and an
+/// immediate exit look the same without waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_exit_within_grace_does_not_discount() {
+    let _serial = SERIAL.lock().await;
+    let layout = Layout::new();
+    let keys = TestKeyPair::generate();
+    let server = release_server(&keys, NEW_VERSION, b"build 0.2.0").await;
+    let app = committed_app(&layout, &keys, &server, 3600).await;
+    assert_eq!(state::read_attempts(&layout.journal()), 1);
+
+    tauri_plugin_delta_update::lifecycle::on_exit(app.handle());
+
+    assert_eq!(state::read_attempts(&layout.journal()), 1);
+}
+
+/// Another instance holding `update.lock` must not block shutdown: the discount
+/// is best effort and the stricter counter stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_exit_with_a_held_lock_does_not_block_shutdown() {
+    let _serial = SERIAL.lock().await;
+    let layout = Layout::new();
+    let keys = TestKeyPair::generate();
+    let server = release_server(&keys, NEW_VERSION, b"build 0.2.0").await;
+    let app = committed_app(&layout, &keys, &server, 0).await;
+
+    let _lock =
+        delta_update_engine::journal::UpdateLock::acquire(&layout.journal().join("update.lock"))
+            .expect("hold update lock");
+    tauri_plugin_delta_update::lifecycle::on_exit(app.handle());
+
+    assert_eq!(state::read_attempts(&layout.journal()), 1);
 }
 
 /// P-04: `auto_check: false` only exposes the commands.
@@ -362,6 +436,23 @@ async fn auto_apply_on_exit_flushes_commit_journal() {
     );
     assert!(layout.journal().join("commit.journal").exists());
     assert!(layout.journal().join("apply.json").exists());
+}
+
+/// A bad configuration must disable the update feature, not prevent the host
+/// application from starting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn invalid_config_disables_updates_without_failing_setup() {
+    let _serial = SERIAL.lock().await;
+    let config = serde_json::json!({
+        "config_version": 1,
+        "endpoint": "http://example.com/manifests/latest.json",
+        "signing_public_keys": ["not-a-key"],
+        "auto_check": true
+    });
+    let app = build_app(&config, &[]);
+    let state = plugin_state(&app);
+    assert!(state.is_disabled());
+    assert!(matches!(state.snapshot(), EngineState::Failed { .. }));
 }
 
 /// P-06: without a granted permission the runtime rejects plugin commands.

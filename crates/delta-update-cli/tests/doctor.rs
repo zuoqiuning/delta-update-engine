@@ -78,6 +78,7 @@ fn fixture() -> Fixture {
         rollback: false,
         notes: None,
         mandatory: false,
+        min_supported_version: None,
         files: std::collections::BTreeMap::from([(
             "a.txt".to_string(),
             ManifestFile {
@@ -111,6 +112,10 @@ fn doctor_args(endpoint: &str, public_key: &Path) -> cli::DoctorArgs {
     cli::DoctorArgs {
         endpoint: vec![endpoint.to_string()],
         public_key: Some(public_key.to_path_buf()),
+        check_config: false,
+        dir: ".".into(),
+        watch: None,
+        interval: 60,
         json: false,
     }
 }
@@ -133,6 +138,19 @@ fn doctor_reports_missing_objects() {
 }
 
 #[test]
+fn doctor_rejects_presigned_endpoints() {
+    let fixture = fixture();
+    let args = doctor_args(
+        "http://127.0.0.1:1/manifests/latest.json?sign=abc",
+        &fixture.public_key,
+    );
+    assert!(
+        pipeline::doctor(&args).is_err(),
+        "presigned endpoints are rejected on purpose"
+    );
+}
+
+#[test]
 fn doctor_json_shape_is_stable() {
     let fixture = fixture();
     let server = serve(fixture.files, 3);
@@ -140,4 +158,78 @@ fn doctor_json_shape_is_stable() {
     args.json = true;
     pipeline::doctor(&args).unwrap();
     server.handle.join().unwrap();
+}
+
+#[test]
+fn doctor_watch_zero_runs_a_single_pass() {
+    let fixture = fixture();
+    let server = serve(fixture.files, 3);
+    let mut args = doctor_args(&server.endpoint, &fixture.public_key);
+    args.watch = Some(0);
+    pipeline::doctor(&args).unwrap();
+    server.handle.join().unwrap();
+}
+
+#[test]
+fn doctor_watch_rejects_json_output() {
+    let fixture = fixture();
+    let mut args = doctor_args(
+        "https://example.com/manifests/latest.json",
+        &fixture.public_key,
+    );
+    args.watch = Some(60);
+    args.json = true;
+    let error = pipeline::doctor(&args).unwrap_err();
+    assert!(error.to_string().contains("--json"));
+}
+
+fn config_project(endpoint: &str) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("src-tauri")).unwrap();
+    std::fs::write(
+        temp.path().join("src-tauri/tauri.conf.json"),
+        format!(
+            r#"{{
+                "plugins": {{
+                    "delta-update": {{
+                        "config_version": 1,
+                        "endpoint": "{endpoint}",
+                        "signing_public_keys": ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"]
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .unwrap();
+    temp
+}
+
+fn check_config_args(dir: &Path) -> cli::DoctorArgs {
+    cli::DoctorArgs {
+        endpoint: Vec::new(),
+        public_key: None,
+        check_config: true,
+        dir: dir.to_path_buf(),
+        watch: None,
+        interval: 60,
+        json: false,
+    }
+}
+
+#[test]
+fn doctor_check_config_accepts_a_valid_plugin_section() {
+    let project = config_project("https://example.com/manifests/latest.json");
+    pipeline::doctor(&check_config_args(project.path())).unwrap();
+}
+
+#[test]
+fn doctor_check_config_rejects_an_insecure_endpoint() {
+    let project = config_project("http://example.com/manifests/latest.json");
+    let error = pipeline::doctor(&check_config_args(project.path())).unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<delta_update_engine::EngineError>()
+            .map(delta_update_engine::EngineError::code),
+        Some("E_ENDPOINT_INSECURE")
+    );
 }

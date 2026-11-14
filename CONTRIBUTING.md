@@ -4,7 +4,7 @@
 
 - Rust stable（见 `rust-toolchain.toml`）
 - Node.js 24+ 与 pnpm 12+
-- Windows 10+（完整功能）；Linux AppImage 与 macOS 未签名包为有限支持
+- Windows 10+（唯一支持形态；Plugins/CLI 不再接受 Linux/macOS 自更新）
 
 ## 开始
 

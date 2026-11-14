@@ -8,3 +8,4 @@ pub mod ignore;
 pub mod output;
 pub mod pipeline;
 pub mod publisher;
+pub mod scaffold;

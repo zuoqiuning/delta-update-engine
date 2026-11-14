@@ -1,11 +1,10 @@
-fn main() {
-    // Replacement mode: no Tauri, no window, just the journal.
-    if let Some(code) = tauri_plugin_delta_update::run_applier_from_args() {
-        std::process::exit(code);
-    }
+use tauri_plugin_delta_update::BuilderExt;
 
+fn main() {
+    // `run_with_delta_update` handles the replacement/recovery worker before
+    // any GUI is created, so worker mode cannot be missed by ordering.
     tauri::Builder::default()
         .plugin(tauri_plugin_delta_update::init())
-        .run(tauri::generate_context!())
+        .run_with_delta_update(tauri::generate_context!())
         .expect("error while running minimal delta app");
 }

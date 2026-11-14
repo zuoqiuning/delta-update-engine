@@ -36,14 +36,57 @@ pub fn build_engine<R: Runtime>(
         .journal_dir
         .clone()
         .unwrap_or_else(|| base.join("journal"));
-    let install_root = match &config.install_dir {
-        Some(path) => path.clone(),
-        None => std::env::current_exe()
-            .map_err(|err| EngineError::ConfigInvalid(format!("current exe: {err}")))?
-            .parent()
-            .ok_or_else(|| EngineError::ConfigInvalid("current exe has no parent".into()))?
-            .to_path_buf(),
+    let current_exe = std::env::current_exe()
+        .map_err(|err| EngineError::ConfigInvalid(format!("current exe: {err}")))?;
+    let install_root = if cfg!(debug_assertions) {
+        // Tests and `tauri dev` often run the executable outside the configured
+        // install_dir. Production builds use the strict resolver below.
+        match config.install_dir.as_deref() {
+            Some(path) => dunce::canonicalize(path).map_err(|err| {
+                EngineError::ConfigInvalid(format!(
+                    "install_dir ({}) is not accessible: {err}",
+                    path.display()
+                ))
+            })?,
+            None => current_exe
+                .parent()
+                .ok_or_else(|| EngineError::ConfigInvalid("current exe has no parent".into()))
+                .and_then(|parent| {
+                    dunce::canonicalize(parent).map_err(|err| {
+                        EngineError::ConfigInvalid(format!("current exe parent: {err}"))
+                    })
+                })?,
+        }
+    } else {
+        delta_update_engine::path::resolve_install_root(
+            config.install_dir.as_deref(),
+            &current_exe,
+        )?
     };
+    let exe_parent = current_exe
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .and_then(|parent| dunce::canonicalize(parent).ok());
+    #[cfg(debug_assertions)]
+    if config.install_dir.is_some() && exe_parent.as_ref() != Some(&install_root) {
+        tracing::warn!(
+            "install_dir differs from the running executable's directory: check/prepare work, but the replacement worker requires install_dir == exe parent, so restart_to_apply/auto_apply will not replace files"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    if config.install_dir.is_some() && exe_parent.as_ref() != Some(&install_root) {
+        // A release build must update exactly the directory it runs from. A
+        // broader install_dir (for example Program Files instead of the app
+        // folder) would give the elevated worker a much larger write scope.
+        return Err(EngineError::ConfigInvalid(format!(
+            "install_dir ({}) must be the running executable's directory ({})",
+            install_root.display(),
+            exe_parent
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<unknown>".into())
+        )));
+    }
 
     let endpoint = Url::parse(&config.endpoint)
         .map_err(|err| EngineError::ConfigInvalid(format!("endpoint: {err}")))?;
@@ -79,6 +122,7 @@ pub fn build_engine<R: Runtime>(
             manifest_max_bytes: limits.manifest_max_bytes,
             signature_max_bytes: SIGNATURE_MAX_BYTES,
             object_max_bytes: limits.max_full_bytes,
+            ..FetchLimits::default()
         },
         config.allowed_hosts.clone(),
         config.allow_insecure_http,
@@ -113,14 +157,20 @@ pub fn build_engine<R: Runtime>(
 /// result with `recover_after_elevation`, so the crash-loop counter advances
 /// exactly once per start.
 fn recover_at_startup(state: &PluginState) -> Result<StartupOutcome, EngineError> {
-    let engine = state.engine();
+    let engine = state.engine()?;
     if engine.recovery_needs_install_write()? {
         let config = engine.config();
         if crate::applier::needs_elevation(&config.install_root)? {
-            crate::applier::run_elevated_recovery(
+            if let Err(error) = crate::applier::run_elevated_recovery(
                 state.journal_root(),
                 config.crash_loop_threshold,
-            )?;
+            ) {
+                tracing::warn!(
+                    %error,
+                    "elevated startup recovery did not complete; the next start retries the same journal"
+                );
+                return Err(error);
+            }
             return engine.recover_after_elevation();
         }
     }
@@ -128,21 +178,30 @@ fn recover_at_startup(state: &PluginState) -> Result<StartupOutcome, EngineError
 }
 
 /// Worker mode must be handled before Tauri starts. If it reaches setup, the
-/// host forgot the `run_applier_from_args()` entry and the update would
+/// host forgot the `run_applier_from_context()` entry and the update would
 /// otherwise be silently lost.
-fn worker_mode_requested<I: IntoIterator<Item = OsString>>(args: I) -> bool {
+pub(crate) fn worker_mode_requested<I: IntoIterator<Item = OsString>>(args: I) -> bool {
     args.into_iter().next().is_some_and(|arg| {
         arg == OsStr::new("--delta-update-apply") || arg == OsStr::new("--delta-update-recover")
     })
 }
 
 /// Setup runs recovery before auto-check and user interaction.
+///
+/// Configuration or platform errors must not prevent the host application from
+/// starting. The update feature is disabled, the error is emitted as a state
+/// payload, and the rest of the window lifecycle continues normally.
 pub fn setup<R: Runtime>(app: &AppHandle<R>, config: &Config) -> Result<(), EngineError> {
-    crate::desktop::ensure_supported()?;
     if worker_mode_requested(std::env::args_os().skip(1)) {
         return Err(EngineError::ConfigInvalid(
-            "worker mode was not handled: call tauri_plugin_delta_update::run_applier_from_args() at the start of main".into(),
+            "worker mode was not handled: call tauri_plugin_delta_update::run_applier_from_context(&context) before tauri::Builder::run".into(),
         ));
+    }
+    if let Err(error) = crate::desktop::ensure_supported() {
+        return setup_disabled(app, config, error);
+    }
+    if let Err(error) = config.validate() {
+        return setup_disabled(app, config, error);
     }
     #[cfg(debug_assertions)]
     if config.auto_apply {
@@ -150,8 +209,23 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>, config: &Config) -> Result<(), Engi
             "auto_apply is enabled in a debug build: a prepared update can replace the development binary; set auto_apply=false or install_dir for local development"
         );
     }
+    #[cfg(debug_assertions)]
+    if config.auto_check {
+        tracing::warn!(
+            "auto_check is enabled in a debug build and will contact the configured endpoint on every launch; set auto_check=false for local development"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    if config.allow_insecure_http {
+        tracing::warn!(
+            "allow_insecure_http is enabled in a release build; plain HTTP is only accepted for loopback endpoints"
+        );
+    }
 
-    let (engine, journal_root) = build_engine(app, config)?;
+    let (engine, journal_root) = match build_engine(app, config) {
+        Ok(value) => value,
+        Err(error) => return setup_disabled(app, config, error),
+    };
     let state = Arc::new(PluginState::new(engine, config, journal_root));
 
     let (next, prepared) = match recover_at_startup(&state) {
@@ -173,7 +247,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>, config: &Config) -> Result<(), Engi
         }
         Ok(StartupOutcome::ReusedPrepared { version }) => {
             tracing::info!(%version, "reusing prepared update");
-            match state.engine().resume_prepared() {
+            match state.engine().and_then(|engine| engine.resume_prepared()) {
                 Ok(prepared) => (EngineState::Prepared { version }, Some(prepared)),
                 Err(error) => (failed_state(&error), None),
             }
@@ -200,13 +274,29 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>, config: &Config) -> Result<(), Engi
             commands::auto_check_prepare(&app, state).await;
         });
     }
-    if let Some(interval) = config.check_interval_secs {
-        start_periodic_check(
-            AppHandle::clone(app),
-            Arc::clone(&state),
-            Duration::from_secs(interval),
-        );
+    if !state.is_disabled() {
+        if let Some(interval) = config.check_interval_secs {
+            start_periodic_check(
+                AppHandle::clone(app),
+                Arc::clone(&state),
+                Duration::from_secs(interval),
+            );
+        }
     }
+    Ok(())
+}
+
+fn setup_disabled<R: Runtime>(
+    app: &AppHandle<R>,
+    config: &Config,
+    error: EngineError,
+) -> Result<(), EngineError> {
+    tracing::error!(%error, "delta-update is disabled; the host application will keep running");
+    let state = Arc::new(PluginState::disabled(&error, config));
+    let next = failed_state(&error);
+    state.set_state(next.clone());
+    app.manage(Arc::clone(&state));
+    emit_state(app, state.payload(&next));
     Ok(())
 }
 
@@ -220,12 +310,18 @@ fn start_periodic_check<R: Runtime>(
         let mut ticker = tokio::time::interval(interval);
         // A laptop waking from sleep must not fire a burst of missed checks.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // `setup` already spawns `auto_check_prepare`; consume the immediate
+        // first tick so periodic checks start after one full interval instead
+        // of racing the initial check.
         ticker.tick().await;
         loop {
             ticker.tick().await;
             if !matches!(
                 state.snapshot(),
-                EngineState::Idle | EngineState::Failed { .. } | EngineState::RolledBack { .. }
+                EngineState::Idle
+                    | EngineState::UpdateRequired { .. }
+                    | EngineState::Failed { .. }
+                    | EngineState::RolledBack { .. }
             ) {
                 continue;
             }
@@ -257,7 +353,7 @@ pub fn on_window_ready<R: Runtime>(window: &tauri::Window<R>) {
         if !state.awaiting_confirm() {
             return;
         }
-        match state.engine().confirm_healthy() {
+        match state.engine().and_then(|engine| engine.confirm_healthy()) {
             Ok(()) => {
                 state.mark_awaiting_confirm(false);
                 let next = EngineState::Idle;
@@ -270,8 +366,15 @@ pub fn on_window_ready<R: Runtime>(window: &tauri::Window<R>) {
 }
 
 /// `auto_apply` exits path: persist the journal and spawn the worker.
+///
+/// A clean exit also discounts one unconfirmed start: the process survived past
+/// the grace period, so it did not crash. Crashes never reach this hook.
 pub fn on_exit<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<Arc<PluginState>>() else {
+        return;
+    };
+    note_clean_exit(&state);
+    let Ok(engine) = state.engine() else {
         return;
     };
     if !state.auto_apply() {
@@ -286,16 +389,16 @@ pub fn on_exit<R: Runtime>(app: &AppHandle<R>) {
     let Some(prepared) = state.prepared() else {
         return;
     };
-    match state.engine().begin_commit(&prepared) {
+    match engine.begin_commit(&prepared) {
         Ok(pending) => {
-            let install_root = &state.engine().config().install_root;
+            let install_root = &engine.config().install_root;
             if let Err(error) = crate::applier::spawn_replacement(
                 install_root,
                 state.journal_root(),
                 &pending.commit_id,
                 false,
             ) {
-                if let Err(discard) = state.engine().discard_pending_commit() {
+                if let Err(discard) = engine.discard_pending_commit() {
                     tracing::error!(%discard, "failed to withdraw the pending commit");
                 }
                 tracing::warn!(
@@ -312,6 +415,20 @@ pub fn on_exit<R: Runtime>(app: &AppHandle<R>) {
             emit_state(app, state.payload(&next));
         }
         Err(error) => tracing::error!(%error, "failed to persist commit journal"),
+    }
+}
+
+/// Discount one startup attempt when a committed update closes normally after
+/// the grace period. Best effort: a failure only leaves the stricter counter.
+fn note_clean_exit(state: &PluginState) {
+    if !state.awaiting_confirm() || !state.clean_exit_grace_elapsed() {
+        return;
+    }
+    let Ok(engine) = state.engine() else {
+        return;
+    };
+    if let Err(error) = engine.discount_clean_exit() {
+        tracing::warn!(%error, "clean exit was not discounted");
     }
 }
 

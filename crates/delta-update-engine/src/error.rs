@@ -42,6 +42,7 @@ pub enum ErrorAction {
     RecoverBackup,
     FixConfig,
     Unsupported,
+    Restart,
 }
 
 /// Wire-level error object. The stable `code` field is what callers match on.
@@ -242,6 +243,9 @@ pub enum EngineError {
     #[error("journal corrupt: {0}")]
     JournalCorrupt(String),
 
+    #[error("journal format {actual} is newer than this client supports ({client})")]
+    JournalFormatTooNew { client: u16, actual: u16 },
+
     #[error("journal replay failed: {0}")]
     JournalReplayFailed(String),
 
@@ -268,6 +272,11 @@ pub enum EngineError {
 
     #[error("apply helper failed: {0}")]
     ApplyHelperFailed(String),
+
+    #[error(
+        "elevated recovery did not finish within {timeout_ms} ms; the worker may still be running"
+    )]
+    ElevatedRecoveryTimeout { timeout_ms: u64 },
 
     #[error("not prepared")]
     NotPrepared,
@@ -309,15 +318,18 @@ impl EngineError {
             Self::InsufficientDiskSpace { .. } | Self::StagingLimit { .. } => ErrorCategory::Disk,
             Self::PermissionDenied(_) | Self::UacCancelled => ErrorCategory::Permission,
             Self::PatchFailed(_) => ErrorCategory::Patch,
-            Self::JournalCorrupt(_) | Self::JournalReplayFailed(_) | Self::UpdateLocked => {
-                ErrorCategory::Journal
-            }
+            Self::JournalCorrupt(_)
+            | Self::JournalFormatTooNew { .. }
+            | Self::JournalReplayFailed(_)
+            | Self::UpdateLocked => ErrorCategory::Journal,
             Self::RollbackFailed(_) => ErrorCategory::Rollback,
             Self::ConfigInvalid(_)
             | Self::ConfigMigrationRequired { .. }
             | Self::EndpointInsecure(_) => ErrorCategory::Config,
             Self::UnsupportedPlatform(_) | Self::UnsupportedFormat(_) => ErrorCategory::Platform,
-            Self::ApplyHelperFailed(_) | Self::NotPrepared => ErrorCategory::Apply,
+            Self::ApplyHelperFailed(_)
+            | Self::ElevatedRecoveryTimeout { .. }
+            | Self::NotPrepared => ErrorCategory::Apply,
             Self::InvalidTransition { .. } | Self::Cancelled | Self::Internal(_) => {
                 ErrorCategory::Internal
             }
@@ -342,6 +354,7 @@ impl EngineError {
             Self::UacCancelled => "E_PERMISSION_UAC_CANCELLED",
             Self::PatchFailed(error) => error.code(),
             Self::JournalCorrupt(_) => "E_JOURNAL_CORRUPT",
+            Self::JournalFormatTooNew { .. } => "E_JOURNAL_FORMAT_TOO_NEW",
             Self::JournalReplayFailed(_) => "E_JOURNAL_REPLAY_FAILED",
             Self::UpdateLocked => "E_UPDATE_LOCKED",
             Self::RollbackFailed(_) => "E_ROLLBACK_FAILED",
@@ -351,6 +364,7 @@ impl EngineError {
             Self::UnsupportedPlatform(_) => "E_UNSUPPORTED_PLATFORM",
             Self::UnsupportedFormat(_) => "E_UNSUPPORTED_FORMAT",
             Self::ApplyHelperFailed(_) => "E_APPLY_HELPER_FAILED",
+            Self::ElevatedRecoveryTimeout { .. } => "E_APPLY_RECOVERY_TIMEOUT",
             Self::NotPrepared => "E_NOT_PREPARED",
             Self::InvalidTransition { .. } => "E_INVALID_TRANSITION",
             Self::Cancelled => "E_CANCELLED",
@@ -363,8 +377,24 @@ impl EngineError {
             Self::Network(error) => error.retryable(),
             Self::PatchFailed(error) => error.retryable(),
             Self::PermissionDenied(_) | Self::UacCancelled | Self::UpdateLocked => true,
-            Self::ApplyHelperFailed(_) => true,
+            Self::ApplyHelperFailed(_) | Self::ElevatedRecoveryTimeout { .. } => true,
             _ => false,
+        }
+    }
+
+    /// Stable process exit code for CLIs and CI.
+    ///
+    /// 1 = transient (retrying may succeed), 2 = needs a human (config,
+    /// signature, manifest, disk), 3 = internal error (a bug; report it).
+    /// This keeps the documented `inspect` contract (0 ok, 1 unfinished,
+    /// 2 manual attention) and gives every other command the same mapping.
+    pub fn exit_code(&self) -> i32 {
+        if self.retryable() {
+            1
+        } else if self.category() == ErrorCategory::Internal {
+            3
+        } else {
+            2
         }
     }
 
@@ -374,6 +404,8 @@ impl EngineError {
         match self {
             Self::UpdateLocked | Self::InvalidTransition { .. } => ErrorAction::Wait,
             Self::Cancelled => ErrorAction::Retry,
+            Self::ElevatedRecoveryTimeout { .. } => ErrorAction::Restart,
+            Self::JournalFormatTooNew { .. } => ErrorAction::UpdateClient,
             Self::NotPrepared => ErrorAction::CheckUpdate,
             // A malformed or oversized manifest is a publisher problem; only a
             // too-new schema is something the client can fix by updating.
@@ -405,7 +437,43 @@ impl EngineError {
             Self::UpdateLocked => "另一个实例正在执行更新，请等待其完成或关闭后重试",
             Self::InvalidTransition { .. } => "当前正在执行其他更新操作，请稍后重试",
             Self::Cancelled => "更新已取消，可稍后重试",
+            Self::ElevatedRecoveryTimeout { .. } => {
+                "请重启应用以完成恢复；不要手动删除 Journal 或 .old"
+            }
+            Self::JournalFormatTooNew { .. } => "请升级应用后再恢复更新",
             Self::NotPrepared => "请先检查更新并完成下载",
+            Self::Network(NetworkError::Connect(message))
+                if message.starts_with("DNS resolution failed") =>
+            {
+                "检查 endpoint 域名是否正确解析；内网环境检查 DNS 或代理设置"
+            }
+            Self::Network(NetworkError::Connect(message))
+                if message.starts_with("TLS handshake failed") =>
+            {
+                "检查系统时间与证书链，以及代理是否拦截 TLS"
+            }
+            Self::Network(NetworkError::Connect(message)) if message.starts_with("proxy") => {
+                "检查代理配置，确认代理允许访问更新域名"
+            }
+            Self::Network(NetworkError::Timeout(_)) => {
+                "稍后重试；弱网环境可降低 max_concurrent_downloads"
+            }
+            Self::Network(NetworkError::RateLimited { .. }) => {
+                "服务端限流，插件会按 Retry-After 自动重试；频繁出现请降低发布端并发"
+            }
+            Self::Network(NetworkError::Http5xx { .. }) => "服务端暂时不可用，稍后重试",
+            Self::Network(NetworkError::Http4xx { .. }) => {
+                "检查 endpoint/对象键与桶权限；403 常见于本机时间偏差或签名过期"
+            }
+            Self::Network(NetworkError::PresignExpired) => {
+                "插件会自动刷新签名并续传；若持续出现，检查本机时间与签名服务"
+            }
+            Self::Network(NetworkError::RangeUnsupported) => {
+                "服务器不支持断点续传，已回退全量下载；更新会比预期慢"
+            }
+            Self::Network(NetworkError::SigningService(_)) => {
+                "检查签名服务是否可用，以及 signing_endpoint 配置是否正确"
+            }
             _ => match self.category() {
                 ErrorCategory::Network => "检查网络后重试",
                 ErrorCategory::Signature => "联系软件提供商，可能是签名或密钥问题",
@@ -434,5 +502,28 @@ impl EngineError {
             user_action: self.user_action().to_string(),
             detail: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_codes_separate_transient_manual_and_internal() {
+        assert_eq!(
+            EngineError::Network(NetworkError::Timeout("slow".into())).exit_code(),
+            1
+        );
+        assert_eq!(
+            EngineError::ConfigInvalid("bad".into()).exit_code(),
+            2,
+            "config errors need a human"
+        );
+        assert_eq!(
+            EngineError::Signature(SignatureError::NoTrustedKey).exit_code(),
+            2
+        );
+        assert_eq!(EngineError::Internal("bug".into()).exit_code(), 3);
     }
 }
