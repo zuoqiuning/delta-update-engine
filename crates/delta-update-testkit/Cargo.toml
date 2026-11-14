@@ -8,7 +8,7 @@ description = "Windows test fixtures for delta-update-engine and tauri-plugin-de
 publish = false
 
 [dependencies]
-delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.1" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.2" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

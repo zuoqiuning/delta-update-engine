@@ -6,5 +6,6 @@ pub mod migrate;
 pub mod release;
 pub mod report;
 pub mod rollback;
+pub mod serve;
 pub mod verify;
 pub mod verify_key;

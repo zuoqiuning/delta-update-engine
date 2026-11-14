@@ -9,7 +9,7 @@
 - `1.0.0` 之后：breaking change 只出现在 `x`。
 - 所有 workspace crate 与 npm 包共用同一个版本号（`cargo xtask version-sync` 校验）。
 
-候选版本需要在依赖里写完整版本（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.1`），例如 `delta-update-engine = "1.0.0-rc.1"`；正式版发布后再改成 `version = "1.0"`，并提交 `Cargo.lock`。
+候选版本需要在依赖里写完整版本（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.2`），例如 `delta-update-engine = "1.0.0-rc.2"`；正式版发布后再改成 `version = "1.0"`，并提交 `Cargo.lock`。
 
 ## 2. Manifest schema
 

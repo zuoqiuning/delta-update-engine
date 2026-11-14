@@ -171,7 +171,51 @@ fi
 }
 ```
 
-`strategy`/`size`/`delta_size` 仅在同时提供 `--from-release` 时存在。`report --history` 是面向人的趋势表，不提供 JSON 输出。
+`strategy`/`size`/`delta_size` 仅在同时提供 `--from-release` 时存在。
+
+### 2.6 `report --history --json`
+
+`release --pipeline` 报告的跨版本趋势，供 CI 做覆盖率门禁：
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "history": ".reports",
+  "releases": [
+    {
+      "version": "2.1.0",
+      "changed": 15,
+      "modified": 15,
+      "patched": 6,
+      "coverage_percent": 40.0,
+      "delta_bytes": 1024,
+      "changed_bytes": 4096,
+      "fallbacks": [{ "path": "bin/large.dll", "reason": "too_large" }],
+      "coverage_drop": {
+        "from": "2.0.0",
+        "points": 35.0,
+        "new_fallbacks": [{ "path": "bin/large.dll", "reason": "too_large" }]
+      }
+    }
+  ]
+}
+```
+
+`releases` 按 SemVer 升序；`coverage` 是每个版本一行，`coverage_drop` 相对**上一版本**，仅在下降超过 20 个百分点时非空。报告文件本身无法解析时命令失败；版本号不是 SemVer 时跳过并告警。
+
+CI 门禁示例（覆盖率下降超过 20 点即失败）：
+
+```bash
+delta-update report --history .reports --json > coverage.json
+jq -e 'all(.releases[]; ((.coverage_drop // {points: 0}).points <= 20))' coverage.json
+```
+
+列出所有下降：
+
+```bash
+jq '.releases[] | select(.coverage_drop != null) | {version, drop: .coverage_drop.points}' coverage.json
+```
 
 ## 3. 门禁
 

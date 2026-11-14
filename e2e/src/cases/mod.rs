@@ -2,6 +2,7 @@ pub mod crash_loop_rollback;
 pub mod cross_volume;
 pub mod delta_update;
 pub mod fresh_install;
+pub mod http_serve;
 pub mod rollback_release;
 pub mod uac_cancelled;
 
@@ -28,6 +29,7 @@ pub const CASES: &[Case] = &[
     Case {
         name: "rollback_release",
     },
+    Case { name: "http_serve" },
 ];
 
 pub fn run(name: &str) -> Result<(), String> {
@@ -38,6 +40,7 @@ pub fn run(name: &str) -> Result<(), String> {
         "uac_cancelled" => uac_cancelled::run(),
         "cross_volume" => cross_volume::run(),
         "rollback_release" => rollback_release::run(),
+        "http_serve" => http_serve::run(),
         other => Err(format!("unknown case: {other}")),
     }
 }

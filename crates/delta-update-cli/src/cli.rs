@@ -16,6 +16,13 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Generate patches, manifest and signature, then publish.
+    #[command(after_help = "\
+典型场景:
+  首次发布   release --to ./dist --version 1.0.0 --bucket ./channel --key <release.key> --initial
+  常规增量   release --from ./dist-1.0.0 --from-version 1.0.0 --to ./dist-1.1.0 --version 1.1.0 --bucket ./channel --key <release.key>
+   CI 一体化  release ... --pipeline --report release-report.json
+  紧急回滚   rollback --bucket ./channel --to-version 1.0.0 --key <release.key>
+路径、版本与密钥请按项目替换。")]
     Release(ReleaseArgs),
     /// Verify a published version from the object store.
     Verify(VerifyArgs),
@@ -33,6 +40,11 @@ pub enum Command {
     Migrate(MigrateArgs),
     /// Summarize release reports written by `release --pipeline`.
     Report(ReportArgs),
+    /// Serve a release directory over HTTP for local demos and debugging.
+    #[command(
+        after_help = "仅用于本地开发与演示：默认只绑定 127.0.0.1。不要把端口转发到公网；该服务没有 TLS、鉴权或缓存。"
+    )]
+    Serve(ServeArgs),
     /// Point `latest.json` at an already published version (incident response).
     Rollback(RollbackArgs),
 }
@@ -284,6 +296,22 @@ pub struct ReportArgs {
     /// Directory containing `release --pipeline` reports.
     #[arg(long)]
     pub history: PathBuf,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ServeArgs {
+    /// Directory published by `release --bucket <DIR>`.
+    #[arg(long)]
+    pub dir: PathBuf,
+    /// Port to listen on; 0 lets the OS choose.
+    #[arg(long, default_value_t = 8123)]
+    pub port: u16,
+    /// Address to bind. Loopback only unless you explicitly change it.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
 }
 
 /// Reuse an already published manifest instead of rebuilding patches.

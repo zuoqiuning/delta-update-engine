@@ -164,7 +164,6 @@ fn build_engine(root: &Path, version: &str) -> Result<Engine> {
         fetcher: Arc::new(fetcher),
         allow_insecure_http: true,
         crash_loop_threshold: 2,
-        allow_unsigned_journal_recovery: false,
     })
     .context("build engine")
 }

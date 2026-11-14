@@ -1093,7 +1093,7 @@ struct HistoryRow {
 /// The only view that shows whether the delta strategy is regressing: a file
 /// that silently grew past `--patch-max-file-size` shows up as a new fallback
 /// next to a coverage drop.
-pub fn report_history(dir: &Path) -> anyhow::Result<()> {
+pub fn report_history(dir: &Path, json: bool) -> anyhow::Result<()> {
     if !dir.is_dir() {
         bail!("--history is not a directory: {}", dir.display());
     }
@@ -1159,6 +1159,55 @@ pub fn report_history(dir: &Path) -> anyhow::Result<()> {
     }
     rows.sort_by(|a, b| a.version.cmp(&b.version));
 
+    if json {
+        let releases: Vec<serde_json::Value> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let drop = index.checked_sub(1).and_then(|previous| {
+                    let before = coverage_percent(&rows[previous])?;
+                    let current = coverage_percent(row)?;
+                    (before - current > 20.0).then(|| {
+                        let fresh = new_fallbacks(&rows[previous], row)
+                            .into_iter()
+                            .map(|(path, reason)| {
+                                serde_json::json!({"path": path, "reason": reason})
+                            })
+                            .collect::<Vec<_>>();
+                        serde_json::json!({
+                            "from": rows[previous].version.to_string(),
+                            "points": before - current,
+                            "new_fallbacks": fresh,
+                        })
+                    })
+                });
+                serde_json::json!({
+                    "version": row.version.to_string(),
+                    "changed": row.changed,
+                    "modified": row.modified,
+                    "patched": row.patched,
+                    "coverage_percent": coverage_percent(row),
+                    "delta_bytes": row.delta_bytes,
+                    "changed_bytes": row.changed_bytes,
+                    "fallbacks": row
+                        .fallbacks
+                        .iter()
+                        .map(|(path, reason)| serde_json::json!({"path": path, "reason": reason}))
+                        .collect::<Vec<_>>(),
+                    "coverage_drop": drop,
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "v": 1,
+            "tool": "delta-update-cli",
+            "history": dir.display().to_string(),
+            "releases": releases,
+        });
+        println!("{}", serde_json::to_string_pretty(&document)?);
+        return Ok(());
+    }
+
     println!(
         "{:<12} {:>8} {:>9} {:>10} {:>10} {:>12}",
         "VERSION", "CHANGED", "COVERAGE", "DELTA", "FULL", "PATCH/FALLBACK"
@@ -1180,15 +1229,8 @@ pub fn report_history(dir: &Path) -> anyhow::Result<()> {
         if let Some(prev) = previous {
             if let (Some(current), Some(before)) = (coverage, coverage_percent(prev)) {
                 if before - current > 20.0 {
-                    let known: BTreeSet<&str> = prev
-                        .fallbacks
-                        .iter()
-                        .map(|(path, _)| path.as_str())
-                        .collect();
-                    let fresh: Vec<String> = row
-                        .fallbacks
-                        .iter()
-                        .filter(|(path, _)| !known.contains(path.as_str()))
+                    let fresh: Vec<String> = new_fallbacks(prev, row)
+                        .into_iter()
                         .map(|(path, reason)| format!("{path} ({reason})"))
                         .collect();
                     let detail = if fresh.is_empty() {
@@ -1208,6 +1250,18 @@ pub fn report_history(dir: &Path) -> anyhow::Result<()> {
         previous = Some(row);
     }
     Ok(())
+}
+
+fn new_fallbacks<'a>(previous: &HistoryRow, row: &'a HistoryRow) -> Vec<&'a (String, String)> {
+    let known: BTreeSet<&str> = previous
+        .fallbacks
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect();
+    row.fallbacks
+        .iter()
+        .filter(|(path, _)| !known.contains(path.as_str()))
+        .collect()
 }
 
 fn coverage_percent(row: &HistoryRow) -> Option<f64> {

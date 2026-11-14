@@ -92,11 +92,12 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         }
     }
 
-    println!("下一步（3 项）：");
+    println!("下一步（4 项）：");
     println!("1. 生成密钥：minisign -G -p release.pub -s release.key；用 `delta-update key-info --key release.key` 取出公钥填入 signing_public_keys，私钥离线保管。");
     println!("2. 用 `BuilderExt` 接入：`.plugin(tauri_plugin_delta_update::init()).run_with_delta_update(context)`；它会先处理 worker 模式，避免顺序漏接。");
+    println!("3. endpoint 必须是 HTTPS；只有本地调试才用 allow_insecure_http（仅放行 loopback）。");
     println!(
-        "3. endpoint 必须是 HTTPS；只有本地调试才用 allow_insecure_http（仅放行 loopback）。\n"
+        "4. 合并下面的配置后运行 `delta-update doctor --check-config --dir .`，确认插件配置能被引擎接受。\n"
     );
 
     let config = serde_json::json!({

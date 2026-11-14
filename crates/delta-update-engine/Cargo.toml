@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Windows-only file-level delta update engine for Tauri applications"
 readme = "README.md"
 keywords = ["tauri", "updater", "delta", "update", "zstd"]
-categories = ["development-tools", "filesystem"]
+categories = ["development-tools", "filesystem", "os::windows-apis"]
 documentation = "https://docs.rs/delta-update-engine"
 
 [features]

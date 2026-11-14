@@ -2,9 +2,9 @@
 
 本项目遵循 [SemVer](https://semver.org/)。发布前必须同步更新本文件。
 
-## [1.0.0-rc.1] - 2026-11-14
+## [1.0.0-rc.2] - 2026-11-14
 
-首个候选版本：公共 API 已冻结，`1.x` 只做兼容新增，breaking change 必须升 major。rc 阶段只接收修复；发现问题发 `rc.2`，不原地覆盖已推送的 tag。
+首个候选版本（rc.2 包含未发布的 rc.1 全部内容）：公共 API 已冻结，`1.x` 只做兼容新增，breaking change 必须升 major。rc 阶段只接收修复；发现问题发 `rc.3`，不原地覆盖已推送的 tag。
 
 ### 接入
 
@@ -51,6 +51,10 @@
 
 #### 新增
 
+- **本地 HTTP 服务**：新增 `delta-update serve --dir <DIR> --port <PORT>`，只绑定 loopback，支持 `GET`/`HEAD`/单段 `Range`；`real-test/run.ps1` 改用它，5 分钟演示不再需要 Python。新增 `tests/serve.rs`（200/206/416/HEAD/多段/百分号穿越/反斜杠/盘符/符号链接）与 e2e `http_serve`（release → serve → check/prepare/apply/confirm），`cargo xtask ci` 也会编译 `real-test/demo-app`，避免演示落后于 `EngineConfig` 的 API 变更。
+- **覆盖率 JSON**：`report --history <DIR> --json` 输出 `v`/`tool` 信封与每版本的 `coverage_percent`、`fallbacks`、`coverage_drop`；`xtask contract-check` 固定该信封，CLI 契约附 `jq` 门禁示例。
+- **CLI 帮助配方**：`release --help` 尾部列出首次发布、常规增量、CI 一体化与紧急回滚四条命令（占位符显式标注），`serve --help` 提示不要暴露到公网。
+- **发布元数据**：workspace 与三个发布 crate 补充 `repository`/`homepage` 与 `os::windows-apis` 分类，npm 包补充 `repository`/`bugs`/`homepage`；README 增加贡献指南入口，`init` 的第 4 步提示用 `doctor --check-config` 校验合并后的配置。
 - **事故回滚一键复用**：新增 `delta-update rollback --bucket <uri> --to-version <v> --key <key>`，读取并验签已发布的 `manifests/<v>.json`，加 `rollback: true` 后重新签名上传为 `latest.json`，不重建补丁、不改动版本化清单；`--dry-run` 只打印。与 `release --rollback` 的区别是“改变推荐版本”而非“发布更低版本”。
 - **更新历史 API**：引擎在 `journal/update_history.jsonl` 追加终态记录（`completed` / `rolled_back` / `failed`，含 `duration_ms`、`from_version`、`reason` / `error_code`），超过 256 KiB 保留最后 200 行；新增 `Engine::update_history(limit)`、插件命令 `get_update_history`（`monitor`/`manage`/`default`）、`getUpdateHistory()` 与 `UpdateRecord` 类型。数据只留在本地，插件不上报。
 - **强制安全更新**：清单新增可选 `min_supported_version`（SemVer，且 `<= version`）；`check` 返回 `update_required` 与 `min_supported_version`，插件新增稳定状态 `UpdateRequired`（payload 增加 `min_supported_version`），`useUpdater` 增加 `isUpdateRequired`；`release --min-supported` 负责写入。引擎不阻止应用运行，严格程度由应用决定。
@@ -87,7 +91,7 @@
 
 - **文档交付入库**：`.gitignore` 不再整体忽略 `docs/design/` 与 `real-test/`。设计文档改为只忽略 `*.draft.md`；`real-test/` 只忽略 `work/`、`keys/` 与生成的 `demo-app/Cargo.lock`（`**/target` 已覆盖构建产物），脚本与演示源码随仓库提交，干净 checkout 中 `getting-started.md` 的引用不再 404。
 - **README 选型对比**：新增“为什么选 delta-update”表，按更新单位、下载量、平台、签名模型、应用时机、回滚、失败恢复与维护成本对比官方 updater。
-- **发布演练与 rc**：[release.md](docs/operations/release.md) 补充 `1.0.0-rc.1` 演练步骤与“tag 必须等于 workspace 版本”的约束；`release.yml` 在版本号含 `-` 时用 npm `next` tag 发布，并把 `wait_for_crate` 从 `cargo search` 改为 `cargo info <crate>@<version>`，确保能轮询到预发布版本；[versioning.md](docs/reference/versioning.md) 明确 `1.0` 的稳定范围（`EngineConfig`、`EngineState`、错误枚举、manifest schema、Journal format、`UpdateRecord`）。
+- **发布演练与 rc**：[release.md](docs/operations/release.md) 补充 `1.0.0-rc.2` 演练步骤与“tag 必须等于 workspace 版本”的约束；`release.yml` 在版本号含 `-` 时用 npm `next` tag 发布，并把 `wait_for_crate` 从 `cargo search` 改为 `cargo info <crate>@<version>`，确保能轮询到预发布版本；[versioning.md](docs/reference/versioning.md) 明确 `1.0` 的稳定范围（`EngineConfig`、`EngineState`、错误枚举、manifest schema、Journal format、`UpdateRecord`）。
 - **rc 反馈入口**：README 顶部增加 rc 横幅；新增 `.github/ISSUE_TEMPLATE/rc-feedback.yml`，用三个具体问题收集接入卡点、`init`/`migrate` 可读性与 `worker.log` 异常。
 - **公开 API 收口**：`EngineConfig` 删除 `allow_unsigned_journal_recovery`。无签名恢复只存在于 `#[doc(hidden)]` 的 `Engine::new_legacy(config, true)`，插件与 CLI 只走 `Engine::new`，因此生产路径不可能误开；`spawn_replacement` 的对应拒绝分支随之删除。
 - **SECURITY.md 渠道收敛**：只保留 GitHub Security Advisories，移除占位邮箱。

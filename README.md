@@ -2,7 +2,7 @@
 
 面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> **`1.0.0-rc.1` is out** — 这是 1.0 的候选版本，公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
+> **`1.0.0-rc.2` is out** — 这是 1.0 的候选版本，公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
 >
 > 平台范围是刻意的：只支持 Windows per-user / per-machine / 便携版。macOS 签名 `.app` 与 Linux 包管理器/AppImage 使用不同的完整性模型，不在本插件范围内；其他平台请使用官方安装器或包管理器。
 >
@@ -62,6 +62,8 @@ cargo test --workspace
 cargo xtask ci
 cargo xtask contract-check   # 退出码 / JSON 信封契约
 cargo xtask bench-check      # criterion 基线对比（配合 CI 的 --baseline main）
+cargo run -p delta-update-cli -- serve --dir ./channel --port 8123  # 本地托管发布目录
+cargo run -p delta-update-cli -- report --history .reports --json   # CI 覆盖率门禁
 pnpm install
 pnpm typecheck
 ```
@@ -75,6 +77,7 @@ CI 集成只依赖 [CLI 契约](docs/cli-contract.md) 里的退出码与 JSON �
 - [测试计划](docs/testing/test-plan.md)
 - [安全策略](SECURITY.md)
 - [版本与兼容承诺](docs/reference/versioning.md)
+- [贡献指南](CONTRIBUTING.md)
 
 ## 许可
 

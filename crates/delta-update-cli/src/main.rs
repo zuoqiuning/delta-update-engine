@@ -30,6 +30,7 @@ fn run(command: Command) -> anyhow::Result<()> {
         Command::Init(args) => commands::init::run(&args),
         Command::Migrate(args) => commands::migrate::run(&args),
         Command::Report(args) => commands::report::run(&args),
+        Command::Serve(args) => commands::serve::run(&args),
         Command::Rollback(args) => commands::rollback::run(&args),
     }
 }

@@ -11,7 +11,11 @@ pub fn run() -> Result<(), String> {
         (
             "crates/delta-update-cli/src/pipeline/mod.rs",
             2,
-            &["\"v\": 1", "\"tool\": \"delta-update-cli\""],
+            &[
+                "\"v\": 1",
+                "\"tool\": \"delta-update-cli\"",
+                "\"releases\": releases",
+            ],
         ),
         (
             "crates/delta-update-cli/src/commands/inspect.rs",

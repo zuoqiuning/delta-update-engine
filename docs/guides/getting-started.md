@@ -17,7 +17,7 @@
 
 ### 1.1 先看效果：5 分钟跑一次真实更新
 
-不想先读文档，可以直接跑仓库里的真实更新演示（不需要 Tauri 界面，也不需要 COS）。前置条件只有 PowerShell 7+、Rust stable 与 Python 3（用于本地静态文件服务）：
+不想先读文档，可以直接跑仓库里的真实更新演示（不需要 Tauri 界面，也不需要 COS）。前置条件只有 PowerShell 7+ 与 Rust stable——本地静态服务由 `delta-update serve` 提供，不再依赖 Python：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\real-test\run.ps1
@@ -177,6 +177,7 @@ delta-update init \
 
 - 把 `auto_apply` 设为 `false`（或 `auto_check: false`），只调试命令与事件；
 - 需要验证完整“下载 → 退出替换 → 启动新版本”链路时，显式设置 `install_dir` 为一个临时测试目录，并把旧版本复制进去；
+- 用本地目录发布并托管：`delta-update release --bucket ./channel ...` 后运行 `delta-update serve --dir ./channel --port 8123`，把 endpoint 指向 `http://127.0.0.1:8123/manifests/latest.json`（只放行 loopback，配置需 `allow_insecure_http: true`）；
 - 插件在 debug 构建且 `auto_apply: true` 时会输出一条 `tracing` 警告；宿主未安装 subscriber 时看不到，见[故障排查手册](../operations/troubleshooting.md)。
 
 

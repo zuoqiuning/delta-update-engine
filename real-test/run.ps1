@@ -62,11 +62,8 @@ try {
     & cargo run -q -p delta-update-cli -- release --from $v1 --from-version 1.0.0 --to $v2 --version 2.0.0 --bucket $public --key $keyPath --verbose
 
     Step "5/6 启动本地 HTTP 服务 http://127.0.0.1:$port"
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (!$python) {
-        throw "未找到 Python。真实演练需要一个静态 HTTP 服务，请安装 Python 3 后重试（或用任意静态服务器托管 real-test/work/public，并把 demo-config 的 endpoint 指过去）。"
-    }
-    $server = Start-Process -FilePath $python.Source -ArgumentList '-m', 'http.server', $port, '--directory', $public -PassThru -WindowStyle Hidden
+    $cli = (Resolve-Path (Join-Path $root '..\target\debug\delta-update.exe')).Path
+    $server = Start-Process -FilePath $cli -ArgumentList 'serve', '--dir', "`"$public`"", '--port', $port -PassThru -WindowStyle Hidden
     Start-Sleep -Milliseconds 1000
     if ($server.HasExited) {
         throw "HTTP 服务启动失败，端口 $port 可能被占用"

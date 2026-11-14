@@ -113,6 +113,17 @@ impl Scenario {
     ) -> Result<Engine, String> {
         let endpoint =
             Url::parse(&server.url("manifests/latest.json")).map_err(|err| err.to_string())?;
+        self.engine_with_endpoint(endpoint, public_key, version)
+    }
+
+    /// Build an engine against an arbitrary manifest endpoint. Used by the
+    /// `http_serve` case to drive the real CLI release over `serve`.
+    pub fn engine_with_endpoint(
+        &self,
+        endpoint: Url,
+        public_key: &str,
+        version: &str,
+    ) -> Result<Engine, String> {
         let fetcher =
             HttpFetcher::new_default(endpoint.clone(), None, FetchLimits::default(), None, true)
                 .map_err(|err| err.to_string())?;

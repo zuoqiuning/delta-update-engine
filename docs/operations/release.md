@@ -226,6 +226,12 @@ warning: 2.1.0 coverage 40.0% is 35 points below 2.0.0; new fallbacks: bin/large
 
 覆盖率相比上一版本下降超过 20 个百分点时，警告会列出该版本新增的回退文件与原因——通常意味着某个文件意外膨胀超过 `--patch-max-file-size`。
 
+需要做 CI 门禁时加 `--json`（schema 见 [CLI 契约 2.6](../cli-contract.md#26-report---history---json)）：
+
+```bash
+delta-update report --history .reports/ --json > coverage.json
+```
+
 ### 3.5 CLI 内部行为
 
 `delta-update release` 按以下顺序执行，任一步失败即中止：
@@ -436,6 +442,19 @@ delta-update doctor --endpoint https://cdn.example.com/manifests/latest.json \
 ```
 
 任何一轮失败（签名、版本不一致、对象缺失）都会让命令失败；全部通过则输出 `watch finished`。
+
+### 6.5 本地 HTTP 服务
+
+`--bucket` 指向本地目录时，`release` 只写文件，不会起服务。用 `serve` 把发布目录托管给客户端、`doctor` 或 `verify`：
+
+```bash
+delta-update serve --dir ./channel --port 8123
+# serving D:\work\channel at http://127.0.0.1:8123
+```
+
+- 默认只绑定 `127.0.0.1`；`--host` 可以改，但不要在没有 TLS/鉴权的情况下对外暴露。
+- 支持 `GET` / `HEAD` 与单段 `Range`，够清单拉取、对象下载、`doctor` 与 `verify` 使用。
+- 不提供目录列表、TLS、鉴权或缓存；这是本地演示与排障工具，不是生产 CDN。
 
 
 ## 7. 回滚版本的发布
@@ -686,7 +705,7 @@ cd packages/plugin-api && npm pack --dry-run
 
 ### 13.3 预发布（rc）演练
 
-`release.yml` 的 tag 触发会校验 `workspace.package.version` 与 tag（去掉 `v`）**完全一致**。因此不能用 `0.1.0` 的代码直接打 `v1.0.0-rc.1` tag——先同时修改 `Cargo.toml` 与 `packages/plugin-api/package.json` 的版本，再执行：
+`release.yml` 的 tag 触发会校验 `workspace.package.version` 与 tag（去掉 `v`）**完全一致**。因此不能用旧版本的代码直接打新 tag——先同时修改 `Cargo.toml` 与 `packages/plugin-api/package.json` 的版本，再执行：
 
 ```bash
 cargo xtask version-sync
@@ -697,16 +716,16 @@ cargo test --workspace
 cargo package -p delta-update-engine --offline --no-verify --allow-dirty
 cd packages/plugin-api && npm publish --dry-run
 
-git tag v1.0.0-rc.1
-git push origin v1.0.0-rc.1
+git tag v1.0.0-rc.2
+git push origin v1.0.0-rc.2
 ```
 
 关键约束：
 
-- **依赖 engine 的 crate 无法在 engine 发布前 `--dry-run`**：`tauri-plugin-delta-update` 与 `delta-update-cli` 会报 `no matching package named delta-update-engine`。这不是配置错误，`release.yml` 的 `wait_for_crate` 正是为此存在；本地只能用 `cargo package --list` 检查打包内容。`wait_for_crate` 用 `cargo info <crate>@<version>` 读索引而不是 `cargo search`，因为 search 可能不显示 `1.0.0-rc.1` 这类预发布版本。
+- **依赖 engine 的 crate 无法在 engine 发布前 `--dry-run`**：`tauri-plugin-delta-update` 与 `delta-update-cli` 会报 `no matching package named delta-update-engine`。这不是配置错误，`release.yml` 的 `wait_for_crate` 正是为此存在；本地只能用 `cargo package --list` 检查打包内容。`wait_for_crate` 用 `cargo info <crate>@<version>` 读索引而不是 `cargo search`，因为 search 可能不显示 `1.0.0-rc.2` 这类预发布版本。
 - **npm 预发布走 `next` tag**：版本号含 `-` 时 `release.yml` 自动使用 `--tag next`，避免 `latest` 指向 rc；正式版恢复 `latest`。
 - **sccache/代理**：内网环境若把 crates.io 替换为镜像，`cargo publish --dry-run` 需要显式 `--registry crates-io`；镜像不可达时只能依赖 CI。
-- **rc 只接收修复**：rc 阶段不新增公开 API；发现问题后升 `rc.2`，不要原地覆盖已推送的 tag。
+- **rc 只接收修复**：rc 阶段不新增公开 API；发现问题后升 `rc.3`，不要原地覆盖已推送的 tag。
 
 ### 13.4 密钥轮换的当前边界
 
