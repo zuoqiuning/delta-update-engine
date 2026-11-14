@@ -2,9 +2,9 @@
 
 本项目遵循 [SemVer](https://semver.org/)。发布前必须同步更新本文件。
 
-## [1.0.0-rc.2] - 2026-11-14
+## [1.0.0-rc.3] - 2026-11-14
 
-首个候选版本（rc.2 包含未发布的 rc.1 全部内容）：公共 API 已冻结，`1.x` 只做兼容新增，breaking change 必须升 major。rc 阶段只接收修复；发现问题发 `rc.3`，不原地覆盖已推送的 tag。
+`rc.3` 取代未发布的 `rc.1` / `rc.2`：rc.1 缺少 `serve` 与 DX 改进；rc.2 的发布等待逻辑依赖 `cargo info` 的预发布语义，未经验证。rc.3 改用 crates.io REST API 按精确版本轮询，是首个包含完整 5 分钟演示路径、可安全发布的候选版。公共 API 已冻结，`1.x` 只做兼容新增，breaking change 必须升 major；rc 阶段只接收修复，发现问题发 `rc.4`，不原地覆盖已推送的 tag。
 
 ### 接入
 
@@ -91,7 +91,7 @@
 
 - **文档交付入库**：`.gitignore` 不再整体忽略 `docs/design/` 与 `real-test/`。设计文档改为只忽略 `*.draft.md`；`real-test/` 只忽略 `work/`、`keys/` 与生成的 `demo-app/Cargo.lock`（`**/target` 已覆盖构建产物），脚本与演示源码随仓库提交，干净 checkout 中 `getting-started.md` 的引用不再 404。
 - **README 选型对比**：新增“为什么选 delta-update”表，按更新单位、下载量、平台、签名模型、应用时机、回滚、失败恢复与维护成本对比官方 updater。
-- **发布演练与 rc**：[release.md](docs/operations/release.md) 补充 `1.0.0-rc.2` 演练步骤与“tag 必须等于 workspace 版本”的约束；`release.yml` 在版本号含 `-` 时用 npm `next` tag 发布，并把 `wait_for_crate` 从 `cargo search` 改为 `cargo info <crate>@<version>`，确保能轮询到预发布版本；[versioning.md](docs/reference/versioning.md) 明确 `1.0` 的稳定范围（`EngineConfig`、`EngineState`、错误枚举、manifest schema、Journal format、`UpdateRecord`）。
+- **发布演练与 rc**：[release.md](docs/operations/release.md) 补充 `1.0.0-rc.3` 演练步骤与“tag 必须等于 workspace 版本”的约束；`release.yml` 用 `cargo metadata` 读取 workspace 版本（不再正则匹配 `Cargo.toml`），在版本号含 `-` 时用 npm `next` tag 发布，并用 crates.io REST API 按精确版本轮询（`/api/v1/crates/<crate>/<version>`），不依赖 `cargo search`/`cargo info` 的输出格式；[versioning.md](docs/reference/versioning.md) 明确 `1.0` 的稳定范围（`EngineConfig`、`EngineState`、错误枚举、manifest schema、Journal format、`UpdateRecord`）。
 - **rc 反馈入口**：README 顶部增加 rc 横幅；新增 `.github/ISSUE_TEMPLATE/rc-feedback.yml`，用三个具体问题收集接入卡点、`init`/`migrate` 可读性与 `worker.log` 异常。
 - **公开 API 收口**：`EngineConfig` 删除 `allow_unsigned_journal_recovery`。无签名恢复只存在于 `#[doc(hidden)]` 的 `Engine::new_legacy(config, true)`，插件与 CLI 只走 `Engine::new`，因此生产路径不可能误开；`spawn_replacement` 的对应拒绝分支随之删除。
 - **SECURITY.md 渠道收敛**：只保留 GitHub Security Advisories，移除占位邮箱。

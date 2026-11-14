@@ -25,7 +25,7 @@ work/v2/     Demo App v2.0.0
 | PowerShell 7+ | 执行脚本                             |
 | Rust stable | 编译演示程序、真实 CLI 与内置静态服务 |
 
-本地 HTTP 服务由 `delta-update serve --dir <DIR> --port <PORT>` 提供，不再需要 Python。也可以用它托管任意 `release --bucket <DIR>` 的输出。
+本地 HTTP 服务由 `delta-update serve --dir <DIR> --port <PORT>` 提供，不再需要 Python。也可以用它托管任意 `release --bucket <DIR>` 的输出。**它只用于本地开发与演示**：loopback 不是信任边界，不防御同机恶意进程；不要用 `socat` / `netsh portproxy` 转发到公网。
 
 ## 运行
 

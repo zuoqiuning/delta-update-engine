@@ -454,7 +454,7 @@ delta-update serve --dir ./channel --port 8123
 
 - 默认只绑定 `127.0.0.1`；`--host` 可以改，但不要在没有 TLS/鉴权的情况下对外暴露。
 - 支持 `GET` / `HEAD` 与单段 `Range`，够清单拉取、对象下载、`doctor` 与 `verify` 使用。
-- 不提供目录列表、TLS、鉴权或缓存；这是本地演示与排障工具，不是生产 CDN。
+- 不提供目录列表、TLS、鉴权或缓存；这是本地演示与排障工具，不是生产 CDN。loopback 不是信任边界，不防御同机恶意进程；不要用 `socat` / `netsh portproxy` 转发到公网。
 
 
 ## 7. 回滚版本的发布
@@ -716,16 +716,16 @@ cargo test --workspace
 cargo package -p delta-update-engine --offline --no-verify --allow-dirty
 cd packages/plugin-api && npm publish --dry-run
 
-git tag v1.0.0-rc.2
-git push origin v1.0.0-rc.2
+git tag v1.0.0-rc.3
+git push origin v1.0.0-rc.3
 ```
 
 关键约束：
 
-- **依赖 engine 的 crate 无法在 engine 发布前 `--dry-run`**：`tauri-plugin-delta-update` 与 `delta-update-cli` 会报 `no matching package named delta-update-engine`。这不是配置错误，`release.yml` 的 `wait_for_crate` 正是为此存在；本地只能用 `cargo package --list` 检查打包内容。`wait_for_crate` 用 `cargo info <crate>@<version>` 读索引而不是 `cargo search`，因为 search 可能不显示 `1.0.0-rc.2` 这类预发布版本。
+- **依赖 engine 的 crate 无法在 engine 发布前 `--dry-run`**：`tauri-plugin-delta-update` 与 `delta-update-cli` 会报 `no matching package named delta-update-engine`。这不是配置错误，`release.yml` 的 `wait_for_crate` 正是为此存在；本地只能用 `cargo package --list` 检查打包内容。`wait_for_crate` 直接请求 crates.io 的版本端点（`/api/v1/crates/<crate>/<version>`），返回 200 才算可见。它不解析 `cargo search` / `cargo info` 的输出，因为那些格式不是稳定 API，且预发布版本的显示行为不受保证。
 - **npm 预发布走 `next` tag**：版本号含 `-` 时 `release.yml` 自动使用 `--tag next`，避免 `latest` 指向 rc；正式版恢复 `latest`。
-- **sccache/代理**：内网环境若把 crates.io 替换为镜像，`cargo publish --dry-run` 需要显式 `--registry crates-io`；镜像不可达时只能依赖 CI。
-- **rc 只接收修复**：rc 阶段不新增公开 API；发现问题后升 `rc.3`，不要原地覆盖已推送的 tag。
+- **sccache/代理**：内网环境若把 crates.io 替换为镜像，`cargo publish --dry-run` 需要显式 `--registry crates-io`；镜像不可达时只能依赖 CI。`wait_for_crate` 的 `curl` 遵循 `HTTPS_PROXY` / `NO_PROXY`；发布机需要代理时在 job 环境里配置，不要改轮询逻辑。
+- **rc 只接收修复**：rc 阶段不新增公开 API；发现问题后升 `rc.4`，不要原地覆盖已推送的 tag。
 
 ### 13.4 密钥轮换的当前边界
 

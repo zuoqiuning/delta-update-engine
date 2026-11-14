@@ -202,7 +202,7 @@ fi
 }
 ```
 
-`releases` 按 SemVer 升序；`coverage` 是每个版本一行，`coverage_drop` 相对**上一版本**，仅在下降超过 20 个百分点时非空。报告文件本身无法解析时命令失败；版本号不是 SemVer 时跳过并告警。
+`releases` 按 SemVer 升序；`coverage` 是每个版本一行，`coverage_drop` 相对**上一版本**，单位是**百分点**（从 80% 降到 60% 记 20，不是 25%），仅在下降超过 20 个点时非空。报告文件本身无法解析时命令失败；版本号不是 SemVer 时跳过并告警。
 
 CI 门禁示例（覆盖率下降超过 20 点即失败）：
 
@@ -216,6 +216,10 @@ jq -e 'all(.releases[]; ((.coverage_drop // {points: 0}).points <= 20))' coverag
 ```bash
 jq '.releases[] | select(.coverage_drop != null) | {version, drop: .coverage_drop.points}' coverage.json
 ```
+
+### 2.7 `serve` 的边界
+
+`serve` 没有 JSON 输出，也不属于发布契约。它只绑定 loopback，用于本地开发与演示：**loopback 不是信任边界，它不防御同机恶意进程**；不要用 `socat` / `netsh portproxy` 转发到公网。没有 TLS、鉴权、目录列表或缓存，不是 CDN。
 
 ## 3. 门禁
 

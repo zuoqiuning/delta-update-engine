@@ -60,10 +60,12 @@ async fn run_inner() -> Result<(), String> {
         ));
     }
 
+    let started = std::time::Instant::now();
     let prepared = engine
         .prepare(Box::new(|_| {}))
         .await
         .map_err(|err| format!("prepare: {err}"))?;
+    println!("http_serve: prepare took {:?}", started.elapsed());
     harness::apply(&engine, &prepared)?;
     harness::assert_root(&scenario.root(), &new)?;
     engine

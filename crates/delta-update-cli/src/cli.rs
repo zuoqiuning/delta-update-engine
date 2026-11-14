@@ -42,7 +42,7 @@ pub enum Command {
     Report(ReportArgs),
     /// Serve a release directory over HTTP for local demos and debugging.
     #[command(
-        after_help = "仅用于本地开发与演示：默认只绑定 127.0.0.1。不要把端口转发到公网；该服务没有 TLS、鉴权或缓存。"
+        after_help = "仅用于本地开发与演示：默认只绑定 127.0.0.1。loopback 不是信任边界，不防御同机恶意进程；不要用 socat / netsh portproxy 转发到公网。该服务没有 TLS、鉴权或缓存。"
     )]
     Serve(ServeArgs),
     /// Point `latest.json` at an already published version (incident response).

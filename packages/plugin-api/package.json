@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-delta-update-api",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0-rc.3",
   "description": "Windows-only frontend API for the tauri-plugin-delta-update Tauri 2 plugin",
   "license": "MIT",
   "repository": {

@@ -1,6 +1,6 @@
 name: 1.0.0-rc feedback
-description: 试用 1.0.0-rc.2 后的接入反馈
-title: "[rc.2] "
+description: 试用 1.0.0-rc.3 后的接入反馈
+title: "[rc.3] "
 labels: ["rc-feedback"]
 body:
   - type: markdown

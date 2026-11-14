@@ -11,9 +11,9 @@ name = "delta-update-e2e"
 path = "src/main.rs"
 
 [dependencies]
-delta-update-engine = { path = "../crates/delta-update-engine", version = "1.0.0-rc.2" }
-delta-update-testkit = { path = "../crates/delta-update-testkit", version = "1.0.0-rc.2" }
-delta-update-cli = { path = "../crates/delta-update-cli", version = "1.0.0-rc.2" }
+delta-update-engine = { path = "../crates/delta-update-engine", version = "1.0.0-rc.3" }
+delta-update-testkit = { path = "../crates/delta-update-testkit", version = "1.0.0-rc.3" }
+delta-update-cli = { path = "../crates/delta-update-cli", version = "1.0.0-rc.3" }
 hex.workspace = true
 minisign.workspace = true
 qbsdiff.workspace = true

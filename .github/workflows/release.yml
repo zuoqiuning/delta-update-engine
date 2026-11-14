@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号，必须与 workspace.package.version 一致（例如 1.0.0-rc.2）"
+        description: "版本号，必须与 workspace.package.version 一致（例如 1.0.0-rc.3）"
         required: true
         type: string
   push:
@@ -28,7 +28,8 @@ jobs:
         run: |
           $requested = $env:REQUESTED_VERSION
           if ($requested.StartsWith("v")) { $requested = $requested.Substring(1) }
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq "delta-update-engine" } | Select-Object -First 1).version
           if ($version -ne $requested) {
             throw "requested version $requested does not match workspace version $version"
           }
@@ -71,10 +72,11 @@ jobs:
           wait_for_crate() {
             crate="$1"
             version="$2"
+            url="https://crates.io/api/v1/crates/$crate/$version"
             for attempt in $(seq 1 30); do
-              # `cargo info` reads the registry index, which includes
-              # prerelease versions; `cargo search` may hide them.
-              if cargo info "$crate@$version" >/dev/null 2>&1; then
+              # The version endpoint is a stable contract and includes
+              # prereleases; `cargo info` output is not a stable API.
+              if curl -fsS -H "User-Agent: delta-update-release-ci" "$url" >/dev/null; then
                 echo "$crate $version is visible on crates.io"
                 return 0
               fi
