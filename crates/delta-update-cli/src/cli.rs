@@ -212,6 +212,31 @@ impl SimulateMode {
     }
 }
 
+/// Patch failure to reproduce with `doctor --simulate-failure patch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum PatchReason {
+    /// Local files changed after check (E_PATCH_SOURCE_MISMATCH).
+    #[default]
+    SourceMismatch,
+    /// Truncated container (E_PATCH_FORMAT_MISMATCH).
+    Format,
+    /// Staged bytes do not match the manifest (E_PATCH_TARGET_HASH_MISMATCH).
+    TargetHash,
+    /// Hashing the patch would exceed the memory budget (E_PATCH_MEMORY_BUDGET).
+    Memory,
+}
+
+impl PatchReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceMismatch => "source-mismatch",
+            Self::Format => "format",
+            Self::TargetHash => "target-hash",
+            Self::Memory => "memory",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Manifest endpoint; repeat for multiple mirrors.
@@ -226,6 +251,9 @@ pub struct DoctorArgs {
     /// Print the payload a real failure produces, without changing anything.
     #[arg(long, value_name = "MODE", conflicts_with_all = ["check_config", "watch"])]
     pub simulate_failure: Option<SimulateMode>,
+    /// Patch failure to reproduce; defaults to source-mismatch.
+    #[arg(long, value_name = "REASON", requires = "simulate_failure")]
+    pub reason: Option<PatchReason>,
     /// Project root for --check-config.
     #[arg(long, default_value = ".")]
     pub dir: PathBuf,

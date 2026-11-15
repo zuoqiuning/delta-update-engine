@@ -248,6 +248,21 @@ delta-update doctor --simulate-failure lock --json | jq -e '.simulated_error.cod
 
 `disk` 场景读取真实可用空间并要求多 1 字节，因此 `message` 里的数字随机器变化，断言只用 `code` / `action`。
 
+`patch` 场景可用 `--reason` 选择具体失败分支，信封多一个 `reason` 字段（`lock` / `disk` 时为 `null`）：
+
+| `--reason` | 产出 | 触发的真实路径 |
+| --- | --- | --- |
+| `source-mismatch`（默认） | `E_PATCH_SOURCE_MISMATCH` | `apply_patch` 比对源文件哈希 |
+| `format` | `E_PATCH_FORMAT_MISMATCH` | 容器短于 82 字节固定头 |
+| `target-hash` | `E_PATCH_TARGET_HASH_MISMATCH` | 复用 `prepared.json` 时的 `verify_plan` |
+| `memory` | `E_PATCH_MEMORY_BUDGET` | `apply_patch` 的内存预算上限 |
+
+```json
+{ "scenario": "patch", "reason": "target-hash", "simulated_error": { "code": "E_PATCH_TARGET_HASH_MISMATCH", "...": "..." } }
+```
+
+`--reason` 只接受 `--simulate-failure patch`，搭配其他模式会直接报参数错误。
+
 ### 2.8 `serve` 的边界
 
 `serve` 没有 JSON 输出，也不属于发布契约。它只绑定 loopback，用于本地开发与演示：**loopback 不是信任边界，它不防御同机恶意进程**；不要用 `socat` / `netsh portproxy` 转发到公网。没有 TLS、鉴权、目录列表或缓存，不是 CDN。

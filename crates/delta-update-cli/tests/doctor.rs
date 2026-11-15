@@ -114,6 +114,7 @@ fn doctor_args(endpoint: &str, public_key: &Path) -> cli::DoctorArgs {
         public_key: Some(public_key.to_path_buf()),
         check_config: false,
         simulate_failure: None,
+        reason: None,
         dir: ".".into(),
         watch: None,
         interval: 60,
@@ -211,6 +212,7 @@ fn check_config_args(dir: &Path) -> cli::DoctorArgs {
         public_key: None,
         check_config: true,
         simulate_failure: None,
+        reason: None,
         dir: dir.to_path_buf(),
         watch: None,
         interval: 60,
@@ -244,9 +246,27 @@ fn simulated_failures_carry_the_codes_the_client_matches_on() {
         (cli::SimulateMode::Disk, "E_DISK_INSUFFICIENT"),
     ] {
         assert_eq!(
-            pipeline::simulated_error(mode).unwrap().code(),
+            pipeline::simulated_error(mode, None).unwrap().code(),
             code,
             "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn simulated_patch_reasons_cover_every_recovery_branch() {
+    for (reason, code) in [
+        (cli::PatchReason::SourceMismatch, "E_PATCH_SOURCE_MISMATCH"),
+        (cli::PatchReason::Format, "E_PATCH_FORMAT_MISMATCH"),
+        (cli::PatchReason::TargetHash, "E_PATCH_TARGET_HASH_MISMATCH"),
+        (cli::PatchReason::Memory, "E_PATCH_MEMORY_BUDGET"),
+    ] {
+        assert_eq!(
+            pipeline::simulated_error(cli::SimulateMode::Patch, Some(reason))
+                .unwrap()
+                .code(),
+            code,
+            "{reason:?}"
         );
     }
 }

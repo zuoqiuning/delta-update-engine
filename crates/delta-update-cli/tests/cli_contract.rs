@@ -1,5 +1,5 @@
 use clap::Parser;
-use delta_update_cli::cli::{Cli, Command};
+use delta_update_cli::cli::{Cli, Command, PatchReason, SimulateMode};
 use delta_update_cli::ignore::DeltaIgnore;
 
 #[test]
@@ -48,16 +48,26 @@ fn doctor_accepts_multiple_endpoints() {
 
 #[test]
 fn doctor_simulate_failure_does_not_require_an_endpoint() {
-    let cli =
-        Cli::try_parse_from(["delta-update", "doctor", "--simulate-failure", "lock"]).unwrap();
+    let cli = Cli::try_parse_from([
+        "delta-update",
+        "doctor",
+        "--simulate-failure",
+        "patch",
+        "--reason",
+        "target-hash",
+    ])
+    .unwrap();
 
     let Command::Doctor(args) = cli.command else {
         panic!("expected doctor");
     };
-    assert_eq!(
-        args.simulate_failure,
-        Some(delta_update_cli::cli::SimulateMode::Lock)
-    );
+    assert_eq!(args.simulate_failure, Some(SimulateMode::Patch));
+    assert_eq!(args.reason, Some(PatchReason::TargetHash));
+}
+
+#[test]
+fn reason_requires_simulate_failure() {
+    assert!(Cli::try_parse_from(["delta-update", "doctor", "--reason", "format"]).is_err());
 }
 
 #[test]
