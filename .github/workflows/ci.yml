@@ -20,7 +20,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: fmt, clippy, test
-        run: cargo xtask ci
+        shell: pwsh
+        run: |
+          cargo xtask ci 2>&1 | Tee-Object -FilePath ci.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content ci.log -Tail 200 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
       - name: docs links
         run: cargo xtask docs-check
       - name: version sync
