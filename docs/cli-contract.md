@@ -217,7 +217,38 @@ jq -e 'all(.releases[]; ((.coverage_drop // {points: 0}).points <= 20))' coverag
 jq '.releases[] | select(.coverage_drop != null) | {version, drop: .coverage_drop.points}' coverage.json
 ```
 
-### 2.7 `serve` 的边界
+### 2.7 `doctor --simulate-failure <MODE> --json`
+
+`lock` / `patch` / `disk` 三个场景分别用真实代码路径产出 `E_UPDATE_LOCKED`、`E_PATCH_SOURCE_MISMATCH`、`E_DISK_INSUFFICIENT`，用于验证客户端错误界面，不写任何状态、不需要 `--endpoint`：
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "mode": "simulate",
+  "ok": true,
+  "scenario": "lock",
+  "simulated_error": {
+    "code": "E_UPDATE_LOCKED",
+    "category": "journal",
+    "message": "update is locked by another process",
+    "retryable": true,
+    "action": "wait",
+    "user_action": "另一个实例正在执行更新，请等待其完成或关闭后重试",
+    "detail": ""
+  }
+}
+```
+
+命令本身成功（退出码 `0`）：这是模拟，不是故障。CI 断言：
+
+```bash
+delta-update doctor --simulate-failure lock --json | jq -e '.simulated_error.code == "E_UPDATE_LOCKED"'
+```
+
+`disk` 场景读取真实可用空间并要求多 1 字节，因此 `message` 里的数字随机器变化，断言只用 `code` / `action`。
+
+### 2.8 `serve` 的边界
 
 `serve` 没有 JSON 输出，也不属于发布契约。它只绑定 loopback，用于本地开发与演示：**loopback 不是信任边界，它不防御同机恶意进程**；不要用 `socat` / `netsh portproxy` 转发到公网。没有 TLS、鉴权、目录列表或缓存，不是 CDN。
 

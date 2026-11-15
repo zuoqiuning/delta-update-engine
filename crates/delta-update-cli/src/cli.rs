@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -191,10 +191,31 @@ pub struct KeyInfoArgs {
     pub key: PathBuf,
 }
 
+/// Client-visible failure to reproduce with `doctor --simulate-failure`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SimulateMode {
+    /// Another instance holds `update.lock` (E_UPDATE_LOCKED).
+    Lock,
+    /// Local files changed under a patch (E_PATCH_SOURCE_MISMATCH).
+    Patch,
+    /// Staging cannot be materialized (E_DISK_INSUFFICIENT).
+    Disk,
+}
+
+impl SimulateMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lock => "lock",
+            Self::Patch => "patch",
+            Self::Disk => "disk",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Manifest endpoint; repeat for multiple mirrors.
-    #[arg(long, required_unless_present = "check_config")]
+    #[arg(long, required_unless_present_any = ["check_config", "simulate_failure"])]
     pub endpoint: Vec<String>,
     /// Trusted public key file; omitted means structural checks only.
     #[arg(long)]
@@ -202,6 +223,9 @@ pub struct DoctorArgs {
     /// Validate plugins.delta-update in <dir>/src-tauri/tauri.conf.json offline.
     #[arg(long)]
     pub check_config: bool,
+    /// Print the payload a real failure produces, without changing anything.
+    #[arg(long, value_name = "MODE", conflicts_with_all = ["check_config", "watch"])]
+    pub simulate_failure: Option<SimulateMode>,
     /// Project root for --check-config.
     #[arg(long, default_value = ".")]
     pub dir: PathBuf,

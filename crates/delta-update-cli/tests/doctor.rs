@@ -113,6 +113,7 @@ fn doctor_args(endpoint: &str, public_key: &Path) -> cli::DoctorArgs {
         endpoint: vec![endpoint.to_string()],
         public_key: Some(public_key.to_path_buf()),
         check_config: false,
+        simulate_failure: None,
         dir: ".".into(),
         watch: None,
         interval: 60,
@@ -209,6 +210,7 @@ fn check_config_args(dir: &Path) -> cli::DoctorArgs {
         endpoint: Vec::new(),
         public_key: None,
         check_config: true,
+        simulate_failure: None,
         dir: dir.to_path_buf(),
         watch: None,
         interval: 60,
@@ -232,4 +234,19 @@ fn doctor_check_config_rejects_an_insecure_endpoint() {
             .map(delta_update_engine::EngineError::code),
         Some("E_ENDPOINT_INSECURE")
     );
+}
+
+#[test]
+fn simulated_failures_carry_the_codes_the_client_matches_on() {
+    for (mode, code) in [
+        (cli::SimulateMode::Lock, "E_UPDATE_LOCKED"),
+        (cli::SimulateMode::Patch, "E_PATCH_SOURCE_MISMATCH"),
+        (cli::SimulateMode::Disk, "E_DISK_INSUFFICIENT"),
+    ] {
+        assert_eq!(
+            pipeline::simulated_error(mode).unwrap().code(),
+            code,
+            "{mode:?}"
+        );
+    }
 }

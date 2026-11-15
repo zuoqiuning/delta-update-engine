@@ -47,6 +47,20 @@ fn doctor_accepts_multiple_endpoints() {
 }
 
 #[test]
+fn doctor_simulate_failure_does_not_require_an_endpoint() {
+    let cli =
+        Cli::try_parse_from(["delta-update", "doctor", "--simulate-failure", "lock"]).unwrap();
+
+    let Command::Doctor(args) = cli.command else {
+        panic!("expected doctor");
+    };
+    assert_eq!(
+        args.simulate_failure,
+        Some(delta_update_cli::cli::SimulateMode::Lock)
+    );
+}
+
+#[test]
 fn default_ignore_excludes_debug_symbols() {
     let ignore = DeltaIgnore::default();
     assert!(ignore.is_ignored("App.pdb"));

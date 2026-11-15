@@ -12,12 +12,16 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
+use delta_update_engine::journal::{UpdateLock, UPDATE_LOCK};
 use delta_update_engine::limits::Limits;
 use delta_update_engine::manifest::parse::{parse_manifest, MAX_NOTES_BYTES};
-use delta_update_engine::patch::container::PatchHeader;
+use delta_update_engine::patch::apply_patch;
+use delta_update_engine::patch::container::{Codec, PatchFormat, PatchHeader};
+use delta_update_engine::{EngineError, Strategy};
 
 use crate::cli::{
-    DoctorArgs, KeyInfoArgs, MigrateArgs, ReleaseArgs, RollbackArgs, VerifyArgs, VerifyKeyArgs,
+    DoctorArgs, KeyInfoArgs, MigrateArgs, ReleaseArgs, RollbackArgs, SimulateMode, VerifyArgs,
+    VerifyKeyArgs,
 };
 use crate::ignore::DeltaIgnore;
 use crate::output;
@@ -1392,6 +1396,9 @@ pub fn key_info(args: &KeyInfoArgs) -> anyhow::Result<()> {
 }
 
 pub fn doctor(args: &DoctorArgs) -> anyhow::Result<()> {
+    if let Some(mode) = args.simulate_failure {
+        return simulate_failure(args, mode);
+    }
     if args.check_config {
         return check_plugin_config(args);
     }
@@ -1541,6 +1548,98 @@ fn check_plugin_config(args: &DoctorArgs) -> anyhow::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Reproduce one client-visible failure and print the payload the plugin would
+/// return, so an application can render and test its error UI without waiting
+/// for a real outage. The command itself succeeds; scripts assert on
+/// `.simulated_error.code`.
+fn simulate_failure(args: &DoctorArgs, mode: SimulateMode) -> anyhow::Result<()> {
+    let payload = simulated_error(mode)?.to_payload();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "v": 1,
+                "tool": "delta-update-cli",
+                "mode": "simulate",
+                "ok": true,
+                "scenario": mode.as_str(),
+                "simulated_error": payload,
+            }))?
+        );
+    } else {
+        output::info(&format!("scenario: {}", mode.as_str()));
+        output::warn(&format!("{}: {}", payload.code, payload.message));
+        output::info(&format!(
+            "action: {}  retryable: {}  category: {}",
+            serde_json::to_value(payload.action)?,
+            payload.retryable,
+            serde_json::to_value(payload.category)?
+        ));
+        output::info(&payload.user_action);
+    }
+    Ok(())
+}
+
+/// The error a scenario reproduces, produced by the same code path the client
+/// hits rather than by a hand-written payload.
+pub fn simulated_error(mode: SimulateMode) -> anyhow::Result<EngineError> {
+    match mode {
+        SimulateMode::Lock => simulate_lock(),
+        SimulateMode::Patch => simulate_patch(),
+        SimulateMode::Disk => simulate_disk(),
+    }
+}
+
+/// A second acquisition of the same file is what another instance holding the
+/// lock looks like. Windows locks are per handle, so this returns
+/// `E_UPDATE_LOCKED` instead of deadlocking.
+fn simulate_lock() -> anyhow::Result<EngineError> {
+    let dir = tempfile::tempdir().context("create lock directory")?;
+    let path = dir.path().join(UPDATE_LOCK);
+    let _held = UpdateLock::acquire(&path)?;
+    match UpdateLock::acquire(&path) {
+        Ok(_) => bail!("simulated lock was acquired twice"),
+        Err(error) => Ok(error),
+    }
+}
+
+/// The real apply path rejects a source whose hash does not match the patch
+/// header, which is what a tree that changed between check and prepare causes.
+fn simulate_patch() -> anyhow::Result<EngineError> {
+    let dir = tempfile::tempdir().context("create patch directory")?;
+    let source = dir.path().join("source.bin");
+    std::fs::write(&source, b"local bytes that no longer match the patch")?;
+    let header = PatchHeader {
+        format: PatchFormat::V1 as u16,
+        strategy_id: Strategy::QbsdiffZstd.patch_id().unwrap_or_default(),
+        codec: Codec::None,
+        target_size: 8,
+        source_sha256: [0x11; 32],
+        target_sha256: [0x22; 32],
+    };
+    // The payload is never interpreted: the source hash is checked first.
+    let mut bytes = header.encode().to_vec();
+    bytes.extend_from_slice(b"payload");
+    let patch = dir.path().join("patch.tdp");
+    std::fs::write(&patch, &bytes)?;
+    let dest = dir.path().join("target.bin");
+    match apply_patch(&source, &patch, &dest, &header, &Limits::default()) {
+        Ok(()) => bail!("simulated patch unexpectedly applied"),
+        Err(error) => Ok(error),
+    }
+}
+
+/// Report the real free space and ask for one byte more, so the payload carries
+/// believable numbers without filling a disk.
+fn simulate_disk() -> anyhow::Result<EngineError> {
+    let dir = tempfile::tempdir().context("create staging directory")?;
+    let available = fs4::available_space(dir.path()).context("read free space")?;
+    Ok(EngineError::InsufficientDiskSpace {
+        required: available.saturating_add(1),
+        available,
+    })
 }
 
 struct DoctorReport {
