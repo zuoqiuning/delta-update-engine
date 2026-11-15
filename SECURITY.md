@@ -29,6 +29,7 @@
 本项目的安全模型是“签名先于落盘、失败关闭”，以下边界是**已知设计**，不是漏洞：
 
 - 客户端只信任 `signing_public_keys` 验证通过的清单；`latest.json` 与版本化清单必须带有效 `.minisig`。
+- 信任根是**编译期内嵌**的配置，不是运行期可写文件：改动 `tauri.conf.json` 必须重新构建才会生效。启用 `pinned-keys` 时，正式客户端只信任“配置 ∩ 发布环境注入的公钥”，交集为空则拒绝启动；安装形态与信任边界见 [安全模型 §3.1](docs/design/security.md#31-安装形态--信任根)，轮换顺序见 [版本与兼容承诺 §5](docs/reference/versioning.md#5-密钥轮换)。
 - `commit.meta.json` 不是独立签名，它把 Journal 绑定到已验签清单的哈希；信任来源仍是清单签名。
 - `old_hashes.json` 只用于检测备份损坏，不构成对备份目录的独立信任。
 - worker 要求 `install_root` 精确等于自身可执行文件目录；per-machine 安装的提权恢复只接受同一二进制。

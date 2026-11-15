@@ -134,8 +134,8 @@ pub fn build_engine<R: Runtime>(
             .into_iter()
             .collect(),
     )?;
-    // The config file is writable in a per-user install; with the `pinned-keys`
-    // feature the runtime keys are narrowed to the compiled-in set first.
+    // The keys are embedded at build time; with the `pinned-keys` feature they
+    // are narrowed to the set the release environment compiled in.
     let signing_public_keys = crate::pinned::effective_keys(&config.signing_public_keys)?;
     let engine = Engine::new(EngineConfig {
         endpoint,

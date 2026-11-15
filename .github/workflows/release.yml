@@ -94,6 +94,20 @@ jobs:
             echo "timed out waiting for $crate $version" >&2
             return 1
           }
+          package_has() {
+            crate="$1"
+            shift
+            list=$(cargo package -p "$crate" --list --no-verify)
+            for required in "$@"; do
+              if ! printf '%s\n' "$list" | grep -qx "$required"; then
+                echo "::error::$crate package is missing $required; publishing would be unusable"
+                return 1
+              fi
+            done
+          }
+          package_has delta-update-engine Cargo.toml src/lib.rs
+          package_has tauri-plugin-delta-update Cargo.toml src/lib.rs permissions/default.toml
+          package_has delta-update-cli Cargo.toml src/lib.rs
           cargo publish -p delta-update-engine --locked --no-verify
           wait_for_crate delta-update-engine "$version"
           cargo publish -p tauri-plugin-delta-update --locked --no-verify

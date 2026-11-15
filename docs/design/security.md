@@ -197,6 +197,20 @@
 4. **安装目录 R 只被 Journal 保护下的原子操作修改**（前端和网络均不可直接触达）。
 5. **Journal 在触碰 R 之前完成 flush**（write-ahead 语义是原子性的唯一保证）。
 
+### 3.1 安装形态 × 信任根
+
+`signing_public_keys` 与 `pinned-keys` 的两个集合都在**构建期**决定：前者来自被编译进二进制的 `tauri.conf.json`，后者来自发布环境注入的 `DELTA_UPDATE_PINNED_PUBLIC_KEYS`。运行期没有任何可写的信任存储，所以“用户改了配置文件就能换公钥”并不成立。剩下两类风险是：**构建期**把错误的公钥编进正式客户端，以及**能写安装目录的人直接替换整个二进制**。
+
+| 安装形态 | 配置来源 | 运行期可改写公钥 | 主要风险 | 建议 |
+| --- | --- | --- | --- | --- |
+| per-user（`%LocalAppData%`） | 内嵌 | 否 | 当前用户可替换 exe 与配置 | Authenticode 签名 + `pinned-keys` |
+| per-machine（`%ProgramFiles%`） | 内嵌 | 否 | 需管理员权限才能替换 exe | Authenticode 签名；`pinned-keys` 可选 |
+| 便携版（自定义目录） | 内嵌 | 否 | 目录可写，exe 与配置可被同权限进程替换 | Authenticode 签名 + `pinned-keys` |
+
+`pinned-keys` 防的是“构建期配置被改”：发布环境另外注入一份公钥集合，客户端只信任**两者交集**。配置被 PR 篡改、分支带错密钥、或轮换只改了配置没改构建变量时，交集为空，应用拒绝启动（`E_CONFIG_INVALID`）而不是带着错误信任根运行。它**不防**二进制被替换——那属于代码签名与分发渠道，见 §1.2 前提 2。
+
+轮换顺序见 [版本与兼容承诺 §5](../reference/versioning.md#5-密钥轮换)：先发布 pinned 集合已包含新公钥的客户端构建，再用新密钥签名。
+
 **`commit.meta.json` 与 `old_hashes.json` 的信任边界**：两者都是本地可写文件，**没有独立签名或 MAC**，因此不能作为独立信任根。`verify_commit_journal` 要求 `commit.meta.json` 存在，并重新验证 `verified_manifest.json` 的 minisign 签名；每个 `Place` 的 `dst/sha256/size` 必须出现在该签名清单中，`Backup.dst` 必须精确为 `.old/<commit_id>/<src>`。所以篡改 meta 或 `old_hashes` 不能把任意字节写进安装根，只能尝试改变“forward / rollback”的语义配对与回滚素材的选择。回滚 `Restore` 的哈希来自受签名清单绑定的 `installed_manifest.json` 或 `old_hashes`；前者是强约束，后者在本地被同时篡改时只能恢复“另一份曾经合法存在过的内容”，不能凭空写入新代码。这是有意接受的残余风险：跨进程 HMAC 需要传递密钥，得不偿失。
 
 

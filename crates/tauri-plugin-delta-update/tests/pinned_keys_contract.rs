@@ -54,7 +54,12 @@ mod enabled {
         let error = effective_keys(&["RWQnotpinned00000000000000000000000000000000000000".into()])
             .unwrap_err();
         assert_eq!(error.code(), "E_CONFIG_INVALID");
-        assert!(error.to_string().contains("pinned"), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("pinned"), "{message}");
+        assert!(
+            message.contains("Rotate in order"),
+            "a startup refusal must explain the rotation order, got: {message}"
+        );
     }
 
     #[test]

@@ -21,6 +21,8 @@
 - **发布流水线平台解耦**：`release.yml` 的 publish 改到 `ubuntu-latest`（crate 本身是 Windows-only，用 `--no-verify` 发布，Windows 的 verify job 已完成构建与测试）；npm 步骤同步改为 bash。
 - **平台矩阵前置**：README 首屏与插件 crate 文档首段明确 Windows 10+ 桌面、三种安装形态与不支持项；`per-machine-install.md` 补 NSIS `perMachine` 最小配置与 UAC 路径示例。
 - **错误码与建议同表**：`EngineError` 文档说明 `code`/`action`/`user_action` 是三张穷尽匹配表，新增变体不补建议就无法编译；补测试覆盖每个变体至少有非空错误码与用户建议。
+- **pinned-keys 的轮换与信任边界说明**：交集为空时的启动错误直接给出轮换顺序（先发布 pinned 含新公钥的客户端，再切服务端密钥）；`security.md` 增加“安装形态 × 信任根”矩阵，说明信任根是编译期内嵌配置、pinned-keys 防的是构建期配置被改而非二进制替换；`versioning.md` §5 同步轮换时序。
+- **锁与契约的收尾**：`UpdateLock::drop` 在 panic 展开时同样截断元数据（新增用例证明），`write_info` 失败也会清空文件；参数来源契约的扫描器改为“解析失败即报错”，并补“带路径的命令必须被扫出”等正反用例；发布流水线在 publish 前用 `cargo package --list` 断言三个 crate 的包内容包含 `Cargo.toml`/`src/lib.rs`（插件另含 `permissions/default.toml`），弥补 `--no-verify` 跳过的打包检查。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

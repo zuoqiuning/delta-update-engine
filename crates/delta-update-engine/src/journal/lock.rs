@@ -101,7 +101,12 @@ impl UpdateLock {
                 "cleared an update lock left by a process that exited during an update"
             );
         }
-        write_info(&mut file)?;
+        if let Err(error) = write_info(&mut file) {
+            // Never leave a half-written record behind: it would look like a
+            // crash to the next process even though this one released cleanly.
+            let _ = file.set_len(0);
+            return Err(error);
+        }
         Ok(Self { file })
     }
 }
@@ -109,6 +114,8 @@ impl UpdateLock {
 impl Drop for UpdateLock {
     fn drop(&mut self) {
         // Empty metadata marks a clean release; anything left behind is a crash.
+        // `Drop` runs on early returns and unwinding too, so the only way to
+        // leave metadata behind is a kill or an abort.
         let _ = self.file.set_len(0);
         let _ = FileExt::unlock(&self.file);
     }
@@ -142,6 +149,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("update.lock");
         std::fs::write(&path, b"partial write").unwrap();
+        assert!(UpdateLock::acquire(&path).is_ok());
+    }
+
+    #[test]
+    fn panic_releases_and_truncates_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update.lock");
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(|| {
+            let _lock = UpdateLock::acquire(&path).unwrap();
+            panic!("update thread panicked while holding the lock");
+        });
+        std::panic::set_hook(hook);
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"",
+            "unwinding must clear the crash marker"
+        );
         assert!(UpdateLock::acquire(&path).is_ok());
     }
 }

@@ -40,6 +40,7 @@ npm 包（`tauri-plugin-delta-update-api`）的**首次发布**例外：npm 会�
 
 - `signing_public_keys` 支持多把公钥并行验证。
 - 轮换步骤：先加入新公钥（旧公钥保留）→ 用新私钥发布一个版本 → 至少保留一个 minor 周期 → 移除旧公钥。
+- 启用 `pinned-keys` 时，构建变量 `DELTA_UPDATE_PINNED_PUBLIC_KEYS` 必须与配置同步推进：客户端只信任两者交集，交集为空会拒绝启动（`E_CONFIG_INVALID`）。因此顺序是：发布 pinned 集合含旧+新公钥的客户端 → 用新密钥签名 → 再发布 pinned 集合只含新公钥的客户端。跳过第一步时，用新配置构建的客户端会因交集为空而打不开。
 - **移除旧公钥是 breaking change**：仍信任旧公钥的客户端会拒绝新清单。需要发布 major（或 `0.x` 的 `x`）版本并给出迁移窗口。
 - 已发布的清单不重新签名；轮换只影响之后发布的版本。
 

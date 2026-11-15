@@ -1,16 +1,21 @@
 //! Compile-time pinned trust root.
 //!
-//! In a per-user install the configuration file is writable by the same user
-//! who runs the app, so `signing_public_keys` alone cannot stop a modified
-//! config from trusting an attacker's key. Building with the `pinned-keys`
-//! feature narrows the trust root at compile time:
+//! `signing_public_keys` is embedded in the binary from `tauri.conf.json` at
+//! build time, not read from a writable file at runtime. The remaining risk is
+//! therefore a build that compiles in keys which do not match the released
+//! client: a tampered config in the release pipeline, a stale branch, or a
+//! half-finished rotation. Building with the `pinned-keys` feature narrows the
+//! trust root at compile time:
 //!
-//! * pinned keys come from `DELTA_UPDATE_PINNED_PUBLIC_KEYS` (comma separated);
+//! * pinned keys come from `DELTA_UPDATE_PINNED_PUBLIC_KEYS` (comma separated),
+//!   injected by the release environment rather than by the reviewed file;
 //! * the effective keys are `config ∩ pinned`;
 //! * an empty intersection is a startup error, never a silent fallback.
 //!
-//! Without the feature this module is a pass-through, so behaviour is
-//! unchanged for hosts that do not opt in.
+//! Rotation ordering matters because a refusal here means the application does
+//! not start: ship the client whose pinned set already contains the new key
+//! **before** the publisher signs with it (see `docs/reference/versioning.md`
+//! §5). Without the feature this module is a pass-through.
 
 use delta_update_engine::EngineError;
 
@@ -55,13 +60,13 @@ pub fn effective_keys(configured: &[String]) -> Result<Vec<String>, EngineError>
         .collect();
     if trusted.is_empty() {
         return Err(EngineError::ConfigInvalid(
-            "no configured signing key is pinned (signing_public_keys ∩ DELTA_UPDATE_PINNED_PUBLIC_KEYS is empty); point the config at a pinned key or rebuild with the new key".into(),
+            "no configured signing key is pinned (signing_public_keys ∩ DELTA_UPDATE_PINNED_PUBLIC_KEYS is empty). Rotate in order: first ship a client build whose pinned set contains the new key, then switch the publisher to that key; the application refuses to start until both sides agree".into(),
         ));
     }
     Ok(trusted)
 }
 
-/// Feature disabled: the runtime config stays the only trust root.
+/// Feature disabled: the embedded config stays the only trust root.
 #[cfg(not(feature = "pinned-keys"))]
 pub fn effective_keys(configured: &[String]) -> Result<Vec<String>, EngineError> {
     Ok(configured.to_vec())

@@ -109,6 +109,17 @@ fn is_done(context: &ReplayContext<'_>, op: &FileOp) -> Result<bool, String> {
     }
 }
 
+/// Apply one operation. `Place` and `Restore` validate two different things:
+///
+/// * the staged or backup source, so a file modified after `begin_commit` never
+///   lands (`tampered_staged_source_blocks_replay`);
+/// * the target after the move, so a torn rename is detected.
+///
+/// The install file being replaced is deliberately not re-checked here. It was
+/// verified against the manifest by `verify_plan` before the journal was
+/// written, it is preserved in `.old/<commit_id>/`, and an external edit in
+/// between is either overwritten on the forward path or restored from that
+/// backup on rollback (`staging_overwrites_external_edit_after_backup`).
 fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Result<(), String> {
     match op {
         FileOp::Backup { src, dst } => {
