@@ -952,6 +952,7 @@ dependencies = [
  "chrono",
  "clap",
  "delta-update-engine",
+ "fs4",
  "hex",
  "hmac",
  "minisign",
