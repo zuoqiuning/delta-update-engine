@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Build-side release CLI for delta-update-engine (Windows targets)"
 readme = "README.md"
 keywords = ["tauri", "updater", "delta", "release", "cli"]
-categories = ["command-line-utilities", "development-tools", "os::windows-apis"]
+categories = ["command-line-utilities", "development-tools", "development-tools::build-utils", "os::windows-apis"]
 documentation = "https://docs.rs/delta-update-cli"
 
 [[bin]]
@@ -17,7 +17,7 @@ name = "delta-update"
 path = "src/main.rs"
 
 [dependencies]
-delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.3" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.4" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true
@@ -30,6 +30,7 @@ qbsdiff.workspace = true
 zstd.workspace = true
 hex.workspace = true
 semver.workspace = true
+sysinfo.workspace = true
 minisign.workspace = true
 hmac.workspace = true
 sha1.workspace = true

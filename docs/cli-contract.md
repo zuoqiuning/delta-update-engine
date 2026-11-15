@@ -229,3 +229,9 @@ jq '.releases[] | select(.coverage_drop != null) | {version, drop: .coverage_dro
 2. 每个 JSON 生产点仍输出 `v` 与 `tool` 信封。
 
 `xtask ci` 会执行该检查，因此新增 `--json` 输出时忘记加信封会导致 CI 失败。
+
+## 4. 语言与本地化策略
+
+CLI 的 `--help` 为英文，错误与 `user_action` 为中文；这是当前目标用户的取舍，不在 rc 阶段引入 i18n。
+
+需要英文错误的脚本必须使用 `--json`，从 `error.code` / `error.action` 做本地化，**不要解析 `error.message` 或 `user_action`**——两者是给人读的，措辞会变。`--json` 的 `code` / `action` 是稳定契约。

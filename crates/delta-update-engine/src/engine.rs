@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use semver::Version;
 use tokio_util::sync::CancellationToken;
@@ -65,6 +65,12 @@ pub enum Progress {
     Verifying {
         file: String,
     },
+    /// In-place verification of unchanged files before downloads start.
+    Scanning {
+        file: String,
+        completed: u64,
+        total: u64,
+    },
     Done,
 }
 
@@ -103,6 +109,34 @@ pub enum StartupOutcome {
     NeedsAttention {
         error: EngineError,
     },
+}
+
+/// Acquire the update lock with a short backoff.
+///
+/// `confirm_healthy` can race a prepare that holds the lock for the whole
+/// download. Failing immediately would surface as "confirmation failed" even
+/// though the right answer is "wait a moment"; three attempts cover the common
+/// case without blocking shutdown paths.
+///
+/// This is synchronous and sleeps up to 600ms total. Callers on an async
+/// runtime accept that block; if the retry budget grows, wrap this in
+/// `spawn_blocking` instead of extending the sleep.
+fn acquire_update_lock_retrying(journal_root: &Path) -> Result<UpdateLock, EngineError> {
+    let path = journal_root.join(UPDATE_LOCK);
+    let mut delay = std::time::Duration::from_millis(200);
+    for attempt in 0..3 {
+        match UpdateLock::acquire(&path) {
+            Ok(lock) => return Ok(lock),
+            Err(EngineError::UpdateLocked) => {
+                if attempt < 2 {
+                    std::thread::sleep(delay);
+                    delay *= 2;
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(EngineError::UpdateLocked)
 }
 
 /// The manifest that passed signature verification in the last successful
@@ -288,6 +322,7 @@ impl Engine {
         // Hold the cross-process lock across staging and PREPARED persistence so
         // two instances can never interleave writes to the same journal root.
         let _lock = UpdateLock::acquire(&self.config.journal_root.join(UPDATE_LOCK))?;
+        let progress: Arc<dyn Fn(Progress) + Send + Sync> = Arc::from(progress);
         let plan = stage(&PrepareInput {
             manifest: &verified.manifest,
             diff: &verified.diff,
@@ -299,7 +334,7 @@ impl Engine {
             manifest_hash: &verified.manifest_hash,
             limits: &self.config.limits,
             cancel: &cancel,
-            progress: progress.as_ref(),
+            progress: Arc::clone(&progress),
         })
         .await?;
         // Hashing every staged file can take a while; keep it off the async
@@ -396,6 +431,7 @@ impl Engine {
                 state::write_commit_meta(
                     &self.config.journal_root,
                     &state::CommitMeta {
+                        schema: state::COMMIT_META_SCHEMA,
                         manifest_hash: plan.manifest_hash.clone(),
                         version: plan.version.clone(),
                         from_version: self.config.current_version.clone(),
@@ -492,7 +528,7 @@ impl Engine {
             return Ok(());
         }
 
-        let _lock = UpdateLock::acquire(&journal_root.join(UPDATE_LOCK))?;
+        let _lock = acquire_update_lock_retrying(journal_root)?;
         state::reset_attempts(journal_root)?;
         let Some(CommitStatus::Completed { version, commit_id }) =
             state::read_commit_status(journal_root)?

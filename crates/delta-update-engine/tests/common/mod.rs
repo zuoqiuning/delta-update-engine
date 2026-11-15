@@ -84,6 +84,7 @@ impl Fixture {
             staged("added.txt", ADDED_FILE, &staging_root),
         ];
         let plan = PreparedPlan {
+            schema: delta_update_engine::staging::plan::PREPARED_SCHEMA,
             version: VERSION.into(),
             manifest_hash: "f".repeat(64),
             staging_root: staging_root.clone(),

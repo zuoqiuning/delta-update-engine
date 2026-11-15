@@ -212,6 +212,8 @@ pub enum Progress {
     Downloading { file: String, total: u64, completed: u64 },
     Applying { file: String },
     Verifying { file: String },
+    /// 下载前的未变化文件校验；completed/total 是该阶段的文件数。
+    Scanning { file: String, completed: u64, total: u64 },
     Done,
 }
 

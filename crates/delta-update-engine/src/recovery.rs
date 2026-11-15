@@ -134,7 +134,7 @@ pub(crate) fn recover(roots: &RecoveryRoots<'_>) -> Result<StartupOutcome, Engin
             Some(CommitStatus::Completed { .. }) => {
                 if attempts > u64::from(roots.crash_loop_threshold) {
                     let config = apply_config(roots, &journal);
-                    if let Err(error) = rollback::rollback(&config, &journal) {
+                    if let Err(error) = rollback::rollback_locked(&config, &journal) {
                         return Ok(StartupOutcome::NeedsAttention { error });
                     }
                     return Ok(StartupOutcome::RolledBack {
@@ -174,7 +174,7 @@ pub(crate) fn recover(roots: &RecoveryRoots<'_>) -> Result<StartupOutcome, Engin
             Ok(JournalOutcome::ReplayFailed { op_index, reason }) => {
                 if interrupted {
                     let config = apply_config(roots, &journal);
-                    if let Err(error) = rollback::rollback(&config, &journal) {
+                    if let Err(error) = rollback::rollback_locked(&config, &journal) {
                         return Ok(StartupOutcome::NeedsAttention { error });
                     }
                     return Ok(StartupOutcome::RolledBack {

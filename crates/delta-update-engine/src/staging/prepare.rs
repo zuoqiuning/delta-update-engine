@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use futures_util::{StreamExt, TryStreamExt};
 use tokio_util::sync::CancellationToken;
@@ -98,7 +98,7 @@ pub(crate) struct PrepareInput<'a> {
     pub manifest_hash: &'a str,
     pub limits: &'a Limits,
     pub cancel: &'a CancellationToken,
-    pub progress: &'a (dyn Fn(Progress) + Send + Sync),
+    pub progress: Arc<dyn Fn(Progress) + Send + Sync>,
 }
 
 struct StageContext<'a> {
@@ -150,7 +150,7 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
         journal_root: input.journal_root,
         limits: input.limits,
         cancel: input.cancel,
-        progress: input.progress,
+        progress: input.progress.as_ref(),
         total_download: input.diff.download_bytes.saturating_add(repair_bytes),
         downloaded: &downloaded,
     };
@@ -226,6 +226,7 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
     staged.sort_by(|left, right| left.path.cmp(&right.path));
 
     Ok(PreparedPlan {
+        schema: crate::staging::plan::PREPARED_SCHEMA,
         version: input.version.to_string(),
         manifest_hash: input.manifest_hash.to_string(),
         staging_root: target_root,
@@ -308,24 +309,39 @@ async fn verify_unchanged(input: &PrepareInput<'_>) -> Result<Vec<String>, Engin
         .collect::<Result<_, _>>()?;
     let install_root = input.install_root.to_path_buf();
     let cancel = input.cancel.clone();
-    tokio::task::spawn_blocking(move || verify_unchanged_files(&unchanged, &install_root, &cancel))
-        .await
-        .map_err(|err| EngineError::Internal(format!("verify task: {err}")))?
+    let progress = Arc::clone(&input.progress);
+    tokio::task::spawn_blocking(move || {
+        verify_unchanged_files(&unchanged, &install_root, &cancel, progress.as_ref())
+    })
+    .await
+    .map_err(|err| EngineError::Internal(format!("verify task: {err}")))?
 }
 
 fn verify_unchanged_files(
     unchanged: &[(String, String)],
     install_root: &Path,
     cancel: &CancellationToken,
+    progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<Vec<String>, EngineError> {
     let mut repairs = Vec::new();
-    for (path, expected) in unchanged {
+    let total = unchanged.len() as u64;
+    for (index, (path, expected)) in unchanged.iter().enumerate() {
         check_cancel(cancel)?;
         match sha256_file(&install_root.join(path)) {
             Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
             Ok(_) => repairs.push(path.clone()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => repairs.push(path.clone()),
             Err(err) => return Err(io_error(err, path)),
+        }
+        // Large installs can spend minutes here before any download starts.
+        // Emit a bounded number of events so the UI shows progress without
+        // flooding the IPC channel.
+        if index % 50 == 0 || index + 1 == unchanged.len() {
+            progress(Progress::Scanning {
+                file: path.clone(),
+                completed: (index + 1) as u64,
+                total,
+            });
         }
     }
     Ok(repairs)

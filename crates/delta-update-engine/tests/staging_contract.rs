@@ -193,6 +193,12 @@ async fn prepare_materializes_only_changed_files_and_persists_plan() {
         downloads.last().copied(),
         Some((outcome.download_bytes, outcome.download_bytes))
     );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Progress::Scanning { .. })),
+        "unchanged verification must emit progress before downloads start"
+    );
     assert!(events
         .iter()
         .any(|event| matches!(event, Progress::Verifying { .. })));
@@ -1028,4 +1034,32 @@ async fn check_during_a_blocked_prepare_returns_the_manifest() {
         std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap(),
         new
     );
+}
+
+#[test]
+fn prepared_plan_with_a_future_schema_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("prepared.json");
+    std::fs::write(
+        &path,
+        br#"{"schema":2,"version":"2.0.0","manifest_hash":"x","staging_root":".","files":[],"removed":[],"all_files":[]}"#,
+    )
+    .unwrap();
+
+    let error = PreparedPlan::load(&path).unwrap_err();
+    assert_eq!(error.code(), "E_JOURNAL_FORMAT_TOO_NEW");
+}
+
+#[test]
+fn prepared_plan_without_a_schema_field_uses_the_current_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("prepared.json");
+    std::fs::write(
+        &path,
+        br#"{"version":"2.0.0","manifest_hash":"x","staging_root":".","files":[],"removed":[],"all_files":[]}"#,
+    )
+    .unwrap();
+
+    let plan = PreparedPlan::load(&path).unwrap();
+    assert_eq!(plan.schema, 1);
 }

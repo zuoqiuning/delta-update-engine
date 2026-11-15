@@ -9,7 +9,7 @@
 - `1.0.0` 之后：breaking change 只出现在 `x`。
 - 所有 workspace crate 与 npm 包共用同一个版本号（`cargo xtask version-sync` 校验）。
 
-候选版本需要在依赖里写完整版本（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.3`），例如 `delta-update-engine = "1.0.0-rc.3"`；正式版发布后再改成 `version = "1.0"`，并提交 `Cargo.lock`。
+候选版本需要在依赖里写完整版本（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.4`），例如 `delta-update-engine = "1.0.0-rc.4"`；正式版发布后再改成 `version = "1.0"`，并提交 `Cargo.lock`。
 
 ## 2. Manifest schema
 
@@ -22,6 +22,10 @@
 
 - Journal 自带格式版本与校验和；遇到更高版本返回 `E_JOURNAL_FORMAT_TOO_NEW`，`action` 为 `update_client`，不会尝试猜测格式。
 - Journal 是**会被执行的写操作记录**：升级客户端时必须继续能读旧 Journal，直到旧版本的回滚窗口结束。
+- `prepared.json` 的 `PREPARED_SCHEMA` 与 `commit.meta.json` 的 `COMMIT_META_SCHEMA` 独立于应用版本。缺失字段的旧文件按 `1` 读取；高于当前支持的 schema 返回 `E_JOURNAL_FORMAT_TOO_NEW`，而不是当作损坏。
+- **schema 门控是单向的**：新客户端会拒绝未来格式，但旧客户端读新格式时，`serde` 会忽略未知字段并可能按旧布局继续解析，或在字段类型变化时返回 `E_JOURNAL_CORRUPT`。因此跨大版本升级前必须先让旧版本完成一次 `confirm_healthy`，清掉残留 plan。
+- `installed_manifest` 的 promote 是**尽力原子**（先写签名、再写清单）。如果 confirm 被强制中断，诊断会提示手工删除 `installed_manifest.json.minisig` 后重试；不会自动猜测哪一侧是新的。
+- 升级大版本前，先让旧版本完成一次健康确认，清掉残留的 `prepared.json` / `commit.meta.json`；如果升级后看到 `E_JOURNAL_FORMAT_TOO_NEW`，升级客户端或删除残留状态再重试，不要手工改 schema。
 - `config_version` 低于当前实现返回 `E_CONFIG_MIGRATION_REQUIRED`；高于当前实现返回 `E_CONFIG_INVALID`。字段新增必须带 `#[serde(default)]`。
 
 ## 4. 补丁策略

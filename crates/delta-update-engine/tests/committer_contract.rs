@@ -105,6 +105,63 @@ fn rollback_restores_old_and_removes_new_files() {
 }
 
 #[test]
+fn rollback_requires_the_update_lock() {
+    let fixture = fixture();
+    let (config, pending, _) = apply(&fixture);
+    let journal = Journal::decode(&std::fs::read(&pending.journal_path).unwrap()).unwrap();
+    let _held =
+        delta_update_engine::journal::UpdateLock::acquire(&config.journal_root.join("update.lock"))
+            .unwrap();
+
+    let error = delta_update_engine::rollback::rollback(&config, &journal).unwrap_err();
+    assert_eq!(error.code(), "E_UPDATE_LOCKED");
+}
+
+#[test]
+fn confirm_healthy_retries_while_another_process_holds_the_lock() {
+    let fixture = fixture();
+    let _pending = apply(&fixture);
+    let journal_root = fixture.journal();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let _lock =
+            delta_update_engine::journal::UpdateLock::acquire(&journal_root.join("update.lock"))
+                .unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    });
+    locked_rx.recv().unwrap();
+
+    // The first acquisition fails, the 200ms retry still sees the lock, and the
+    // 400ms retry succeeds after the holder exits.
+    fixture.engine.confirm_healthy().unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn partial_installed_manifest_reports_an_interrupted_confirmation() {
+    let fixture = fixture();
+    std::fs::write(fixture.journal().join("installed_manifest.json"), b"{}").unwrap();
+
+    let error = state::read_installed_manifest(&fixture.journal()).unwrap_err();
+    assert_eq!(error.code(), "E_JOURNAL_CORRUPT");
+    assert!(error.to_string().contains("out of sync"), "{error}");
+}
+
+#[test]
+fn future_commit_meta_schema_needs_attention() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("commit.meta.json"),
+        br#"{"schema":2,"manifest_hash":"x","version":"2.0.0","from_version":"1.0.0","install_root":".","commit_id":"c"}"#,
+    )
+    .unwrap();
+
+    let error = state::read_commit_meta(dir.path()).unwrap_err();
+    assert_eq!(error.code(), "E_JOURNAL_FORMAT_TOO_NEW");
+}
+
+#[test]
 fn resumed_rollback_cleans_commit_state_and_marks_version_skipped() {
     let fixture = fixture();
     let (_config, pending, _status) = apply(&fixture);

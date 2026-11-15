@@ -716,8 +716,8 @@ cargo test --workspace
 cargo package -p delta-update-engine --offline --no-verify --allow-dirty
 cd packages/plugin-api && npm publish --dry-run
 
-git tag v1.0.0-rc.3
-git push origin v1.0.0-rc.3
+git tag v1.0.0-rc.4
+git push origin v1.0.0-rc.4
 ```
 
 关键约束：

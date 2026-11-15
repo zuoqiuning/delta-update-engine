@@ -33,16 +33,25 @@ pub fn apply_patch(
         .map_err(|err| EngineError::Internal(format!("patch {}: {err}", patch.display())))?
         .len();
     // The source, the compressed patch and the decompressed payload are held
-    // in memory at the same time. Keep the configured factor meaningful
-    // instead of only checking the file-size ceiling. The default factor (2.5)
-    // is calibrated against qbsdiff's current memory model
-    // (`max(source, target) * factor >= source + 2 * payload`); re-validate it
-    // when qbsdiff crosses a major version or the container codec changes.
+    // in memory at the same time. This guard covers the *apply* side: qbsdiff's
+    // 4-byte suffix array is a publish-side (`Bsdiff`) cost, while `Bspatch`
+    // streams the target and only keeps the source plus the decoded payload.
+    // The CLI warns separately when publish-side jobs would exceed memory.
+    // Re-validate the factor when qbsdiff crosses a major version or the codec
+    // changes.
     let budget = (source_size.max(header.target_size) as f64 * limits.patch_memory_factor as f64)
         .max(16.0 * 1024.0 * 1024.0) as u64;
     let payload_size = patch_size.saturating_sub(PATCH_HEADER_LEN as u64);
     let required = source_size.saturating_add(payload_size.saturating_mul(2));
     if required > budget {
+        tracing::warn!(
+            source = source_size,
+            target = header.target_size,
+            payload = payload_size,
+            required,
+            budget,
+            "patch memory budget exceeded"
+        );
         return Err(PatchError::MemoryBudget {
             file_size: source_size.max(header.target_size),
             budget,

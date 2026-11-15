@@ -459,6 +459,19 @@ pub fn progress_state(
             },
             Some(file),
         )),
+        Progress::Scanning {
+            file,
+            completed,
+            total,
+        } => Some((
+            // `total` is the unchanged-file count for this phase, not
+            // `files_staged`. The following Downloading event resets the bar.
+            EngineState::Preparing {
+                verified: u32::try_from(completed).unwrap_or(u32::MAX),
+                total: u32::try_from(total).unwrap_or(u32::MAX),
+            },
+            Some(file),
+        )),
         Progress::Done => None,
         _ => None,
     }

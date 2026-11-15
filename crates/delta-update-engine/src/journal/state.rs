@@ -22,6 +22,8 @@ pub const SKIPPED_VERSION: &str = "skipped_version";
 pub const UPDATE_LOCK: &str = "update.lock";
 pub const COMMIT_JOURNAL: &str = "commit.journal";
 pub const ROLLBACK_JOURNAL: &str = "rollback.journal";
+/// Version of `commit.meta.json`. Older files default to 1.
+pub const COMMIT_META_SCHEMA: u32 = 1;
 
 /// Everything the replacement process needs, written before the journal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,8 @@ pub fn read_apply_config(journal_root: &Path) -> Result<Option<ApplyConfig>, Eng
 /// operation.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CommitMeta {
+    #[serde(default = "default_commit_meta_schema")]
+    pub schema: u32,
     pub manifest_hash: String,
     pub version: String,
     pub from_version: String,
@@ -62,12 +66,25 @@ pub struct CommitMeta {
     pub commit_id: String,
 }
 
+fn default_commit_meta_schema() -> u32 {
+    COMMIT_META_SCHEMA
+}
+
 pub fn write_commit_meta(journal_root: &Path, meta: &CommitMeta) -> Result<(), EngineError> {
     write_json(&journal_root.join(COMMIT_META), meta)
 }
 
 pub fn read_commit_meta(journal_root: &Path) -> Result<Option<CommitMeta>, EngineError> {
-    read_json(&journal_root.join(COMMIT_META))
+    let meta: Option<CommitMeta> = read_json(&journal_root.join(COMMIT_META))?;
+    if let Some(meta) = &meta {
+        if meta.schema > COMMIT_META_SCHEMA {
+            return Err(EngineError::JournalFormatTooNew {
+                client: u16::try_from(COMMIT_META_SCHEMA).unwrap_or(u16::MAX),
+                actual: u16::try_from(meta.schema).unwrap_or(u16::MAX),
+            });
+        }
+    }
+    Ok(meta)
 }
 
 pub fn write_verified_manifest(
@@ -105,13 +122,16 @@ pub fn promote_verified_to_installed(journal_root: &Path) -> Result<(), EngineEr
     let Some((raw, signature)) = read_verified_manifest(journal_root)? else {
         return Ok(());
     };
-    crate::fs::atomic::write_atomic(&journal_root.join(INSTALLED_MANIFEST), &raw)
-        .map_err(|err| EngineError::Internal(format!("installed manifest: {err}")))?;
+    // Write the signature first: if the process dies between the two writes,
+    // the pair is detectably out of sync instead of silently mixing a new
+    // manifest with the previous signature. Readers fail closed below.
     crate::fs::atomic::write_atomic(
         &journal_root.join(INSTALLED_SIGNATURE),
         signature.as_bytes(),
     )
     .map_err(|err| EngineError::Internal(format!("installed signature: {err}")))?;
+    crate::fs::atomic::write_atomic(&journal_root.join(INSTALLED_MANIFEST), &raw)
+        .map_err(|err| EngineError::Internal(format!("installed manifest: {err}")))?;
     let _ = std::fs::remove_file(journal_root.join(VERIFIED_MANIFEST));
     let _ = std::fs::remove_file(journal_root.join(VERIFIED_SIGNATURE));
     Ok(())
@@ -121,16 +141,20 @@ fn read_manifest_pair(
     manifest: &Path,
     signature: &Path,
 ) -> Result<Option<(Vec<u8>, String)>, EngineError> {
-    let raw = match std::fs::read(manifest) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(EngineError::Internal(format!(
-                "read {}: {err}",
-                manifest.display()
-            )))
-        }
-    };
+    let manifest_present = manifest.exists();
+    let signature_present = signature.exists();
+    if !manifest_present && !signature_present {
+        return Ok(None);
+    }
+    if manifest_present != signature_present {
+        return Err(EngineError::JournalCorrupt(format!(
+            "{} and {} are out of sync; a previous confirmation may have been interrupted",
+            manifest.display(),
+            signature.display()
+        )));
+    }
+    let raw = std::fs::read(manifest)
+        .map_err(|err| EngineError::Internal(format!("read {}: {err}", manifest.display())))?;
     let signature = std::fs::read_to_string(signature)
         .map_err(|err| EngineError::Internal(format!("read {}: {err}", signature.display())))?;
     Ok(Some((raw, signature)))

@@ -93,6 +93,7 @@ fn report_history_json_is_machine_readable() {
     assert_eq!(value["tool"], "delta-update-cli");
     let releases = value["releases"].as_array().unwrap();
     assert_eq!(releases.len(), 2);
+    assert!(releases[0]["coverage_percent"].is_number());
     assert_eq!(releases[1]["coverage_percent"], 40.0);
     assert_eq!(releases[1]["coverage_drop"]["points"], 35.0);
     assert_eq!(

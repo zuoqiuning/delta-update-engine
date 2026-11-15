@@ -68,5 +68,18 @@
 - `crates/delta-update-engine/tests/security_contract.rs`：路径逃逸、大小/哈希不匹配、签名不匹配。
 - `crates/delta-update-engine/tests/security_fault_injection.rs`：恶意/截断清单、错误哈希。
 - `crates/delta-update-engine/tests/committer_contract.rs::production_engine_refuses_a_journal_without_commit_meta`：生产引擎拒绝无签名绑定 Journal。
+- `crates/delta-update-engine/tests/committer_contract.rs`：`prepared.json`/`commit.meta.json` 未来 schema 被拒绝、installed manifest 部分缺失被识别、confirm 与 prepare 的锁竞争重试。
 - `crates/delta-update-engine/tests/journal_fault_injection.rs`：Journal 篡改与部分执行后的重放。
+- `crates/delta-update-cli/tests/serve.rs`：本地 `serve` 的穿越、设备前缀、ADS、符号链接与 Range 边界。
 - `docs/design/security.md`：更细的字段级约束。
+
+## 7. 部署者信任边界清单
+
+- **签名私钥是唯一信任锚点**：清单签名 → journal 绑定 → 逐文件哈希校验，最终都回到它。
+- **journal root 的写权限不是信任边界**：`prepared.json`、`commit.meta.json`、`old_hashes.json` 都可被同用户进程篡改，但它们必须与签名清单交叉校验；篡改只会失败关闭。
+- **`verified_manifest` 的窗口**：`check` 写入、`begin_commit` 读取；被替换时哈希不匹配，提交被拒绝。
+- **installed manifest 成对写入**：先写签名、再写清单；只剩一半时返回 `E_JOURNAL_CORRUPT`，不会被当成可信旧版本。
+- **`doctor` 的 loopback 放行是诊断特权**：不代表运行时配置允许明文 HTTP。
+- **`serve` 只用于本地开发**：loopback 不是信任边界，不防御同机恶意进程；不要用 `socat` / `netsh portproxy` 转发。
+- **per-machine elevation**：worker 提权后只写 `install_root`，不能写父目录。
+- **无签名恢复不可达**：`allow_unsigned_journal_recovery` 只存在于 `#[doc(hidden)] Engine::new_legacy`，插件与 CLI 从不调用。

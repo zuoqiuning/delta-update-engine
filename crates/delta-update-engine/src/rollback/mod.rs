@@ -4,14 +4,23 @@ use std::path::Path;
 
 use crate::error::EngineError;
 use crate::journal::state::{
-    self, ApplyConfig, COMMIT_JOURNAL, COMMIT_STATUS, PREPARED_JSON, ROLLBACK_JOURNAL,
+    self, ApplyConfig, COMMIT_JOURNAL, COMMIT_STATUS, PREPARED_JSON, ROLLBACK_JOURNAL, UPDATE_LOCK,
 };
-use crate::journal::{replay, Journal, JournalOutcome, ReplayContext};
+use crate::journal::{replay, Journal, JournalOutcome, ReplayContext, UpdateLock};
 
 pub mod inverse;
 
 /// Roll back a completed commit by generating and replaying an inverse journal.
+///
+/// Acquires `update.lock`. Recovery paths already hold it and must call
+/// [`rollback_locked`] instead of nesting a second acquisition.
 pub fn rollback(config: &ApplyConfig, commit: &Journal) -> Result<(), EngineError> {
+    let _lock = UpdateLock::acquire(&config.journal_root.join(UPDATE_LOCK))?;
+    rollback_locked(config, commit)
+}
+
+/// Rollback for callers that already hold `update.lock`.
+pub(crate) fn rollback_locked(config: &ApplyConfig, commit: &Journal) -> Result<(), EngineError> {
     let old_hashes = state::read_old_hashes(&config.journal_root)?;
     let ops = inverse::inverse(&config.install_root, commit, &old_hashes)?;
     let journal = Journal::new(

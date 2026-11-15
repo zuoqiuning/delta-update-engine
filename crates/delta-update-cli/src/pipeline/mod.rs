@@ -134,11 +134,27 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                 / 2)
             .clamp(1, 4);
             let jobs = args.jobs.unwrap_or(default_jobs);
+            // qbsdiff holds source + target + a 4-byte suffix array per source
+            // byte + delta. The previous estimate used 4x; 6x covers the
+            // suffix array plus the diff/extra buffers on both sides.
+            let estimated_peak = (jobs as u64)
+                .saturating_mul(args.patch_max_file_size)
+                .saturating_mul(6);
             output::info(&format!(
                 "patch jobs: {jobs} (max file {}, estimated peak ~{})",
                 human_bytes(args.patch_max_file_size),
-                human_bytes(jobs as u64 * args.patch_max_file_size * 4),
+                human_bytes(estimated_peak),
             ));
+            let mut system = sysinfo::System::new();
+            system.refresh_memory();
+            let total_memory = system.total_memory();
+            if total_memory > 0 && estimated_peak > total_memory / 4 * 3 {
+                output::warn(&format!(
+                    "estimated patch memory {} exceeds 75% of system memory {}; lower --jobs or --patch-max-file-size",
+                    human_bytes(estimated_peak),
+                    human_bytes(total_memory),
+                ));
+            }
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(jobs)
                 .build()
@@ -705,6 +721,7 @@ fn self_test(
     }
 
     let plan = PreparedPlan {
+        schema: delta_update_engine::staging::plan::PREPARED_SCHEMA,
         version: version.to_string(),
         manifest_hash: "self-test".into(),
         staging_root: staging_root.clone(),

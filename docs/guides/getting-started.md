@@ -648,6 +648,22 @@ my-tauri-app/
 
 **协议 schema 独立于插件版本**。清单 schema 演进规则见协议与数据格式规范。插件会拒绝 `min_client_schema` 高于自身支持值的清单，并给出明确错误。
 
+### 11.1 多平台共存
+
+- Windows 走 `delta-update`，macOS / Linux 继续用官方 `tauri-plugin-updater` 或各自平台包管理器。文件级替换只适用于 Windows。
+- **不要同时启用两个 updater**：`plugins.updater` 与 `plugins.delta-update` 并存会产生两套检查循环和两份清单。
+- 多平台构建在 CI 中按 target 分开：Windows 产物跑 `delta-update release`，其他平台产物不经过本项目。
+- 如果必须共用 `main.rs`，用 `#[cfg(target_os = "windows")]` 条件初始化插件。
+
+### 11.2 适用规模
+
+| 规模 | 建议 |
+| --- | --- |
+| 文件数 < 5k、总大小 < 500 MiB | 默认配置即可；`check` / `prepare` 通常在秒级 |
+| 文件数 5k–20k | `HashCache` 对 `check` 有效；`prepare` 的未变化文件校验可能需要几分钟，UI 会收到 `Scanning` 进度事件 |
+| 文件数 > 20k | 默认 `max_files = 20000` 会拒绝清单，需要同时调大 `max_files`、`staging_size_limit` 与 `max_concurrent_downloads` |
+| 单文件 > 64 MiB | 调整 `--patch-max-file-size` 并降低 `--jobs`；发布端会按 6× 文件大小估算峰值内存，超过 75% 物理内存时告警 |
+
 
 ## 12. 接入总结
 

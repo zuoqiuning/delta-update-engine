@@ -2,7 +2,7 @@
 
 Tauri 2 插件：把引擎的生命周期接到应用启动/退出，暴露九个命令与状态事件。
 
-> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；其他平台在 setup 阶段禁用更新并返回 `E_UNSUPPORTED_PLATFORM`，主应用仍可启动。当前版本为 `1.0.0-rc.3`（尚未发布到 crates.io/npm；仓库内请使用 path/git 依赖）。
+> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；其他平台在 setup 阶段禁用更新并返回 `E_UNSUPPORTED_PLATFORM`，主应用仍可启动。当前版本为 `1.0.0-rc.4`（尚未发布到 crates.io/npm；仓库内请使用 path/git 依赖）。
 
 ## 接入
 

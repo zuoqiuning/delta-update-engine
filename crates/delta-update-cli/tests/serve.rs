@@ -123,6 +123,54 @@ fn rejects_traversal_forms_and_directories() {
 }
 
 #[test]
+fn rejects_windows_device_prefixes_short_names_and_alternate_streams() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("data.bin"), b"ok").unwrap();
+    let address = start(dir.path());
+
+    let targets = [
+        // NTFS alternate data stream.
+        "/data.bin:secret",
+        // `\\?\` device prefix after percent-decoding.
+        "/%5C%5C%3F%5CC%3A%5CWindows%5Cwin.ini",
+        // 8.3 short-name style traversal attempt.
+        "/PROGRA~1/Windows/win.ini",
+    ];
+    for target in targets {
+        let response = get(address, target);
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "{target} must not be served: {response}"
+        );
+    }
+}
+
+#[test]
+fn rejects_trailing_dot_and_space_traversal() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = format!("delta-serve-trailing-{}.txt", std::process::id());
+    let secret = dir.path().parent().unwrap().join(&name);
+    std::fs::write(&secret, b"must-not-leak").unwrap();
+    let address = start(dir.path());
+
+    let targets = [
+        format!("/%2e%2e%20/{name}"),
+        format!("/%2e%2e./{name}"),
+        format!("/..%20/{name}"),
+    ];
+    for target in &targets {
+        let response = get(address, target);
+        assert!(
+            response.starts_with("HTTP/1.1 404"),
+            "{target} must not be served: {response}"
+        );
+        assert!(!response.contains("must-not-leak"), "{target}: {response}");
+    }
+
+    let _ = std::fs::remove_file(secret);
+}
+
+#[test]
 fn decodes_percent_encoded_file_names() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a b.txt"), b"ok").unwrap();

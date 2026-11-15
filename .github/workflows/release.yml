@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号，必须与 workspace.package.version 一致（例如 1.0.0-rc.3）"
+        description: "版本号，必须与 workspace.package.version 一致（例如 1.0.0-rc.4）"
         required: true
         type: string
   push:

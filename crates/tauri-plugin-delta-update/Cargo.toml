@@ -18,7 +18,7 @@ tauri-plugin = { workspace = true, features = ["build"] }
 
 [dependencies]
 tauri.workspace = true
-delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.3" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.0.0-rc.4" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

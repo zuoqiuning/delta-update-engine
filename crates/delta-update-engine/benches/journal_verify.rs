@@ -121,6 +121,7 @@ fn verify_prepared_plan(c: &mut Criterion) {
         });
     }
     let plan = PreparedPlan {
+        schema: delta_update_engine::staging::plan::PREPARED_SCHEMA,
         version: "2.0.0".into(),
         manifest_hash: "f".repeat(64),
         staging_root,
