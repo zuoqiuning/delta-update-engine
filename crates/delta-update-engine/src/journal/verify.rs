@@ -6,7 +6,7 @@ use crate::journal::format::{FileOp, Journal};
 use crate::journal::state::{self, ApplyConfig};
 use crate::limits::Limits;
 use crate::manifest::parse_manifest;
-use crate::path::validate_install_path;
+use crate::path::{long_path, validate_install_path};
 
 /// Verify that a journal is bound to the signed manifest that produced it.
 ///
@@ -53,7 +53,9 @@ pub fn verify_commit_journal(
             "commit metadata does not match the journal commit_id".into(),
         ));
     }
-    if meta.install_root != config.install_root {
+    // Compare resolved spellings: a journal written under an 8.3 short name or
+    // a junction must still bind to the same install root after an upgrade.
+    if long_path(&meta.install_root) != long_path(&config.install_root) {
         return Err(EngineError::JournalCorrupt(
             "commit metadata install_root does not match apply.json".into(),
         ));

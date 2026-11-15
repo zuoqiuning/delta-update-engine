@@ -6,6 +6,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::error::EngineError;
 use crate::journal::state::{self, ApplyConfig};
+use crate::path::long_path;
 
 const PARENT_WAIT_LIMIT: Duration = Duration::from_secs(600);
 
@@ -82,7 +83,7 @@ pub fn run_recovery_with_keys(
     let exe = std::env::current_exe()
         .map_err(|err| EngineError::ApplyHelperFailed(format!("current exe: {err}")))?;
     let config = state::read_apply_config(journal_root)?.ok_or(EngineError::NotPrepared)?;
-    if config.journal_root != journal_root {
+    if long_path(&config.journal_root) != long_path(journal_root) {
         return Err(EngineError::JournalCorrupt(
             "journal_root does not match apply.json".into(),
         ));
@@ -243,6 +244,14 @@ fn current_exe_display() -> String {
 /// bounds the impact of a crafted `apply.json` when the worker is started by a
 /// third party: the executable has to live inside `install_root`, and the
 /// staging/journal roots may not be inside it.
+///
+/// Every path is compared in canonical long form: `install_root` must exist, so
+/// it is canonicalized directly, while staging and journal go through
+/// [`long_path`] because they may not exist yet. An 8.3 short name, junction or
+/// `\\?\` spelling therefore cannot slip past the containment check. The
+/// comparison is component-wise and case-sensitive (Windows treats `C:\App` and
+/// `c:\app` as the same directory), so an unusual spelling is rejected rather
+/// than allowed: the guard fails closed.
 fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
     for (name, path) in [
         ("install_root", &config.install_root),
@@ -307,25 +316,6 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
         )));
     }
     Ok(())
-}
-
-/// Canonical form of `path` even when it does not exist yet: resolve the
-/// nearest existing ancestor and rejoin the missing tail.
-///
-/// `install_root` is canonicalized above, so comparing it against a raw
-/// `staging_root` silently fails open wherever the same directory has two
-/// spellings — most visibly on CI runners, where `%TEMP%` sits behind an 8.3
-/// short name (`RUNNER~1`).
-fn long_path(path: &Path) -> std::path::PathBuf {
-    if let Ok(resolved) = dunce::canonicalize(path) {
-        return resolved;
-    }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-            long_path(parent).join(name)
-        }
-        _ => path.to_path_buf(),
-    }
 }
 
 #[cfg(windows)]
@@ -398,14 +388,6 @@ mod tests {
             commit_id: "test".into(),
             parent_pid: 0,
         }
-    }
-
-    #[test]
-    fn long_path_resolves_a_directory_that_does_not_exist_yet() {
-        let temp = tempfile::tempdir().unwrap();
-        let missing = temp.path().join("staging");
-        let expected = dunce::canonicalize(temp.path()).unwrap().join("staging");
-        assert_eq!(long_path(&missing), expected);
     }
 
     #[test]

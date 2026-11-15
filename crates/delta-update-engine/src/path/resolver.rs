@@ -36,3 +36,49 @@ pub fn resolve_install_root(
 
     Ok(exe_parent.to_path_buf())
 }
+
+/// Canonical form of `path` even when it does not exist yet: resolve the
+/// nearest existing ancestor and rejoin the missing tail.
+///
+/// Two spellings of the same directory (`C:\Users\RUNNER~1\…` versus
+/// `C:\Users\runneradmin\…`, a junction, or a `\\?\` prefix) must compare equal
+/// before any containment or equality check. `dunce::canonicalize` alone fails
+/// such a check open whenever one side is spelled differently.
+///
+/// Residual boundary: a tail that does not exist yet keeps its original
+/// spelling, so a short name *below* the last existing directory is not
+/// expanded. Staging and journal roots exist by the time their contents matter,
+/// and install roots always exist, so this only affects freshly typed paths.
+pub fn long_path(path: &Path) -> PathBuf {
+    if let Ok(resolved) = dunce::canonicalize(path) {
+        return resolved;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            long_path(parent).join(name)
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_path_normalizes_a_verbatim_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let verbatim = PathBuf::from(format!("\\\\?\\{}", dir.path().display()));
+        assert_eq!(long_path(&verbatim), long_path(dir.path()));
+    }
+
+    #[test]
+    fn long_path_resolves_a_tail_that_does_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("staging");
+        assert_eq!(
+            long_path(&missing),
+            dunce::canonicalize(dir.path()).unwrap().join("staging")
+        );
+    }
+}

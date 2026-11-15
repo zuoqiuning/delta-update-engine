@@ -6,4 +6,4 @@ pub mod resolver;
 
 pub use guard::{resolve_within, validate_install_path, validate_rel_path};
 pub use rel_path::RelPath;
-pub use resolver::resolve_install_root;
+pub use resolver::{long_path, resolve_install_root};
