@@ -285,8 +285,8 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
             exe_parent.display()
         )));
     }
-    if config.staging_root.starts_with(&install_root)
-        || config.journal_root.starts_with(&install_root)
+    if long_path(&config.staging_root).starts_with(&install_root)
+        || long_path(&config.journal_root).starts_with(&install_root)
     {
         return Err(EngineError::ConfigInvalid(format!(
             "staging_root ({}) and journal_root ({}) must stay outside install_root ({})",
@@ -296,6 +296,25 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
         )));
     }
     Ok(())
+}
+
+/// Canonical form of `path` even when it does not exist yet: resolve the
+/// nearest existing ancestor and rejoin the missing tail.
+///
+/// `install_root` is canonicalized above, so comparing it against a raw
+/// `staging_root` silently fails open wherever the same directory has two
+/// spellings — most visibly on CI runners, where `%TEMP%` sits behind an 8.3
+/// short name (`RUNNER~1`).
+fn long_path(path: &Path) -> std::path::PathBuf {
+    if let Ok(resolved) = dunce::canonicalize(path) {
+        return resolved;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+            long_path(parent).join(name)
+        }
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(windows)]
@@ -368,6 +387,14 @@ mod tests {
             commit_id: "test".into(),
             parent_pid: 0,
         }
+    }
+
+    #[test]
+    fn long_path_resolves_a_directory_that_does_not_exist_yet() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("staging");
+        let expected = dunce::canonicalize(temp.path()).unwrap().join("staging");
+        assert_eq!(long_path(&missing), expected);
     }
 
     #[test]
