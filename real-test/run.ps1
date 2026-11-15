@@ -9,12 +9,32 @@ $install = Join-Path $work 'install'
 $v1 = Join-Path $work 'v1'
 $v2 = Join-Path $work 'v2'
 $public = Join-Path $work 'public'
-$port = 8123
+$port = 0
 $server = $null
+$serveLog = Join-Path $env:TEMP "delta-serve-$PID.log"
 
 function Step([string]$text) {
     Write-Host ""
     Write-Host "== $text ==" -ForegroundColor Cyan
+}
+
+# `serve --port 0` lets the OS pick a free port; read it back from the banner so
+# the demo never collides with whatever else is listening on 8123.
+function Wait-ForServePort([string]$log, $process) {
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        if ($process.HasExited) {
+            throw "HTTP 服务启动失败（退出码 $($process.ExitCode)）"
+        }
+        if (Test-Path $log) {
+            $match = [regex]::Match((Get-Content $log -Raw), 'http://\S+:(\d+)')
+            if ($match.Success) {
+                return [int]$match.Groups[1].Value
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "HTTP 服务 10 秒内没有打印监听端口"
 }
 
 try {
@@ -31,9 +51,16 @@ try {
     cargo build -q --manifest-path $demoManifest
     $demoExe = (Resolve-Path (Join-Path $root 'demo-app\target\debug\demo-app.exe')).Path
 
-    Step '3/6 构造 v1 和 v2 两个软件目录'
+    Step '3/6 启动本地 HTTP 服务（端口由系统分配）'
     if (Test-Path $work) { Remove-Item -Recurse -Force $work }
     New-Item -ItemType Directory -Force $install, $v1, $v2, $public | Out-Null
+    $cli = (Resolve-Path (Join-Path $root '..\target\debug\delta-update.exe')).Path
+    $server = Start-Process -FilePath $cli -ArgumentList 'serve', '--dir', "`"$public`"", '--port', '0' `
+        -PassThru -WindowStyle Hidden -RedirectStandardOutput $serveLog
+    $port = Wait-ForServePort $serveLog $server
+    Write-Host "http://127.0.0.1:$port"
+
+    Step '4/6 构造 v1 和 v2 两个软件目录'
 
     $config = @{
         endpoint           = "http://127.0.0.1:$port/manifests/latest.json"
@@ -58,16 +85,8 @@ try {
     }
     [IO.File]::WriteAllBytes((Join-Path $v2 'resources\payload.bin'), $changed)
 
-    Step '4/6 用真实 CLI 生成补丁、签名并发布到本地目录'
+    Step '5/6 用真实 CLI 生成补丁、签名并发布到本地目录'
     & cargo run -q -p delta-update-cli -- release --from $v1 --from-version 1.0.0 --to $v2 --version 2.0.0 --bucket $public --key $keyPath --verbose
-
-    Step "5/6 启动本地 HTTP 服务 http://127.0.0.1:$port"
-    $cli = (Resolve-Path (Join-Path $root '..\target\debug\delta-update.exe')).Path
-    $server = Start-Process -FilePath $cli -ArgumentList 'serve', '--dir', "`"$public`"", '--port', $port -PassThru -WindowStyle Hidden
-    Start-Sleep -Milliseconds 1000
-    if ($server.HasExited) {
-        throw "HTTP 服务启动失败，端口 $port 可能被占用"
-    }
 
     Step '6/6 安装 v1，然后执行真实更新'
     Copy-Item -Path (Join-Path $v1 '*') -Destination $install -Recurse -Force
@@ -126,4 +145,5 @@ finally {
     if ($server -and !$server.HasExited) {
         Stop-Process -Id $server.Id -Force
     }
+    Remove-Item $serveLog -ErrorAction SilentlyContinue
 }
