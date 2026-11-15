@@ -71,6 +71,7 @@ fn release_args(
         version: version.to_string(),
         bucket: fixture.publish.display().to_string(),
         key: fixture.key.clone(),
+        additional_signing_keys: Vec::new(),
         from: Some(fixture.from.clone()),
         from_version: from_version.map(str::to_string),
         initial: false,
@@ -298,6 +299,58 @@ fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
     );
     assert_eq!(report["publish"]["reused_full_blobs"], 1);
     assert!(report["publish"]["uploaded_full_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn release_publishes_additional_signatures_and_lists_them() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+
+    let extra_dir = tempfile::tempdir().unwrap();
+    let extra = minisign::KeyPair::generate_encrypted_keypair(Some(String::new())).unwrap();
+    let extra_key = extra_dir.path().join("extra.key");
+    std::fs::write(&extra_key, extra.sk.to_box(None).unwrap().to_bytes()).unwrap();
+    let extra_id = hex::encode(extra.pk.keynum());
+
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
+    args.additional_signing_keys = vec![extra_key];
+    pipeline::release(&args).unwrap();
+
+    let publisher = FsPublisher::new(&fixture.publish);
+    let manifest = publisher.get("manifests/latest.json").unwrap();
+    let parsed: Value = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(
+        parsed["signing_key_ids"],
+        serde_json::json!([extra_id.clone()])
+    );
+
+    let attachment = publisher
+        .get(&format!("manifests/latest.json.minisig.{extra_id}"))
+        .unwrap();
+    delta_update_engine::crypto::verify_manifest(
+        &manifest,
+        std::str::from_utf8(&attachment).unwrap(),
+        &[extra.pk.to_base64()],
+    )
+    .unwrap();
+
+    let primary = publisher.get("manifests/latest.json.minisig").unwrap();
+    delta_update_engine::crypto::verify_manifest(
+        &manifest,
+        std::str::from_utf8(&primary).unwrap(),
+        std::slice::from_ref(&fixture.public_base64),
+    )
+    .unwrap();
+}
+
+#[test]
+fn additional_signing_key_must_differ_from_the_primary() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, true);
+    args.additional_signing_keys = vec![fixture.key.clone()];
+    let error = pipeline::release(&args).unwrap_err();
+    assert!(error.to_string().contains("duplicates the primary"));
 }
 
 #[test]

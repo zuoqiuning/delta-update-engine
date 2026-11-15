@@ -111,6 +111,11 @@ delta-update release [OPTIONS]
   --min-supported <SEMVER> 发布者仍支持的最旧版本（清单 min_supported_version）。
                           必须 <= --version；低于它的客户端在 check 中收到
                           update_required: true，由应用决定多严格。
+  --additional-signing-key <PATH>
+                          额外的 minisign 私钥，可重复。每把 key 会写一份
+                          manifests/<version>.json.minisig.<key_id> 与 latest 对应文件，
+                          并把 key id 写入清单 signing_key_ids；旧客户端仍用主签名。
+                          轮换时先发内嵌新公钥的客户端，再用这里加签，最后切主签名。
   --region <REGION>       COS / S3 区域，如 ap-guangzhou、us-east-1、auto（R2）。
   --prefix <PREFIX>       对象键前缀，默认空（根前缀）。
   --dry-run               生成补丁并在内存中签名清单，打印摘要；不落盘、不上传。

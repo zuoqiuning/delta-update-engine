@@ -48,6 +48,17 @@ pub fn validate_public_key(value: &str) -> Result<(), EngineError> {
         .map_err(|err| EngineError::ConfigInvalid(format!("invalid minisign public key: {err}")))
 }
 
+/// A minisign key id as used in `.minisig.<key_id>`: 16 lowercase hex chars.
+///
+/// Attachment ids come from an untrusted manifest until a signature verifies,
+/// so this shape check is what keeps them from becoming path or URL fragments.
+pub(crate) fn is_key_id(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// Accept either a raw base64 payload or a minisign file with comment lines.
 fn first_payload_line(value: &str) -> &str {
     value

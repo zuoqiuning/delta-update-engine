@@ -30,6 +30,7 @@
 - **发布端内存估算改为逐文件槽位**：峰值按“最大的 `jobs` 个补丁输入之和 × 6”计算，不再用 `jobs × patch_max_file_size`；不可压缩扩展名与超过上限的文件不会进入 qbsdiff，也不计入。`--dry-run` 额外打印前 10 个最大输入，便于直接调 `--jobs` / `--patch-max-file-size`。
 - **`init --write` 校验 capability 覆盖**：写出 `capabilities/delta-update.json` 后检查它是否真的授予 `delta-update:*`、是否覆盖 `tauri.conf.json` 里的所有窗口；缺权限或漏窗口时打印要改的文件与确切数组项，避免运行时只看到“command not allowed”。
 - **依赖自动升级**：新增 `.github/dependabot.yml`，覆盖 cargo、npm 与 GitHub Actions。
+- **多签名（RFC 0001 Detached 部分）**：发布侧新增可重复的 `--additional-signing-key`，为每把附加私钥写 `manifests/<version>.json.minisig.<key_id>` 与 `latest.json.minisig.<key_id>`，并把 key id 写入清单 `signing_key_ids`；客户端在主签名失败时按声明依次尝试，任一通过即接受。主签名仍是旧客户端的唯一入口，未声明附加签名时行为与之前完全一致。`Fetcher::fetch_attachment` 带默认实现，外部 fetcher 无需改动。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

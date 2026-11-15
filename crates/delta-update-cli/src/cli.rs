@@ -14,6 +14,9 @@ pub struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+// One command struct is much larger than the rest; the CLI parses exactly one
+// command per process, so boxing would only add an allocation and noise.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// Generate patches, manifest and signature, then publish.
     #[command(after_help = "\
@@ -69,6 +72,13 @@ pub struct ReleaseArgs {
     /// minisign secret key file (path only; content never goes on the command line).
     #[arg(long)]
     pub key: PathBuf,
+    /// Extra minisign secret key to co-sign the manifest with.
+    ///
+    /// Each key publishes `manifest.json.minisig.<key_id>` and is listed in
+    /// `signing_key_ids`, so clients rotated to the new key accept the release
+    /// while older clients keep verifying the primary signature. Repeatable.
+    #[arg(long = "additional-signing-key", value_name = "PATH")]
+    pub additional_signing_keys: Vec<PathBuf>,
     /// Previous build output directory used as the diff base.
     #[arg(long)]
     pub from: Option<PathBuf>,

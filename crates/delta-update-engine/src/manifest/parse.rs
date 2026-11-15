@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::crypto::is_key_id;
 use crate::error::EngineError;
 use crate::limits::Limits;
 use crate::path::{validate_install_path, validate_rel_path};
@@ -8,6 +9,8 @@ use super::model::Manifest;
 
 pub const SUPPORTED_SCHEMA: u32 = 1;
 pub const MAX_NOTES_BYTES: usize = 64 * 1024;
+/// Bounds the extra signature fetches a check can trigger.
+pub const MAX_SIGNING_KEY_IDS: usize = 8;
 
 /// Parse and validate a manifest from its raw bytes.
 ///
@@ -67,6 +70,24 @@ pub fn parse_manifest(raw: &[u8], limits: &Limits) -> Result<Manifest, EngineErr
             limits.max_files
         )));
     }
+    if manifest.signing_key_ids.len() > MAX_SIGNING_KEY_IDS {
+        return Err(EngineError::ManifestInvalid(format!(
+            "signing_key_ids exceeds the {MAX_SIGNING_KEY_IDS} entry limit"
+        )));
+    }
+    let mut seen_ids = HashSet::new();
+    for key_id in &manifest.signing_key_ids {
+        if !is_key_id(key_id) {
+            return Err(EngineError::ManifestInvalid(format!(
+                "signing_key_ids entry is not a 16-char lowercase hex id: {key_id}"
+            )));
+        }
+        if !seen_ids.insert(key_id) {
+            return Err(EngineError::ManifestInvalid(format!(
+                "duplicate signing_key_ids entry: {key_id}"
+            )));
+        }
+    }
 
     let mut seen = HashSet::new();
     for (path, entry) in &manifest.files {
@@ -118,4 +139,45 @@ pub fn parse_manifest(raw: &[u8], limits: &Limits) -> Result<Manifest, EngineErr
     }
 
     Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn with_key_ids(ids: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "schema": 1,
+            "version": "2.0.0",
+            "min_client_schema": 1,
+            "files": {
+                "a.txt": { "sha256": "a".repeat(64), "size": 1, "strategy": "full" }
+            },
+            "signing_key_ids": ids,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_lowercase_hex_key_ids() {
+        let parsed = parse_manifest(
+            &with_key_ids(json!(["0123456789abcdef"])),
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(parsed.signing_key_ids, ["0123456789abcdef"]);
+    }
+
+    #[test]
+    fn rejects_malformed_or_duplicate_key_ids() {
+        for ids in [
+            json!(["ABCDEF0123456789"]),
+            json!(["short"]),
+            json!(["0123456789abcdef", "0123456789abcdef"]),
+        ] {
+            let error = parse_manifest(&with_key_ids(ids), &Limits::default()).unwrap_err();
+            assert_eq!(error.code(), "E_MANIFEST_PARSE");
+        }
+    }
 }

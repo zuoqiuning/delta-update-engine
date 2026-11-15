@@ -133,6 +133,11 @@ pub struct Manifest {
     /// `update_required` in `check`; the application decides how strict to be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_supported_version: Option<String>,
+    /// Additional detached signatures published next to `.minisig`, as
+    /// lowercase hex minisign key ids. Clients try these when the primary
+    /// signature does not verify; clients before 1.1 ignore the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signing_key_ids: Vec<String>,
 }
 
 impl Manifest {

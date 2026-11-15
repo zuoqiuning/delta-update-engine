@@ -35,6 +35,10 @@ pub struct OutputManifest {
     pub rollback: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_supported_version: Option<String>,
+    /// Additional signatures published as `.minisig.<key_id>`; empty in the
+    /// common single-key release and omitted from the JSON then.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signing_key_ids: Vec<String>,
 }
 
 pub struct ManifestInput<'a> {
@@ -44,6 +48,7 @@ pub struct ManifestInput<'a> {
     pub notes: Option<&'a str>,
     pub mandatory: bool,
     pub min_supported_version: Option<&'a str>,
+    pub signing_key_ids: &'a [String],
     pub files: BTreeMap<String, ManifestFile>,
 }
 
@@ -61,6 +66,7 @@ pub fn build(input: ManifestInput<'_>) -> anyhow::Result<Vec<u8>> {
         files: input.files,
         rollback: input.rollback,
         min_supported_version: input.min_supported_version.map(str::to_string),
+        signing_key_ids: input.signing_key_ids.to_vec(),
     };
     serde_json::to_vec_pretty(&manifest).context("serialize manifest")
 }
@@ -130,6 +136,7 @@ mod tests {
             notes: None,
             mandatory: false,
             min_supported_version: None,
+            signing_key_ids: &[],
             files,
         })
         .unwrap();

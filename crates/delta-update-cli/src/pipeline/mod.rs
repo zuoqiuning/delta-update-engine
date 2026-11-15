@@ -418,6 +418,23 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         }
         None => None,
     };
+    let primary_key_id = sign::key_id(&args.key)?;
+    let mut extra_keys: Vec<(String, &PathBuf)> = Vec::new();
+    for path in &args.additional_signing_keys {
+        if !path.is_file() {
+            bail!("--additional-signing-key is not a file: {}", path.display());
+        }
+        let id = sign::key_id(path)?;
+        if id == primary_key_id {
+            bail!("--additional-signing-key duplicates the primary --key");
+        }
+        if extra_keys.iter().any(|(existing, _)| *existing == id) {
+            bail!("--additional-signing-key repeated the same key id: {id}");
+        }
+        extra_keys.push((id, path));
+    }
+    let signing_key_ids: Vec<String> = extra_keys.iter().map(|(id, _)| id.clone()).collect();
+
     let manifest = manifest::build(manifest::ManifestInput {
         version: &args.version,
         channel: &args.channel,
@@ -425,12 +442,17 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         notes: notes.as_deref(),
         mandatory: args.mandatory,
         min_supported_version: args.min_supported.as_deref(),
+        signing_key_ids: &signing_key_ids,
         files,
     })?;
     if manifest.len() as u64 > Limits::default().manifest_max_bytes {
         bail!("manifest exceeds the client size limit");
     }
     let signature = sign::sign_manifest(&manifest, &args.key)?;
+    let mut attachments: Vec<(String, Vec<u8>)> = Vec::new();
+    for (id, path) in &extra_keys {
+        attachments.push((id.clone(), sign::sign_manifest(&manifest, path)?.bytes));
+    }
     let sbom = build_sbom(&manifest, &args.channel, &args.version)?;
 
     let mut audit_report = serde_json::Value::Null;
@@ -443,6 +465,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                 version: &args.version,
                 manifest: &manifest,
                 signature: &signature.bytes,
+                attachments: &attachments,
             },
         )?;
         let sbom_key = publish::publish_sbom(publisher.as_ref(), &prefix, &args.version, &sbom)?;

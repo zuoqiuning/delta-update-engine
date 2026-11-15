@@ -79,6 +79,7 @@ fn fixture() -> Fixture {
         notes: None,
         mandatory: false,
         min_supported_version: None,
+        signing_key_ids: &[],
         files: std::collections::BTreeMap::from([(
             "a.txt".to_string(),
             ManifestFile {

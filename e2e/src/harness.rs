@@ -421,6 +421,7 @@ pub async fn publish_with_cli(
         version: version.to_string(),
         bucket: bucket.display().to_string(),
         key: key_path.to_path_buf(),
+        additional_signing_keys: Vec::new(),
         from: Some(from.to_path_buf()),
         from_version: Some(from_version.to_string()),
         initial: false,

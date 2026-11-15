@@ -23,6 +23,10 @@ pub struct ManifestSet<'a> {
     pub version: &'a str,
     pub manifest: &'a [u8],
     pub signature: &'a [u8],
+    /// Extra detached signatures keyed by minisign key id (`Vec<u8>` is the
+    /// `.minisig` file body). Published before the manifest so a declared
+    /// attachment is never missing while the release is visible.
+    pub attachments: &'a [(String, Vec<u8>)],
 }
 
 /// Upload objects and confirm every one exists with the expected size. This
@@ -86,20 +90,32 @@ pub fn publish_manifests(publisher: &dyn Publisher, set: &ManifestSet<'_>) -> an
     let latest_key = latest_key(set.prefix);
     let latest_signature_key = signature_key(&latest_key);
 
+    let mut expected: Vec<(String, u64)> = Vec::new();
+    for (id, bytes) in set.attachments {
+        for key in [
+            format!("{version_signature_key}.{id}"),
+            format!("{latest_signature_key}.{id}"),
+        ] {
+            publisher.put(&key, bytes)?;
+            expected.push((key, bytes.len() as u64));
+        }
+    }
+
     publisher.put(&version_key, set.manifest)?;
     publisher.put(&version_signature_key, set.signature)?;
     publisher.put(&latest_signature_key, set.signature)?;
     publisher.put(&latest_key, set.manifest)?;
 
-    for (key, expected) in [
-        (version_signature_key.as_str(), set.signature.len() as u64),
-        (latest_signature_key.as_str(), set.signature.len() as u64),
-        (version_key.as_str(), set.manifest.len() as u64),
-        (latest_key.as_str(), set.manifest.len() as u64),
-    ] {
-        match publisher.head(key)? {
-            Some(size) if size == expected => {}
-            Some(size) => bail!("{key} has size {size}, expected {expected}"),
+    expected.extend([
+        (version_signature_key.clone(), set.signature.len() as u64),
+        (latest_signature_key.clone(), set.signature.len() as u64),
+        (version_key.clone(), set.manifest.len() as u64),
+        (latest_key.clone(), set.manifest.len() as u64),
+    ]);
+    for (key, size) in expected {
+        match publisher.head(&key)? {
+            Some(actual) if actual == size => {}
+            Some(actual) => bail!("{key} has size {actual}, expected {size}"),
             None => bail!("{key} is missing after upload"),
         }
     }
@@ -189,6 +205,7 @@ mod tests {
                 version: "1.0.0",
                 manifest: b"{}",
                 signature: b"sig",
+                attachments: &[],
             },
         )
         .unwrap();

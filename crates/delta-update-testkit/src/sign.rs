@@ -22,6 +22,11 @@ impl TestKeyPair {
         &self.public_key
     }
 
+    /// Lowercase hex key id, as used in `manifest.json.minisig.<key_id>`.
+    pub fn key_id(&self) -> String {
+        hex::encode(self.keypair.pk.keynum())
+    }
+
     /// Produce a full detached signature text over `data`.
     pub fn sign(&self, data: &[u8]) -> String {
         minisign::sign(None, &self.keypair.sk, data, None, None)

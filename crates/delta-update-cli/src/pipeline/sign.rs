@@ -57,6 +57,14 @@ pub fn public_key_base64(key_path: &Path) -> anyhow::Result<String> {
     Ok(public_key.to_base64())
 }
 
+/// Lowercase hex key id used in `manifest.json.minisig.<key_id>`.
+pub fn key_id(key_path: &Path) -> anyhow::Result<String> {
+    let secret_key = load_secret_key(key_path)?;
+    let public_key = minisign::PublicKey::from_secret_key(&secret_key)
+        .context("derive public key from secret key")?;
+    Ok(hex::encode(public_key.keynum()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -102,6 +102,7 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
   "notes": "修复了若干问题",
   "mandatory": true,
   "min_supported_version": "1.9.0",
+  "signing_key_ids": ["a1b2c3d4e5f60718"],
   "files": { }
 }
 ```
@@ -118,6 +119,7 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
 | `min_supported_version` | string | 否   | 发布者仍支持的最旧版本（SemVer，且 `<= version`）。低于它的客户端在 `check` 中收到 `update_required: true`，由应用决定是否阻止使用。 |
 | `files`                 | object | 是   | 文件条目映射，键为相对路径。                            |
 | `rollback`              | bool   | 否   | 显式降级标记，默认 `false`。语义见 §3.4。               |
+| `signing_key_ids`       | array  | 否   | 附加签名的 key id 列表（每个 16 位小写十六进制），最多 8 个；文件为 `<清单>.minisig.<key_id>`。旧客户端忽略该字段。见 §3.1。 |
 
 **清单中不存在的字段**：客户端一律忽略。**清单中不允许出现 `key_rotation` 一类运行期扩展信任集的字段**——信任锚只能随二进制更新，理由见 §3.3。
 
@@ -188,6 +190,8 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
 
 签名对象为 **minisign detached signature**，覆盖的是**原始清单字节**，而非解析后的 JSON。
 
+每份清单有一个主签名 `<清单>.minisig`，以及零到多个附加签名 `<清单>.minisig.<key_id>`。附加签名在清单的 `signing_key_ids` 中声明；旧客户端只读主签名，因此主签名必须始终由当前所有受支持客户端都信任的密钥签发。多签名的动机与兼容矩阵见 [RFC 0001](../rfcs/0001-multi-signature-rotation.md)。
+
 ### 3.2 验签输入定义
 
 ```
@@ -196,8 +200,11 @@ signed_payload = raw_bytes_of(latest.json)
 
 客户端必须：
 1. 先下载 `.minisig` 与 `latest.json` 原始字节。
-2. 用内嵌受信公钥集合中的**任意一把**验证签名。
-3. **验证通过后**才解析 JSON。
+2. 用内嵌受信公钥集合中的**任意一把**验证主签名。
+3. 主签名失败时，按 `signing_key_ids` 依次拉取 `.minisig.<key_id>`，**任一通过即接受**。
+4. **验证通过后**才解析 JSON 用于更新决策。
+
+`signing_key_ids` 在验签通过前来自不可信字节，只用于构造同目录的兄弟签名 URL：客户端只接受 16 位小写十六进制 id、最多 8 个，文件缺失或无效时忽略该条。清单从未通过验签时，绝不把它的其他字段用于更新决策。
 
 **顺序不可颠倒**：先验签后解析，防止解析器差异引入的攻击面。
 

@@ -139,6 +139,26 @@ fn acquire_update_lock_retrying(journal_root: &Path) -> Result<UpdateLock, Engin
     Err(EngineError::UpdateLocked)
 }
 
+/// Attachment ids declared by a manifest that has not verified yet.
+///
+/// The field is only a hint for which sibling signatures to try, and every id
+/// is shape-checked before it is used in a URL.
+fn declared_attachment_ids(raw: &[u8]) -> Vec<String> {
+    serde_json::from_slice::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get("signing_key_ids").cloned())
+        .and_then(|ids| ids.as_array().cloned())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str())
+                .filter(|id| crate::crypto::is_key_id(id))
+                .take(crate::manifest::parse::MAX_SIGNING_KEY_IDS)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Attach the publish-window hint to a signature failure that survived the
 /// retries. The code and `retryable` stay untouched on purpose: a tampered
 /// manifest produces the same mismatch, and downgrading it to "try later"
@@ -254,6 +274,9 @@ impl Engine {
             match verify_manifest(&raw_manifest, &signature, &self.config.signing_public_keys) {
                 Ok(()) => return Ok((raw_manifest, signature)),
                 Err(error) => {
+                    if let Some(accepted) = self.try_attachments(&raw_manifest).await {
+                        return Ok((raw_manifest, accepted));
+                    }
                     last = Some(error);
                     if let Some(delay) = BACKOFF_MS.get(attempt) {
                         tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
@@ -265,6 +288,28 @@ impl Engine {
             last.unwrap_or(EngineError::Signature(SignatureError::NoTrustedKey)),
             attempts,
         ))
+    }
+
+    /// Try the additional signatures the manifest declares. Ids are read from
+    /// unverified bytes, so only 16-char hex ids are accepted; a tampered
+    /// manifest can at most make us fetch sibling `.minisig.<id>` objects.
+    async fn try_attachments(&self, raw_manifest: &[u8]) -> Option<String> {
+        for key_id in declared_attachment_ids(raw_manifest) {
+            let Ok(Some(bytes)) = self.config.fetcher.fetch_attachment(&key_id).await else {
+                continue;
+            };
+            let Ok(signature) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            if verify_manifest(raw_manifest, signature, &self.config.signing_public_keys).is_ok() {
+                tracing::info!(
+                    key_id = %key_id,
+                    "accepted an additional manifest signature"
+                );
+                return Some(signature.to_string());
+            }
+        }
+        None
     }
 
     /// Fetch, verify, parse, apply channel/version guards, then diff against

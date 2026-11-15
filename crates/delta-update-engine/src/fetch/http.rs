@@ -846,6 +846,28 @@ impl Fetcher for HttpFetcher {
         })
     }
 
+    async fn fetch_attachment(&self, key_id: &str) -> Result<Option<Vec<u8>>, EngineError> {
+        if !crate::crypto::is_key_id(key_id) {
+            return Ok(None);
+        }
+        let key = format!("{}.minisig.{key_id}", self.manifest_key);
+        match self
+            .get_limited(
+                &key,
+                self.limits.signature_max_bytes,
+                LimitedKind::Signature,
+            )
+            .await
+        {
+            Ok(bytes) => Ok(Some(bytes)),
+            // A declared attachment may not be uploaded yet; that must not turn
+            // into a failure when the primary signature could still pass.
+            Err(EngineError::Network(NetworkError::Http4xx { status: 404, .. }))
+            | Err(EngineError::Signature(SignatureError::Missing)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn download(
         &self,
         key: &str,

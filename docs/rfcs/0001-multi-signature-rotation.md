@@ -1,6 +1,6 @@
 # RFC 0001：多签名与密钥轮换
 
-- 状态：Accepted
+- 状态：Accepted（Detached 部分已实现，Envelope 待 1.1.0）
 - 目标版本：1.1.0
 - 相关：[版本与兼容承诺](../reference/versioning.md)、[安全模型](../design/security.md)、[RFC 流程](README.md)
 
