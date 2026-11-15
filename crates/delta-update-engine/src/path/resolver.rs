@@ -64,9 +64,26 @@ pub fn long_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Whether `path` contains a `..` component.
+///
+/// [`long_path`] keeps such components as written, so a comparison of two
+/// spellings would fail with a misleading "does not match". Callers that
+/// compare roots refuse the unresolved form instead of guessing which side is
+/// meant.
+pub fn has_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|part| part == std::path::Component::ParentDir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_parent_component_sees_unresolved_segments() {
+        assert!(has_parent_component(Path::new(r"C:\app\sub\..\bin")));
+        assert!(!has_parent_component(Path::new(r"C:\app\bin")));
+    }
 
     #[test]
     fn long_path_strips_a_verbatim_prefix() {

@@ -6,7 +6,7 @@ use crate::journal::format::{FileOp, Journal};
 use crate::journal::state::{self, ApplyConfig};
 use crate::limits::Limits;
 use crate::manifest::parse_manifest;
-use crate::path::{long_path, validate_install_path};
+use crate::path::{has_parent_component, long_path, validate_install_path};
 
 /// Verify that a journal is bound to the signed manifest that produced it.
 ///
@@ -55,6 +55,13 @@ pub fn verify_commit_journal(
     }
     // Compare resolved spellings: a journal written under an 8.3 short name or
     // a junction must still bind to the same install root after an upgrade.
+    // `..` cannot be resolved lexically without lying about symlinks, so name it
+    // instead of reporting a generic mismatch.
+    if has_parent_component(&meta.install_root) || has_parent_component(&config.install_root) {
+        return Err(EngineError::JournalCorrupt(
+            "install_root contains '..'; refusing to compare an unresolved path".into(),
+        ));
+    }
     if long_path(&meta.install_root) != long_path(&config.install_root) {
         return Err(EngineError::JournalCorrupt(
             "commit metadata install_root does not match apply.json".into(),

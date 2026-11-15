@@ -6,7 +6,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::error::EngineError;
 use crate::journal::state::{self, ApplyConfig};
-use crate::path::long_path;
+use crate::path::{has_parent_component, long_path};
 
 const PARENT_WAIT_LIMIT: Duration = Duration::from_secs(600);
 
@@ -83,6 +83,11 @@ pub fn run_recovery_with_keys(
     let exe = std::env::current_exe()
         .map_err(|err| EngineError::ApplyHelperFailed(format!("current exe: {err}")))?;
     let config = state::read_apply_config(journal_root)?.ok_or(EngineError::NotPrepared)?;
+    if has_parent_component(&config.journal_root) || has_parent_component(journal_root) {
+        return Err(EngineError::JournalCorrupt(
+            "journal_root contains '..'; refusing to compare an unresolved path".into(),
+        ));
+    }
     if long_path(&config.journal_root) != long_path(journal_root) {
         return Err(EngineError::JournalCorrupt(
             "journal_root does not match apply.json".into(),
@@ -266,10 +271,7 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
         }
         // `install\sub\..` would slip past the containment check below once it
         // is resolved, so reject the spelling instead of guessing.
-        if path
-            .components()
-            .any(|part| part == std::path::Component::ParentDir)
-        {
+        if has_parent_component(path) {
             return Err(EngineError::ConfigInvalid(format!(
                 "{name} must not contain '..': {}",
                 path.display()
