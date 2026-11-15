@@ -12,6 +12,16 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    // `option_env!` in `src/pinned.rs` is only re-read when this changes.
+    println!("cargo:rerun-if-env-changed=DELTA_UPDATE_PINNED_PUBLIC_KEYS");
+    if std::env::var_os("CARGO_FEATURE_PINNED_KEYS").is_some()
+        && std::env::var_os("DELTA_UPDATE_PINNED_PUBLIC_KEYS").is_none()
+    {
+        panic!(
+            "the `pinned-keys` feature requires DELTA_UPDATE_PINNED_PUBLIC_KEYS (comma-separated minisign public keys) at build time"
+        );
+    }
+
     tauri_plugin::Builder::new(COMMANDS).build();
 
     // The mock runtime links TaskDialogIndirect, which only exists in the

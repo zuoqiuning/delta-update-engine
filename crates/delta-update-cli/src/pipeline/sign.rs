@@ -17,6 +17,10 @@ pub fn load_secret_key(key_path: &Path) -> anyhow::Result<minisign::SecretKey> {
 
 /// Sign the raw manifest bytes. The signature covers the bytes on disk, not a
 /// re-serialized JSON value.
+///
+/// The signature is verified immediately with the public key derived from the
+/// same secret key. A publisher that signs with a key whose public half is not
+/// what ships in the app would otherwise publish an unrecoverable release.
 pub fn sign_manifest(manifest: &[u8], key_path: &Path) -> anyhow::Result<DetachedSignature> {
     let secret_key = load_secret_key(key_path)?;
     let signature = minisign::sign(
@@ -27,9 +31,23 @@ pub fn sign_manifest(manifest: &[u8], key_path: &Path) -> anyhow::Result<Detache
         Some("delta-update manifest"),
     )
     .context("sign manifest")?;
-    Ok(DetachedSignature {
-        bytes: signature.to_bytes(),
-    })
+    let bytes = signature.to_bytes();
+    self_verify(manifest, &bytes, &secret_key)?;
+    Ok(DetachedSignature { bytes })
+}
+
+fn self_verify(
+    manifest: &[u8],
+    signature: &[u8],
+    secret_key: &minisign::SecretKey,
+) -> anyhow::Result<()> {
+    let public_key = minisign::PublicKey::from_secret_key(secret_key)
+        .context("derive public key from secret key")?;
+    let signature = std::str::from_utf8(signature).context("signature is not UTF-8")?;
+    delta_update_engine::crypto::verify_manifest(manifest, signature, &[public_key.to_base64()])
+        .context(
+            "the signature does not verify against its own public key; clients would reject this release",
+        )
 }
 
 pub fn public_key_base64(key_path: &Path) -> anyhow::Result<String> {
@@ -63,5 +81,20 @@ mod tests {
             &[public_key],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_signature_from_another_key_is_rejected_before_publishing() {
+        let dir = tempfile::tempdir().unwrap();
+        let signing_key = write_key(dir.path());
+        let other_dir = dir.path().join("other");
+        std::fs::create_dir(&other_dir).unwrap();
+        let other_key = write_key(&other_dir);
+
+        let manifest = br#"{"schema":1}"#;
+        let signature = sign_manifest(manifest, &other_key).unwrap();
+        let secret_key = load_secret_key(&signing_key).unwrap();
+        let error = self_verify(manifest, &signature.bytes, &secret_key).unwrap_err();
+        assert!(error.to_string().contains("does not verify"), "{error}");
     }
 }

@@ -12,6 +12,12 @@ categories = ["gui", "development-tools", "os::windows-apis"]
 documentation = "https://docs.rs/tauri-plugin-delta-update"
 links = "tauri-plugin-delta-update"
 
+[features]
+default = []
+# Narrow the trust root to DELTA_UPDATE_PINNED_PUBLIC_KEYS compiled into the
+# binary. See `src/pinned.rs`.
+pinned-keys = []
+
 [build-dependencies]
 tauri-plugin = { workspace = true, features = ["build"] }
 

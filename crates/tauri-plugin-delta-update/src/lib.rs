@@ -20,6 +20,11 @@ pub mod events;
 pub mod lifecycle;
 pub mod state;
 
+/// Compile-time pinned keys. Public so the `pinned-keys` contract test can
+/// exercise it; not part of the supported API.
+#[doc(hidden)]
+pub mod pinned;
+
 /// Set once [`run_applier_from_context`] has run, whatever the mode.
 ///
 /// The plugin can only see its own `setup`; it cannot see whether the host
@@ -78,6 +83,13 @@ pub fn run_applier_from_context<R: Runtime>(context: &tauri::Context<R>) -> Opti
         );
         return Some(1);
     }
+    let keys = match crate::pinned::effective_keys(&keys) {
+        Ok(keys) => keys,
+        Err(error) => {
+            eprintln!("delta update worker: {error}; refusing to run with an unpinned trust root");
+            return Some(1);
+        }
+    };
     run_applier_from_args_with_keys(&keys)
 }
 
