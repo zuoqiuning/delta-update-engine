@@ -255,6 +255,17 @@ fn validate_scope(exe: &Path, config: &ApplyConfig) -> Result<(), EngineError> {
                 path.display()
             )));
         }
+        // `install\sub\..` would slip past the containment check below once it
+        // is resolved, so reject the spelling instead of guessing.
+        if path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        {
+            return Err(EngineError::ConfigInvalid(format!(
+                "{name} must not contain '..': {}",
+                path.display()
+            )));
+        }
     }
     let install_root = dunce::canonicalize(&config.install_root).map_err(|err| {
         EngineError::ConfigInvalid(format!(
@@ -395,6 +406,17 @@ mod tests {
         let missing = temp.path().join("staging");
         let expected = dunce::canonicalize(temp.path()).unwrap().join("staging");
         assert_eq!(long_path(&missing), expected);
+    }
+
+    #[test]
+    fn parent_components_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("install");
+        std::fs::create_dir_all(&install).unwrap();
+        let exe = install.join("app.exe");
+        let sneaky = install.join("sub").join("..").join("staging");
+        let config = apply_config(&install, sneaky, PathBuf::from("journal"));
+        assert!(validate_scope(&exe, &config).is_err());
     }
 
     #[test]
