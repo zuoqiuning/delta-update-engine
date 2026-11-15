@@ -36,6 +36,12 @@ jobs:
         run: cargo xtask docs-check
       - name: version sync
         run: cargo xtask version-sync
+      - name: pinned trust root contract
+        # The feature is opt-in, so this is the only place its intersection
+        # rules run. Any key list works; the test asserts the relationship.
+        env:
+          DELTA_UPDATE_PINNED_PUBLIC_KEYS: RWQpinned1,RWQpinned2
+        run: cargo test -p tauri-plugin-delta-update --features pinned-keys --test pinned_keys_contract
 
   e2e:
     name: e2e (${{ matrix.os }})
