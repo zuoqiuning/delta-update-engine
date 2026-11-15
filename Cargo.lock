@@ -1005,6 +1005,7 @@ dependencies = [
  "minisign-verify",
  "proptest",
  "qbsdiff",
+ "rayon",
  "reqwest",
  "semver",
  "serde",

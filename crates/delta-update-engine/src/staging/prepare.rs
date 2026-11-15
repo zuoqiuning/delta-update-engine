@@ -323,28 +323,50 @@ fn verify_unchanged_files(
     cancel: &CancellationToken,
     progress: &(dyn Fn(Progress) + Send + Sync),
 ) -> Result<Vec<String>, EngineError> {
-    let mut repairs = Vec::new();
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use rayon::prelude::*;
+
     let total = unchanged.len() as u64;
-    for (index, (path, expected)) in unchanged.iter().enumerate() {
-        check_cancel(cancel)?;
-        match sha256_file(&install_root.join(path)) {
-            Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
-            Ok(_) => repairs.push(path.clone()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => repairs.push(path.clone()),
-            Err(err) => return Err(io_error(err, path)),
-        }
-        // Large installs can spend minutes here before any download starts.
-        // Emit a bounded number of events so the UI shows progress without
-        // flooding the IPC channel.
-        if index % 50 == 0 || index + 1 == unchanged.len() {
-            progress(Progress::Scanning {
-                file: path.clone(),
-                completed: (index + 1) as u64,
-                total,
-            });
-        }
-    }
-    Ok(repairs)
+    let done = AtomicU64::new(0);
+    // Hashing is per-file and independent, so it scales linearly with cores.
+    // The pool is bounded because each worker keeps one file open and a large
+    // server would otherwise try to read the whole install tree at once.
+    let threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(8);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|err| EngineError::Internal(format!("hash pool: {err}")))?;
+
+    pool.install(|| {
+        unchanged
+            .par_iter()
+            .map(|(path, expected)| -> Result<Option<String>, EngineError> {
+                check_cancel(cancel)?;
+                let repair = match sha256_file(&install_root.join(path)) {
+                    Ok(actual) if actual.eq_ignore_ascii_case(expected) => None,
+                    Ok(_) => Some(path.clone()),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(path.clone()),
+                    Err(err) => return Err(io_error(err, path)),
+                };
+                // Keep the event rate fixed at one per 50 files regardless of
+                // how many workers finish at once.
+                let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if completed.is_multiple_of(50) || completed == total {
+                    progress(Progress::Scanning {
+                        file: path.clone(),
+                        completed,
+                        total,
+                    });
+                }
+                Ok(repair)
+            })
+            .collect::<Result<Vec<_>, EngineError>>()
+            .map(|outcomes| outcomes.into_iter().flatten().collect())
+    })
 }
 
 async fn prepare_modified(
