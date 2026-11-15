@@ -26,6 +26,7 @@
 - [权限模型](design/permission-model.md)：`default`/`manage`/`monitor` 的取舍。
 - [崩溃循环分级](design/crash-loop-grading.md)：三种启动的区分与阈值取舍。
 - [灰度发布设计](design/gray-release.md)：channel、client_id 路由与清单内 percent 的取舍（仅设计）。
+- [机器级安装](design/per-machine-install.md)：启动恢复的提权提示，以及 `install_root` 是否可放宽的取舍（RFC）。
 
 ## 运维（发布与排障）
 

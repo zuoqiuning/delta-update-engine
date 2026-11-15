@@ -56,6 +56,7 @@ pub(crate) fn run_elevated_recovery(
 ) -> Result<(), EngineError> {
     #[cfg(windows)]
     {
+        confirm_startup_elevation()?;
         let exe = std::env::current_exe()
             .map_err(|err| EngineError::ApplyHelperFailed(format!("current exe: {err}")))?;
         let args = vec![
@@ -72,6 +73,44 @@ pub(crate) fn run_elevated_recovery(
             "elevated recovery is only supported on Windows".into(),
         ))
     }
+}
+
+/// Explain the elevated startup recovery before Windows shows its own UAC
+/// prompt: a bare prompt at launch names the app and nothing else.
+///
+/// "No" maps to the same `UacCancelled` as declining the UAC prompt, so both
+/// paths end in `Failed`, which the next start retries.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn confirm_startup_elevation() -> Result<(), EngineError> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_YESNO,
+    };
+
+    let text = "上次更新未完成，需要管理员权限才能修复。\n\n\
+                点“是”继续（随后会弹出系统授权窗口）；\
+                点“否”跳过本次修复，下次启动会再次提示。";
+    let text: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = "更新未完成"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers that
+    // outlive the call; a null owner window is valid before Tauri creates one.
+    let choice = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND,
+        )
+    };
+    if choice == IDYES {
+        return Ok(());
+    }
+    tracing::warn!("user declined the elevated startup recovery");
+    Err(EngineError::UacCancelled)
 }
 
 fn worker_args(journal_root: &Path, commit_id: &str, relaunch: bool) -> Vec<String> {
