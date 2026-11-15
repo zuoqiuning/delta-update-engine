@@ -1526,6 +1526,27 @@ fn check_plugin_config(args: &DoctorArgs) -> anyhow::Result<()> {
             )
         })?;
     let config = delta_update_engine::config::PluginConfig::from_json(section)?;
+    let install_mode = value
+        .get("bundle")
+        .and_then(|bundle| bundle.get("windows"))
+        .and_then(|windows| windows.get("nsis"))
+        .and_then(|nsis| nsis.get("installMode"))
+        .and_then(|mode| mode.as_str())
+        .map(str::to_string);
+    let mut warnings = Vec::new();
+    if let Some(mode) = install_mode.as_deref() {
+        if matches!(mode, "perMachine" | "both") && config.auto_apply {
+            warnings.push(format!(
+                "installMode `{mode}` 需要管理员权限：auto_apply 会在用户未预期时触发 UAC，建议改用 restart_to_apply 或关闭 auto_apply"
+            ));
+            if mode == "both" {
+                warnings.push(
+                    "installMode `both`：worker 必须同时覆盖 per-user 与 per-machine 两种安装目录"
+                        .into(),
+                );
+            }
+        }
+    }
 
     if args.json {
         let value = serde_json::json!({
@@ -1537,17 +1558,23 @@ fn check_plugin_config(args: &DoctorArgs) -> anyhow::Result<()> {
             "endpoint": config.endpoint,
             "channel": config.channel,
             "config_version": config.config_version,
+            "install_mode": install_mode,
             "errors": [],
+            "warnings": warnings,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         output::info(&format!("config ok: {}", path.display()));
         output::info(&format!(
-            "endpoint: {}  channel: {}  keys: {}",
+            "endpoint: {}  channel: {}  keys: {}  install_mode: {}",
             config.endpoint,
             config.channel,
-            config.signing_public_keys.len()
+            config.signing_public_keys.len(),
+            install_mode.as_deref().unwrap_or("unknown")
         ));
+        for warning in &warnings {
+            output::warn(warning);
+        }
     }
     Ok(())
 }

@@ -9,6 +9,9 @@
 - **跨卷回退确定性 e2e**：新增 `cross_volume_forced`。用 `FaultyFs` 对放置 `App.exe` 的那次 rename 注入一次 `CrossesDevices`，验证 copy + fsync + 原子 rename 回退；`FaultyFs::fired()` 让用例能断言故障确实命中，避免在单卷机器上"看似通过但什么都没测"。为此新增 `apply_commit_verified_with_fs`，e2e 走的仍是生产验签序列。
 - **故障注入断言补齐**：`committer_fault_injection` 的三处注入都断言 `FaultyFs::fired()`（含 `corrupt_on_rename`），`fetch_fault_injection` 的中断用例与 `presign_refresh` 的过期签名用例断言 `MockServer::faults_served()`。这类用例一旦目标路径写错，就会从"测了回退"退化成"什么都没测"。
 - **`doctor --simulate-failure patch --reason`**：新增 `source-mismatch`（默认）/`format`/`target-hash`/`memory` 四个分支，分别产出 `E_PATCH_SOURCE_MISMATCH`、`E_PATCH_FORMAT_MISMATCH`、`E_PATCH_TARGET_HASH_MISMATCH`、`E_PATCH_MEMORY_BUDGET`，信封增加 `reason` 字段。四个分支分别走 `apply_patch` 的源哈希检查、容器头检查、内存预算，以及复用 plan 时的 `verify_plan`，不是手写 payload。
+- **接入漏接检测**：`run_applier_from_context` 会记录入口已被调用；插件 `setup` 若发现"配置存在但入口未调用"，debug 构建直接 panic 并给出正确写法，release 构建以同一条消息禁用更新。这是最隐蔽的接入失败模式——漏接后更新能准备成功，但重启进 worker 的那一步永远不会执行。
+- **安装形态交叉校验**：`doctor --check-config` 读取 `bundle.windows.nsis.installMode`，当 `perMachine` / `both` 搭配 `auto_apply: true` 时给出警告（提权会出现在用户未预期的时刻），JSON 信封增加 `install_mode` 与 `warnings`。
+- **`init` 最后一公里**：缺少 `--public-key` 时直接给出三步命令（`minisign -G` → `key-info` → 重跑 `init`）；接入步骤打印可直接粘贴的 `main.rs` 片段。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

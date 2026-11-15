@@ -20,6 +20,18 @@ pub mod events;
 pub mod lifecycle;
 pub mod state;
 
+/// Set once [`run_applier_from_context`] has run, whatever the mode.
+///
+/// The plugin can only see its own `setup`; it cannot see whether the host
+/// called the wrapper or plain `.run(context)`. Without this flag a host that
+/// forgot the wrapper starts normally and then silently never applies an update,
+/// because the restart-to-apply process is a worker this binary never handles.
+static ENTRY_USED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn entry_used() -> bool {
+    ENTRY_USED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub use config::Config;
 pub use delta_update_engine::apply::{
     run_applier, run_applier_from_args, run_applier_from_args_with_keys,
@@ -48,6 +60,7 @@ pub use events::STATE_EVENT;
 /// config without keys is rejected instead of silently falling back to
 /// unverified journal replay.
 pub fn run_applier_from_context<R: Runtime>(context: &tauri::Context<R>) -> Option<i32> {
+    ENTRY_USED.store(true, std::sync::atomic::Ordering::Relaxed);
     if !crate::lifecycle::worker_mode_requested(std::env::args_os().skip(1)) {
         return None;
     }

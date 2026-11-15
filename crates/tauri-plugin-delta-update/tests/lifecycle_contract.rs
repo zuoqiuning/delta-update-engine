@@ -97,6 +97,9 @@ fn build_app(config: &serde_json::Value, allowed: &[&str]) -> tauri::App<MockRun
         .plugins
         .0
         .insert("delta-update".into(), config.clone());
+    // The host entry point runs before the builder in a real application; the
+    // plugin checks that it was used, so the harness has to mirror that order.
+    let _ = tauri_plugin_delta_update::run_applier_from_context(&context);
     mock_builder()
         .plugin(tauri_plugin_delta_update::init())
         .build(context)

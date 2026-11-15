@@ -197,6 +197,19 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>, config: &Config) -> Result<(), Engi
             "worker mode was not handled: call tauri_plugin_delta_update::run_applier_from_context(&context) before tauri::Builder::run".into(),
         ));
     }
+    if !crate::entry_used() {
+        // The plugin is installed and configured, so the host clearly meant to
+        // use it, yet the process entry was the plain `.run(context)`. Updates
+        // would prepare fine and then never be applied, because the restart
+        // lands in a worker mode this binary never handles. Debug builds panic
+        // so the mistake cannot be shipped; release builds disable the feature
+        // with the same message instead of crashing on every launch.
+        let message = "delta-update is installed but its entry point was not used: replace `.run(context)` with `.run_with_delta_update(context)`, or call run_applier_from_context(&context) before tauri::Builder::run";
+        #[cfg(debug_assertions)]
+        panic!("{message}");
+        #[cfg(not(debug_assertions))]
+        return setup_disabled(app, config, EngineError::ConfigInvalid(message.into()));
+    }
     if let Err(error) = crate::desktop::ensure_supported() {
         return setup_disabled(app, config, error);
     }

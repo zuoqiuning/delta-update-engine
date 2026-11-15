@@ -70,9 +70,13 @@ fi
   "endpoint": "https://…/manifests/latest.json",
   "channel": "stable",
   "config_version": 1,
-  "errors": []
+  "install_mode": "currentUser",
+  "errors": [],
+  "warnings": []
 }
 ```
+
+`install_mode` 取自 `bundle.windows.nsis.installMode`（缺失时为 `null`）。`warnings` 非空不改变退出码，但会指出安装形态与更新策略的冲突：`perMachine` / `both` 搭配 `auto_apply: true` 会在用户未预期时触发 UAC。
 
 ### 2.2 `inspect --journal-dir --json`
 
