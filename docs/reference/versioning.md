@@ -11,6 +11,8 @@
 
 候选版本需要在依赖里写完整版本（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.4`），例如 `delta-update-engine = "1.0.0-rc.4"`；正式版发布后再改成 `version = "1.0"`，并提交 `Cargo.lock`。
 
+npm 包（`tauri-plugin-delta-update-api`）的**首次发布**例外：npm 会把 `latest` 自动指向该版本，即使发布命令用了 `--tag next`——`--tag` 只决定额外写入哪个标签，第一个版本总会成为 `latest`。因此 `1.0.0-rc.x` 期间 `latest` 与 `next` 指向同一个 rc：安装脚本请写 `@next` 或精确版本；`1.0.0` 发布后 `latest` 才会自然指向稳定版。
+
 ## 2. Manifest schema
 
 - 清单的 `schema` 字段**只增不减**：新增可选字段不提升 `schema`；删除字段、改变字段语义或改变校验规则必须提升。
