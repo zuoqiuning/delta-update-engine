@@ -12,6 +12,12 @@ keywords = ["tauri", "updater", "delta", "update", "zstd"]
 categories = ["development-tools", "filesystem", "os::windows-apis"]
 documentation = "https://docs.rs/delta-update-engine"
 
+[lib]
+# Every benchmark is a criterion `harness = false` target. Without this the lib
+# unittests also run under `cargo bench` and reject criterion's CLI flags
+# (`--save-baseline`, `--baseline`) with "Unrecognized option".
+bench = false
+
 [features]
 default = []
 
@@ -55,4 +61,8 @@ harness = false
 
 [[bench]]
 name = "journal_verify"
+harness = false
+
+[[bench]]
+name = "scan_tree"
 harness = false
