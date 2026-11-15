@@ -9,3 +9,6 @@ publish = false
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+sysinfo.workspace = true

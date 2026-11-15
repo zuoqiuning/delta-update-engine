@@ -4,10 +4,18 @@
 //! and restores `target/criterion` on PRs. Running `cargo bench -- --baseline
 //! main` then writes `change/estimates.json` next to each benchmark; this task
 //! reads those files instead of scraping console output.
+//!
+//! Candidate runs are compared only against a baseline from the same CPU model.
+//! `windows-latest` rotates hardware, and a different runner slows every
+//! benchmark at once — a uniform "+40%" means "different machine", not a
+//! regression.
 
 use std::path::{Path, PathBuf};
 
 const DEFAULT_THRESHOLD: f64 = 0.10;
+/// Written next to the baseline so a later run can tell whether it is
+/// comparable. Missing in baselines saved before this file existed.
+const RUNNER_FILE: &str = "runner.json";
 
 pub fn run() -> Result<(), String> {
     let threshold = parse_threshold()?;
@@ -17,6 +25,10 @@ pub fn run() -> Result<(), String> {
             "bench-check: {} not found; run `cargo bench -- --baseline main` first",
             root.display()
         );
+        return Ok(());
+    }
+    if let Some(reason) = not_comparable(root) {
+        println!("bench-check: {reason}; skipping comparison");
         return Ok(());
     }
 
@@ -66,6 +78,40 @@ pub fn run() -> Result<(), String> {
         );
     }
     Err(format!("{} benchmark regression(s)", regressions.len()))
+}
+
+/// Why a comparison would be meaningless, or `None` when it is safe to compare.
+///
+/// Both sides must come from the same CPU model: shared runners rotate
+/// hardware, and a swap slows every benchmark at once.
+fn not_comparable(root: &Path) -> Option<String> {
+    let current = match current_cpu() {
+        Some(cpu) => cpu,
+        None => return Some("cannot read the local CPU model".into()),
+    };
+    let recorded = std::fs::read_to_string(root.join(RUNNER_FILE))
+        .ok()
+        .and_then(|text| string_field(&text, "cpu"));
+    let Some(recorded) = recorded else {
+        return Some(format!(
+            "baseline has no {RUNNER_FILE} (saved before the runner gate existed)"
+        ));
+    };
+    if recorded.trim() == current {
+        return None;
+    }
+    Some(format!(
+        "baseline ran on `{recorded}`, this run is on `{current}`"
+    ))
+}
+
+fn current_cpu() -> Option<String> {
+    let mut system = sysinfo::System::new();
+    system.refresh_cpu_all();
+    system
+        .cpus()
+        .first()
+        .map(|cpu| cpu.brand().trim().to_string())
 }
 
 fn parse_threshold() -> Result<f64, String> {
@@ -166,6 +212,14 @@ fn number_field(object: &str, key: &str) -> Option<f64> {
     rest[..end].trim().parse().ok()
 }
 
+fn string_field(text: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":");
+    let start = text.find(&needle)? + needle.len();
+    let rest = text[start..].trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +233,15 @@ mod tests {
     #[test]
     fn missing_mean_is_ignored() {
         assert_eq!(mean_change(r#"{"median":{"point_estimate":1.0}}"#), None);
+    }
+
+    #[test]
+    fn reads_the_runner_cpu_model() {
+        let text = r#"{"cpu":"AMD EPYC 7763 64-Core Processor","cores":4}"#;
+        assert_eq!(
+            string_field(text, "cpu").as_deref(),
+            Some("AMD EPYC 7763 64-Core Processor")
+        );
+        assert_eq!(string_field(r#"{"cpu":null}"#, "cpu"), None);
     }
 }

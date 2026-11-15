@@ -21,20 +21,33 @@ jobs:
           key: bench-baseline-main-${{ github.sha }}
           restore-keys: bench-baseline-main-
 
+      # main refreshes the baseline; PRs compare against it.
       - name: Measure
         shell: bash
         run: |
-          if [ -d target/criterion ] && [ -n "$(ls -A target/criterion 2>/dev/null)" ]; then
-            cargo bench -p delta-update-engine -- --baseline main
-          else
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
             cargo bench -p delta-update-engine -- --save-baseline main
+          else
+            cargo bench -p delta-update-engine -- --baseline main
           fi
 
+      # Only PRs compare: a main run just rewrote the baseline it would be
+      # compared against. bench-check also skips itself when the runner CPU
+      # differs from the one that recorded the baseline.
       - name: Check for regressions
+        if: github.event_name == 'pull_request'
         run: cargo run -p xtask -- bench-check --threshold 0.10
 
+      - name: Record runner fingerprint
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
+          @{ cpu = $cpu } | ConvertTo-Json | Out-File -Encoding utf8 target/criterion/runner.json
+          Write-Output "baseline runner: $cpu"
+
       - name: Save main baseline
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: target/criterion
