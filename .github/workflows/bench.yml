@@ -25,9 +25,9 @@ jobs:
         shell: bash
         run: |
           if [ -d target/criterion ] && [ -n "$(ls -A target/criterion 2>/dev/null)" ]; then
-            cargo bench --workspace -- --baseline main
+            cargo bench -p delta-update-engine -- --baseline main
           else
-            cargo bench --workspace -- --save-baseline main
+            cargo bench -p delta-update-engine -- --save-baseline main
           fi
 
       - name: Check for regressions
