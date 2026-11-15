@@ -109,6 +109,7 @@ fn confirm_startup_elevation() -> Result<(), EngineError> {
     if choice == IDYES {
         return Ok(());
     }
+    // IDNO, IDCANCEL (the window's close button) and Esc all mean "not now".
     tracing::warn!("user declined the elevated startup recovery");
     Err(EngineError::UacCancelled)
 }
