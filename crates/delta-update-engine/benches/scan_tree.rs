@@ -152,6 +152,9 @@ fn scan_tree(c: &mut Criterion) {
         .engine
         .diff(&fixture.install_root, &fixture.manifest)
         .unwrap();
+    // Warm scans still read and write the cache file, so a slow CI disk shows
+    // up here rather than in `cold`; compare like-for-like before calling it a
+    // regression.
     group.bench_function("warm", |b| {
         b.iter(|| {
             fixture
