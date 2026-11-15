@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 
-use crate::pipeline::manifest::{latest_key, sbom_key, signature_key, version_key};
+use crate::pipeline::manifest::{envelope_key, latest_key, sbom_key, signature_key, version_key};
 use crate::publisher::Publisher;
 
 #[derive(Debug, Clone)]
@@ -112,6 +112,14 @@ pub fn publish_manifests(publisher: &dyn Publisher, set: &ManifestSet<'_>) -> an
         (version_key.clone(), set.manifest.len() as u64),
         (latest_key.clone(), set.manifest.len() as u64),
     ]);
+
+    // Last, so the envelope always describes a fully published release. The
+    // manifest is embedded as text: the signature covers those exact bytes.
+    let key = envelope_key(set.prefix);
+    let envelope = envelope(set.manifest, set.signature)?;
+    publisher.put(&key, &envelope)?;
+    expected.push((key, envelope.len() as u64));
+
     for (key, size) in expected {
         match publisher.head(&key)? {
             Some(actual) if actual == size => {}
@@ -140,6 +148,19 @@ pub fn publish_sbom(
     }
 }
 
+/// `latest.json` and its signature in one object. Both are embedded as text so
+/// the signed bytes survive serialization unchanged.
+pub fn envelope(manifest: &[u8], signature: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let manifest = std::str::from_utf8(manifest).context("manifest is not UTF-8")?;
+    let signature = std::str::from_utf8(signature).context("signature is not UTF-8")?;
+    serde_json::to_vec(&serde_json::json!({
+        "schema": 2,
+        "manifest": manifest,
+        "signature": signature,
+    }))
+    .context("serialize envelope")
+}
+
 /// Publish only `latest.json` and its signature, leaving the versioned manifest
 /// untouched. Used by `rollback --to-version`, which must keep the original
 /// release history auditable.
@@ -153,9 +174,13 @@ pub fn publish_latest(
     let latest_signature_key = signature_key(&latest_key);
     publisher.put(&latest_signature_key, signature)?;
     publisher.put(&latest_key, manifest)?;
+    let key = envelope_key(prefix);
+    let envelope = envelope(manifest, signature)?;
+    publisher.put(&key, &envelope)?;
     for (key, expected) in [
         (latest_signature_key.as_str(), signature.len() as u64),
         (latest_key.as_str(), manifest.len() as u64),
+        (key.as_str(), envelope.len() as u64),
     ] {
         match publisher.head(key)? {
             Some(size) if size == expected => {}
@@ -217,6 +242,15 @@ mod tests {
             publisher.get("manifests/1.0.0.json.minisig").unwrap(),
             b"sig".to_vec()
         );
+        let envelope: serde_json::Value = serde_json::from_slice(
+            &publisher
+                .get("manifests/latest.envelope.json")
+                .expect("envelope is published"),
+        )
+        .unwrap();
+        assert_eq!(envelope["schema"], 2);
+        assert_eq!(envelope["manifest"], "{}");
+        assert_eq!(envelope["signature"], "sig");
     }
 
     #[test]

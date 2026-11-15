@@ -139,6 +139,45 @@ fn acquire_update_lock_retrying(journal_root: &Path) -> Result<UpdateLock, Engin
     Err(EngineError::UpdateLocked)
 }
 
+/// Envelope schema version, independent of the manifest schema.
+const ENVELOPE_SCHEMA: u32 = 2;
+
+#[derive(serde::Deserialize)]
+struct EnvelopePayload {
+    schema: u32,
+    /// The exact manifest JSON text that was signed.
+    manifest: String,
+    signature: String,
+}
+
+/// Verify a single-object envelope and return the exact manifest bytes.
+///
+/// The manifest is embedded as text rather than as a JSON object so the bytes
+/// the signature covers are unambiguous; re-serializing an object could change
+/// key order and break verification.
+fn verify_envelope(
+    raw: &[u8],
+    keys: &[String],
+    max_bytes: u64,
+) -> Result<(Vec<u8>, String), EngineError> {
+    if raw.len() as u64 > max_bytes {
+        return Err(EngineError::ManifestTooLarge(format!(
+            "envelope is {} bytes, limit is {max_bytes}",
+            raw.len()
+        )));
+    }
+    let envelope: EnvelopePayload = serde_json::from_slice(raw)
+        .map_err(|err| EngineError::ManifestInvalid(format!("envelope: {err}")))?;
+    if envelope.schema != ENVELOPE_SCHEMA {
+        return Err(EngineError::ManifestInvalid(format!(
+            "envelope schema {} is not supported",
+            envelope.schema
+        )));
+    }
+    verify_manifest(envelope.manifest.as_bytes(), &envelope.signature, keys)?;
+    Ok((envelope.manifest.into_bytes(), envelope.signature))
+}
+
 /// Attachment ids declared by a manifest that has not verified yet.
 ///
 /// The field is only a hint for which sibling signatures to try, and every id
@@ -256,6 +295,24 @@ impl Engine {
     /// a release may be in flight; inventing a "try later" code would make real
     /// tampering indistinguishable from a publish window.
     async fn fetch_verified_manifest(&self) -> Result<(Vec<u8>, String), EngineError> {
+        // The envelope carries the manifest and its signature in one object, so
+        // a reader can never land between the two writes. An envelope that is
+        // present but does not verify is fatal: falling back to the legacy pair
+        // would let an attacker push clients onto the windowed path.
+        match self.config.fetcher.fetch_envelope().await {
+            Ok(Some(envelope)) => {
+                return verify_envelope(
+                    &envelope,
+                    &self.config.signing_public_keys,
+                    self.config.limits.manifest_max_bytes,
+                )
+            }
+            Ok(None) => {}
+            Err(error) => tracing::debug!(
+                %error,
+                "envelope unavailable; falling back to latest.json + .minisig"
+            ),
+        }
         const BACKOFF_MS: [u64; 2] = [200, 600];
         let attempts = BACKOFF_MS.len() + 1;
         let mut last = None;

@@ -868,6 +868,30 @@ impl Fetcher for HttpFetcher {
         }
     }
 
+    async fn fetch_envelope(&self) -> Result<Option<Vec<u8>>, EngineError> {
+        // Only the channel pointer has an envelope; a versioned manifest URL is
+        // used by tooling and never gets one.
+        let key = if self.manifest_key == "latest.json" {
+            "latest.envelope.json".to_string()
+        } else if let Some((dir, _)) = self.manifest_key.rsplit_once('/') {
+            if !self.manifest_key.ends_with("/latest.json") {
+                return Ok(None);
+            }
+            format!("{dir}/latest.envelope.json")
+        } else {
+            return Ok(None);
+        };
+        match self
+            .get_limited(&key, self.limits.manifest_max_bytes, LimitedKind::Manifest)
+            .await
+        {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(EngineError::Network(NetworkError::Http4xx { status: 404, .. }))
+            | Err(EngineError::Signature(SignatureError::Missing)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn download(
         &self,
         key: &str,

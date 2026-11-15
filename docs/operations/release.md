@@ -267,6 +267,8 @@ delta-update report --history .reports/ --json > coverage.json
 
 清单与其签名之间也存在同样的窗口：如果清单先到而 `.minisig` 未到，客户端会报 `E_SIGNATURE_SIG_MISSING`。因此**签名对象永远先于对应清单上传**。
 
+`release` 还会在最后写一次 `manifests/latest.envelope.json`：它把清单与主签名放进同一个对象，新客户端优先读它，因此不再有清单/签名不匹配的窗口；旧客户端仍读 `latest.json` + `.minisig`，由客户端重试兜底。`rollback` 同样会更新信封。
+
 CLI 的 `release` 命令强制执行此顺序。但如果你手工操作 COS 或使用自定义发布脚本，必须保持同样的顺序。
 
 ### 4.2 对象存储目录结构
@@ -274,8 +276,10 @@ CLI 的 `release` 命令强制执行此顺序。但如果你手工操作 COS 或
 ```
 /your-bucket/
   ├── manifests/
-  │   ├── latest.json                    # 插件唯一直接请求的清单
+  │   ├── latest.json                    # 旧客户端读取的清单
   │   ├── latest.json.minisig
+  │   ├── latest.envelope.json           # 清单 + 主签名，新客户端优先读
+  │   ├── latest.json.minisig.<key_id>   # 轮换期的附加签名（可选）
   │   ├── 2.0.0.json                     # 历史版本，供回滚/降级素材
   │   ├── 2.0.0.json.minisig
   │   └── 2.0.0.sbom.json                # 派生库存清单（审计用，客户端不读取）

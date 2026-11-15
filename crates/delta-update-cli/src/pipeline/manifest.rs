@@ -79,6 +79,13 @@ pub fn latest_key(prefix: &str) -> String {
     prefixed(prefix, "manifests/latest.json")
 }
 
+/// Single-object form of `latest.json` plus its signature. New clients read
+/// this first, so they never see a manifest with the other version's
+/// signature.
+pub fn envelope_key(prefix: &str) -> String {
+    prefixed(prefix, "manifests/latest.envelope.json")
+}
+
 /// Advisory inventory of the release. Never read by clients.
 pub fn sbom_key(prefix: &str, version: &str) -> String {
     prefixed(prefix, &format!("manifests/{version}.sbom.json"))

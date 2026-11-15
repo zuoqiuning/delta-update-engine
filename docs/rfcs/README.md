@@ -55,4 +55,4 @@
 
 ## 索引
 
-- [RFC 0001：多签名与密钥轮换](0001-multi-signature-rotation.md)（Accepted，目标 1.1.0）
+- [RFC 0001：多签名与密钥轮换](0001-multi-signature-rotation.md)（Implemented）

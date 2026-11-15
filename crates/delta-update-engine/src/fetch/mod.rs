@@ -25,6 +25,15 @@ pub trait Fetcher: Send + Sync {
         Ok(None)
     }
 
+    /// Single-object envelope carrying the manifest bytes and its signature.
+    ///
+    /// `Ok(None)` means the publisher does not provide it (or this fetcher
+    /// cannot reach it); the engine then falls back to `latest.json` plus
+    /// `.minisig`, which has a short mismatch window during publishing.
+    async fn fetch_envelope(&self) -> Result<Option<Vec<u8>>, EngineError> {
+        Ok(None)
+    }
+
     async fn download(
         &self,
         key: &str,
