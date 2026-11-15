@@ -2,6 +2,12 @@
 
 本项目遵循 [SemVer](https://semver.org/)。发布前必须同步更新本文件。
 
+## [未发布]
+
+- **`prepare` 并行校验未变化文件**：`verify_unchanged_files` 改为 rayon 并行哈希（线程数取 `min(CPU, 8)`），每文件仍独立计算与比对，不引入任何缓存或信任假设；大安装的 `prepare` 前置校验随核心数线性加速，`Progress::Scanning` 的频率不变（每 50 个一次）。
+- **`..` 诊断精确化**：`journal/verify.rs` 的 `install_root` 比较与 `apply/applier.rs` 的 `journal_root` 比较遇到未解析的 `..` 时，直接报 `install_root/journal_root contains '..'`，不再退化成"不一致"的模糊提示；判断下沉为 `path::has_parent_component`，与 `validate_scope` 共用。
+- **跨卷回退确定性 e2e**：新增 `cross_volume_forced`。用 `FaultyFs` 对放置 `App.exe` 的那次 rename 注入一次 `CrossesDevices`，验证 copy + fsync + 原子 rename 回退；`FaultyFs::fired()` 让用例能断言故障确实命中，避免在单卷机器上"看似通过但什么都没测"。为此新增 `apply_commit_verified_with_fs`，e2e 走的仍是生产验签序列。
+
 ## [1.0.0-rc.4] - 2026-11-15
 
 `rc.4` 包含未发布的 `rc.1`–`rc.3` 全部内容：rc.1 缺少 `serve` 与 DX 改进；rc.2 的发布等待逻辑依赖 `cargo info` 的预发布语义；rc.3 改用 crates.io REST API，但尚未包含本轮的 schema、锁与 prepare 进度加固。rc.4 是首个包含完整 5 分钟演示路径、可安全发布的候选版。公共 API 已冻结，`1.x` 只做兼容新增，breaking change 必须升 major；rc 阶段只接收修复，发现问题发 `rc.5`，不原地覆盖已推送的 tag。
@@ -27,6 +33,7 @@
 - `doctor --watch`：发布后持续观察端点与对象。
 - `export_diagnostics` / `open_diagnostics_folder`：应用内一键生成脱敏诊断包。
 - `get_update_history`：本地读取 `completed` / `rolled_back` / `failed` 终态记录，插件不上报。
+- `doctor --simulate-failure lock|patch|disk`：用真实代码路径产出 `E_UPDATE_LOCKED`、`E_PATCH_SOURCE_MISMATCH`、`E_DISK_INSUFFICIENT`，不写任何状态、不需要 `--endpoint`，供客户端验证错误界面。
 
 ### 安全
 
@@ -40,12 +47,16 @@
 - 崩溃循环分级：阈值 3 + 正常退出折扣（`exit_grace_period_secs`）。
 - SIGKILL、并发 prepare、跨卷 copy 回退与多路径故障注入测试。
 - 原子发布顺序、内容寻址 blob、断点复用与全量回退。
+- 机器级安装的启动恢复先弹一次 `MessageBoxW` 说明原因，再走 `ShellExecuteExW("runas")`；点“否”与关掉系统 UAC 都映射到 `UacCancelled`，状态为 `Failed` 并在下次启动重试。
 
 ### 工具
 
 - `key-info`、`clear_skipped_version`、`inspect` 退出码契约。
 - `bench-check`、`contract-check`、`version-sync` 与 CI 模板。
 - 发布 SBOM、`release-report.json`、`--watch` 观察窗口。
+- 新增 `scan_tree` bench（10k 文件，冷扫 682 ms / 缓存命中 29 ms）；`bench-check` 只与同 CPU 型号的基线比较，避免共享 runner 换硬件后被误判为回归。
+- `real-test/run.ps1` 用 `serve --port 0` 并解析实际端口，演示不再和本机 8123 端口冲突。
+- 仓库内的 `.cargo/config.toml` 与 `.npmrc` 不再写国内镜像：`cargo publish` 拒绝向被替换的源发布，镜像只放本机配置。
 
 ### 详细变更
 

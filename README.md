@@ -8,6 +8,16 @@
 >
 > 核心 crate 为 `delta-update-engine`，Tauri 接入层为 `tauri-plugin-delta-update`，发布侧为 `delta-update-cli`。
 
+## 安装（rc 期间）
+
+```bash
+cargo add delta-update-engine@1.0.0-rc.4
+cargo add tauri-plugin-delta-update@1.0.0-rc.4
+pnpm add tauri-plugin-delta-update-api@next   # 或 @1.0.0-rc.4
+```
+
+候选版本要写完整版本号（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.4`）。npm 侧首次发布时 `latest` 也会指向候选版，所以脚本显式写 `@next`；`1.0.0` 发布后可以恢复裸包名。
+
 ## 何时使用
 
 | 场景 | 选择 |
