@@ -13,12 +13,35 @@
 use std::path::{Path, PathBuf};
 
 const DEFAULT_THRESHOLD: f64 = 0.10;
+/// CPU-bound benchmarks are less noisy than I/O-heavy ones, so a 5% regression
+/// is meaningful there while the same number would fire on unrelated disk load
+/// for everything else.
+const DEFAULT_CPU_THRESHOLD: f64 = 0.05;
+const CPU_BOUND_PREFIXES: &[&str] = &["scan_tree", "patch_header", "hash_tree"];
 /// Written next to the baseline so a later run can tell whether it is
 /// comparable. Missing in baselines saved before this file existed.
 const RUNNER_FILE: &str = "runner.json";
 
+struct Thresholds {
+    io: f64,
+    cpu: f64,
+}
+
+impl Thresholds {
+    fn for_bench(&self, name: &str) -> f64 {
+        if CPU_BOUND_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            self.cpu
+        } else {
+            self.io
+        }
+    }
+}
+
 pub fn run() -> Result<(), String> {
-    let threshold = parse_threshold()?;
+    let thresholds = parse_thresholds()?;
     let root = Path::new("target/criterion");
     if !root.is_dir() {
         println!(
@@ -45,8 +68,10 @@ pub fn run() -> Result<(), String> {
         let Some((point, upper)) = mean_change(&text) else {
             continue;
         };
+        let name = display_bench(bench);
+        let threshold = thresholds.for_bench(&name);
         if point > threshold && upper > threshold {
-            regressions.push((display_bench(bench), point, upper));
+            regressions.push((name, point, upper, threshold));
         }
     }
 
@@ -64,17 +89,19 @@ pub fn run() -> Result<(), String> {
 
     if regressions.is_empty() {
         println!(
-            "bench-check: ok ({} compared, threshold {:.0}%)",
+            "bench-check: ok ({} compared, thresholds {:.0}% I/O / {:.0}% CPU)",
             compared.len(),
-            threshold * 100.0
+            thresholds.io * 100.0,
+            thresholds.cpu * 100.0
         );
         return Ok(());
     }
-    for (bench, point, upper) in &regressions {
+    for (bench, point, upper, threshold) in &regressions {
         eprintln!(
-            "bench-check: {bench} regressed {:+.1}% (upper bound {:+.1}%)",
+            "bench-check: {bench} regressed {:+.1}% (upper bound {:+.1}%, threshold {:.0}%)",
             point * 100.0,
-            upper * 100.0
+            upper * 100.0,
+            threshold * 100.0
         );
     }
     Err(format!("{} benchmark regression(s)", regressions.len()))
@@ -114,23 +141,30 @@ fn current_cpu() -> Option<String> {
         .map(|cpu| cpu.brand().trim().to_string())
 }
 
-fn parse_threshold() -> Result<f64, String> {
+fn parse_thresholds() -> Result<Thresholds, String> {
+    let mut thresholds = Thresholds {
+        io: DEFAULT_THRESHOLD,
+        cpu: DEFAULT_CPU_THRESHOLD,
+    };
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
-        if arg == "--threshold" {
-            let value = args
-                .next()
-                .ok_or_else(|| "--threshold requires a value".to_string())?;
-            let parsed: f64 = value
-                .parse()
-                .map_err(|_| format!("invalid --threshold: {value}"))?;
-            if !(0.0..1.0).contains(&parsed) {
-                return Err("--threshold must be between 0 and 1".into());
-            }
-            return Ok(parsed);
+        let target = match arg.as_str() {
+            "--threshold" => &mut thresholds.io,
+            "--cpu-threshold" => &mut thresholds.cpu,
+            _ => continue,
+        };
+        let value = args
+            .next()
+            .ok_or_else(|| format!("{arg} requires a value"))?;
+        let parsed: f64 = value
+            .parse()
+            .map_err(|_| format!("invalid {arg}: {value}"))?;
+        if !(0.0..1.0).contains(&parsed) {
+            return Err(format!("{arg} must be between 0 and 1"));
         }
+        *target = parsed;
     }
-    Ok(DEFAULT_THRESHOLD)
+    Ok(thresholds)
 }
 
 /// Collect benchmark directories: `new/` marks what this run measured, and a
@@ -243,5 +277,18 @@ mod tests {
             Some("AMD EPYC 7763 64-Core Processor")
         );
         assert_eq!(string_field(r#"{"cpu":null}"#, "cpu"), None);
+    }
+
+    #[test]
+    fn cpu_bound_benchmarks_use_the_tighter_threshold() {
+        let thresholds = Thresholds {
+            io: 0.10,
+            cpu: 0.05,
+        };
+        assert_eq!(thresholds.for_bench("scan_tree/cold"), 0.05);
+        assert_eq!(thresholds.for_bench("patch_header/64KiB"), 0.05);
+        assert_eq!(thresholds.for_bench("hash_tree"), 0.05);
+        assert_eq!(thresholds.for_bench("journal_verify/1000"), 0.10);
+        assert_eq!(thresholds.for_bench("apply_commit"), 0.10);
     }
 }

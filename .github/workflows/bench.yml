@@ -36,7 +36,8 @@ jobs:
       # differs from the one that recorded the baseline.
       - name: Check for regressions
         if: github.event_name == 'pull_request'
-        run: cargo run -p xtask -- bench-check --threshold 0.10
+        # CPU-bound suites get the tighter 5% gate; I/O-heavy ones keep 10%.
+        run: cargo run -p xtask -- bench-check --threshold 0.10 --cpu-threshold 0.05
 
       - name: Record runner fingerprint
         if: github.ref == 'refs/heads/main'

@@ -117,6 +117,13 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         .values()
         .filter(|row| row.strategy.is_none() && row.ops.iter().any(|op| op.starts_with("Trash")))
         .count();
+    // A journal entry the signed manifest does not list cannot happen with a
+    // worker that verifies every Place, so a non-empty result means the bundle
+    // mixes versions or the journal was tampered with. Removals are excluded:
+    // a removed path is absent from the new manifest by design. "Manifest but
+    // no journal op" is not reported because unchanged files legitimately have
+    // no operations.
+    let journal_only = journal_only(&rows);
 
     if args.json {
         println!(
@@ -138,6 +145,7 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
                 "fell_back": fell_back,
                 "full_by_design": full_by_design,
                 "removed": removed,
+                "journal_only": journal_only,
             }))?
         );
     } else {
@@ -145,6 +153,17 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         output::info(&format!(
             "bundle: {patched} files patched, {fell_back} fell back to full, {full_by_design} full by design, {removed} removed"
         ));
+        if !journal_only.is_empty() {
+            output::warn(&format!(
+                "{} journal entr(y/ies) are missing from the signed manifest (bundle mixes versions or the journal was tampered with): {}",
+                journal_only.len(),
+                journal_only
+                    .iter()
+                    .map(|path| path.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
 
     if let Some(audit) = &audit {
@@ -187,5 +206,46 @@ fn print_table(rows: &BTreeMap<String, Row>) {
 fn warn_missing(audit: &ReleaseAudit) {
     for item in &audit.missing {
         output::warn(item);
+    }
+}
+
+/// Paths with a journal operation but no manifest entry, ignoring removals.
+fn journal_only(rows: &BTreeMap<String, Row>) -> Vec<&String> {
+    rows.iter()
+        .filter(|(_, row)| {
+            row.strategy.is_none() && row.ops.iter().any(|op| !op.starts_with("Trash"))
+        })
+        .map(|(path, _)| path)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(strategy: Option<&str>, ops: &[&str]) -> Row {
+        Row {
+            strategy: strategy.map(str::to_string),
+            ops: ops.iter().map(|op| (*op).to_string()).collect(),
+            ..Row::default()
+        }
+    }
+
+    #[test]
+    fn journal_only_ignores_removals_and_unchanged_files() {
+        let mut rows = BTreeMap::new();
+        // Listed in the manifest, touched by the journal: consistent.
+        rows.insert(
+            "App.exe".to_string(),
+            row(Some("qbsdiff+zstd"), &["Place (landed)"]),
+        );
+        // Unchanged file: listed in the manifest, no journal ops.
+        rows.insert("same.txt".to_string(), row(Some("full"), &[]));
+        // Removed by design: journal Trash, absent from the new manifest.
+        rows.insert("legacy.txt".to_string(), row(None, &["Trash (landed)"]));
+        // Journal wrote a path the signed manifest does not list.
+        rows.insert("ghost.dll".to_string(), row(None, &["Place (landed)"]));
+
+        assert_eq!(journal_only(&rows), vec!["ghost.dll"]);
     }
 }

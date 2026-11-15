@@ -98,9 +98,17 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
     }
 
     let ignore = DeltaIgnore::from_root(&args.to)?;
-    let to_scan = scan::scan(&args.to, &ignore)?;
+    // One parallelism knob for the whole release: scanning and patch generation
+    // run one after the other, so sharing `--jobs` avoids oversubscribing.
+    let default_jobs = (std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        / 2)
+    .clamp(1, 4);
+    let jobs = args.jobs.unwrap_or(default_jobs);
+    let to_scan = scan::scan_with_jobs(&args.to, &ignore, jobs)?;
     let from_scan = match &args.from {
-        Some(root) => Some(scan::scan(root, &ignore)?),
+        Some(root) => Some(scan::scan_with_jobs(root, &ignore, jobs)?),
         None => None,
     };
     let planned = plan::plan(from_scan.as_ref(), &to_scan);
@@ -131,15 +139,8 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                     args.delta_max_ratio,
                 )
             };
-            // Rayon's global pool uses every core, and each patch job holds
-            // source + target + suffix array + delta. Cap the default so a
-            // many-core CI machine does not OOM; `--jobs` still overrides.
-            let default_jobs = (std::thread::available_parallelism()
-                .map(std::num::NonZeroUsize::get)
-                .unwrap_or(1)
-                / 2)
-            .clamp(1, 4);
-            let jobs = args.jobs.unwrap_or(default_jobs);
+            // Each patch job holds source + target + suffix array + delta.
+            // `jobs` (the same value used for scanning) caps both pools.
             let inputs =
                 patches::patch_input_sizes(&planned, from_scan, &to_scan, args.patch_max_file_size);
             let estimated_peak = patches::estimated_peak_bytes(&inputs, jobs);

@@ -150,7 +150,8 @@ pub struct ReleaseArgs {
     /// Seconds between --watch audits.
     #[arg(long, default_value_t = 60)]
     pub interval: u64,
-    /// Patch generation parallelism (defaults to available cores).
+    /// Hashing and patch-generation parallelism (defaults to half the cores,
+    /// capped at 4). Scanning runs before patching, so one value covers both.
     #[arg(long)]
     pub jobs: Option<usize>,
     /// Print the per-file strategy table.

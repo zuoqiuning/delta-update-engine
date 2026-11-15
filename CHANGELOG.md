@@ -32,6 +32,9 @@
 - **依赖自动升级**：新增 `.github/dependabot.yml`，覆盖 cargo、npm 与 GitHub Actions。
 - **多签名（RFC 0001 Detached 部分）**：发布侧新增可重复的 `--additional-signing-key`，为每把附加私钥写 `manifests/<version>.json.minisig.<key_id>` 与 `latest.json.minisig.<key_id>`，并把 key id 写入清单 `signing_key_ids`；客户端在主签名失败时按声明依次尝试，任一通过即接受。主签名仍是旧客户端的唯一入口，未声明附加签名时行为与之前完全一致。`Fetcher::fetch_attachment` 带默认实现，外部 fetcher 无需改动。
 - **单对象信封（RFC 0001 方案 A）**：`release` 与 `rollback` 额外写 `manifests/latest.envelope.json`，把清单文本与主签名放进同一个对象，新客户端优先读取，彻底消除“清单与签名来自不同版本”的窗口；信封存在但验签失败直接拒绝，不回退旧路径，信封缺失（404）才回退 `latest.json` + `.minisig`。旧客户端不认识该文件，行为不变。
+- **扫描与补丁共享 `--jobs`**：哈希扫描改为在固定大小线程池里并行（walk 仍串行以保持大小写冲突错误的确定性），`--jobs` 同时控制扫描与补丁生成，避免两个阶段各自按核数开池。
+- **`inspect --bundle` 交叉检查**：新增 `journal_only`，列出“journal 触碰过但签名清单没有”的路径（排除被删除的文件）；正常 bundle 为空，非空说明 bundle 混了版本或 journal 被篡改。未变化文件“清单有、journal 无”不列为异常。
+- **bench 分级门禁**：`bench-check` 按操作类型使用阈值——`scan_tree` / `patch_header` / `hash_tree` 为 5%，其余 I/O 类保持 10%；`bench.yml` 显式传入两个阈值，输出也按实际阈值报告。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

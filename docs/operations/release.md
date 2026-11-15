@@ -126,7 +126,7 @@ delta-update release [OPTIONS]
                           qbsdiff 内存约为输入的 17 倍，需提高时同时降低 --jobs。
   --verify                上传完成后自动执行 verify。
   --self-test             在 --from 的临时副本上做 apply + rollback 演练；需要 --from。
-  --jobs <N>              补丁生成的并行度，默认 min(核数/2, 4)；--jobs 可覆盖。
+  --jobs <N>              哈希扫描与补丁生成的并行度，默认 min(核数/2, 4)；一个值同时覆盖两个阶段。
                           启动时会打印 “patch jobs: N (M files, largest ..., estimated peak ~P)”；P 是最大的 N 个输入之和 × 6，而不是 N × 单文件上限。
   --verbose               输出每个文件的策略选择和补丁体积。
 ```
