@@ -262,6 +262,13 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
     let mut objects = 0_u64;
     let mut changed_bytes = 0_u64;
     let mut delta_bytes = 0_u64;
+    // Full size of the files that are actually delivered as patches; the
+    // difference against `delta_bytes` is the client's real saving.
+    let mut patched_bytes = 0_u64;
+    let mut uploaded_full_bytes = 0_u64;
+    let mut uploaded_delta_bytes = 0_u64;
+    let mut reused_full_bytes = 0_u64;
+    let mut reused_full_blobs = 0_u64;
     let mut uploaded_blobs = HashSet::new();
     let mut fallbacks: Vec<(String, &'static str)> = Vec::new();
 
@@ -307,6 +314,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                         );
                         delta_size = Some(candidate.bytes.len() as u64);
                         delta_bytes += candidate.bytes.len() as u64;
+                        patched_bytes += scanned.size;
                         ratio = Some(candidate.ratio());
                         entry.strategy = "qbsdiff+zstd".to_string();
                         entry.delta_key = Some(key);
@@ -321,6 +329,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                                     size: delta_size.unwrap(),
                                 }],
                             )?;
+                            uploaded_delta_bytes += delta_size.unwrap();
                         }
                     }
                     Some(PatchAttempt::Skipped(reason)) => skip_reason = Some(reason),
@@ -336,7 +345,12 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             objects += 1;
             if let Some(publisher) = &publisher {
                 match publisher.head(&full_key)? {
-                    Some(size) if size == scanned.size => {}
+                    Some(size) if size == scanned.size => {
+                        // Content-addressed key plus size: the same bytes are
+                        // already published, so this release does not upload.
+                        reused_full_bytes += scanned.size;
+                        reused_full_blobs += 1;
+                    }
                     Some(size) => bail!(
                         "blob {full_key} already exists with size {size}, expected {}",
                         scanned.size
@@ -350,6 +364,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                                 size: scanned.size,
                             }],
                         )?;
+                        uploaded_full_bytes += scanned.size;
                     }
                 }
             }
@@ -535,6 +550,11 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         }
     }
     if args.pipeline {
+        // Honest accounting: `full_download_bytes` is what clients still fetch
+        // as whole files, `net_savings_bytes` is what the deltas actually save
+        // against shipping those same files in full.
+        let full_download_bytes = changed_bytes.saturating_sub(patched_bytes);
+        let net_savings_bytes = patched_bytes.saturating_sub(delta_bytes);
         let report = serde_json::json!({
             "v": 1,
             "tool": "delta-update-cli",
@@ -548,6 +568,12 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             "objects": objects,
             "delta_bytes": delta_bytes,
             "changed_bytes": changed_bytes,
+            "full_download_bytes": full_download_bytes,
+            "net_savings_bytes": net_savings_bytes,
+            "uploaded_full_bytes": uploaded_full_bytes,
+            "uploaded_delta_bytes": uploaded_delta_bytes,
+            "reused_full_bytes": reused_full_bytes,
+            "reused_full_blobs": reused_full_blobs,
             "coverage": {
                 "modified": modified_total,
                 "patched": patched,

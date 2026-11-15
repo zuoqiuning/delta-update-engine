@@ -136,6 +136,12 @@ fi
   "objects": 7,
   "delta_bytes": 12000,
   "changed_bytes": 1048576,
+  "full_download_bytes": 4096,
+  "net_savings_bytes": 1032480,
+  "uploaded_full_bytes": 8192,
+  "uploaded_delta_bytes": 12000,
+  "reused_full_bytes": 1036288,
+  "reused_full_blobs": 120,
   "coverage": {
     "modified": 5,
     "patched": 4,
@@ -149,6 +155,13 @@ fi
 ```
 
 首次发布（`--initial`）时 `self_test` 为 `{ "ran": false, "reason": "initial release" }`；未传 `--watch` 时 `watch` 为 `null`。任一步失败都不会写报告，命令以对应退出码退出。
+
+报告的“节省”是**净传输量**，不是宣传口径：
+
+- `net_savings_bytes = patched_full - delta_bytes`：被打补丁文件若整文件下发的大小，减去实际补丁大小。`changed_bytes` 包含新增文件与回退全量的文件，不能当节省额。
+- `full_download_bytes = changed_bytes - patched_full`：客户端仍需以整文件下载的变化文件（新增 + 回退）。
+- `uploaded_full_bytes` / `uploaded_delta_bytes`：本次真正写入发布端的字节。全量对象按内容寻址，键已存在且大小一致时跳过，计入 `reused_full_bytes` / `reused_full_blobs`。
+- `--dry-run` 不接触发布端，`uploaded_*` / `reused_*` 字段均为 0；`--pipeline` 与 `--dry-run` 互斥，所以正常流程里这些字段总有意义。
 
 ### 2.5 `inspect --bundle --json`
 

@@ -234,6 +234,13 @@ fn release_rejects_a_min_supported_version_above_the_release() {
 fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
     let fixture = fixture();
     publish_previous_source(&fixture);
+    // Pre-publish the unchanged file's content-addressed blob: this release
+    // must count it as reused instead of uploading it again.
+    let unchanged = fixture.to.join("same.txt");
+    let unchanged_hash = delta_update_engine::crypto::sha256_file(&unchanged).unwrap();
+    FsPublisher::new(&fixture.publish)
+        .put_file(&format!("blobs/{unchanged_hash}"), &unchanged)
+        .unwrap();
     let report_path = fixture._temp.path().join("release-report.json");
     let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
     args.pipeline = true;
@@ -248,6 +255,23 @@ fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
     assert_eq!(report["audit"]["ok"], true);
     assert_eq!(report["audit"]["missing_objects"], serde_json::json!([]));
     assert!(report["coverage"]["modified"].as_u64().unwrap() >= 1);
+
+    let changed = report["changed_bytes"].as_u64().unwrap();
+    let delta = report["delta_bytes"].as_u64().unwrap();
+    let patched_full = changed - report["full_download_bytes"].as_u64().unwrap();
+    assert_eq!(
+        report["net_savings_bytes"].as_u64().unwrap(),
+        patched_full - delta,
+        "net savings must be measured against the patched files, not all changed files"
+    );
+    assert!(report["net_savings_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(report["uploaded_delta_bytes"], report["delta_bytes"]);
+    assert_eq!(
+        report["reused_full_bytes"].as_u64().unwrap(),
+        unchanged.metadata().unwrap().len()
+    );
+    assert_eq!(report["reused_full_blobs"], 1);
+    assert!(report["uploaded_full_bytes"].as_u64().unwrap() > 0);
 }
 
 #[test]
