@@ -4,7 +4,8 @@
 //! know yet, and classifies each manifest entry. `prepare` re-hashes the
 //! unchanged subset with the same helper before any download starts, so the
 //! cold number is the upper bound for both paths and no separate prepare
-//! benchmark is needed.
+//! benchmark is needed: a change in `verify_unchanged` shows up here at the same
+//! order of magnitude.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -7,6 +7,8 @@
 - **`prepare` 并行校验未变化文件**：`verify_unchanged_files` 改为 rayon 并行哈希（线程数取 `min(CPU, 8)`），每文件仍独立计算与比对，不引入任何缓存或信任假设；大安装的 `prepare` 前置校验随核心数线性加速，`Progress::Scanning` 的频率不变（每 50 个一次）。
 - **`..` 诊断精确化**：`journal/verify.rs` 的 `install_root` 比较与 `apply/applier.rs` 的 `journal_root` 比较遇到未解析的 `..` 时，直接报 `install_root/journal_root contains '..'`，不再退化成"不一致"的模糊提示；判断下沉为 `path::has_parent_component`，与 `validate_scope` 共用。
 - **跨卷回退确定性 e2e**：新增 `cross_volume_forced`。用 `FaultyFs` 对放置 `App.exe` 的那次 rename 注入一次 `CrossesDevices`，验证 copy + fsync + 原子 rename 回退；`FaultyFs::fired()` 让用例能断言故障确实命中，避免在单卷机器上"看似通过但什么都没测"。为此新增 `apply_commit_verified_with_fs`，e2e 走的仍是生产验签序列。
+- **故障注入断言补齐**：`committer_fault_injection` 的三处注入都断言 `FaultyFs::fired()`（含 `corrupt_on_rename`），`fetch_fault_injection` 的中断用例与 `presign_refresh` 的过期签名用例断言 `MockServer::faults_served()`。这类用例一旦目标路径写错，就会从"测了回退"退化成"什么都没测"。
+- **`doctor --simulate-failure patch --reason`**：新增 `source-mismatch`（默认）/`format`/`target-hash`/`memory` 四个分支，分别产出 `E_PATCH_SOURCE_MISMATCH`、`E_PATCH_FORMAT_MISMATCH`、`E_PATCH_TARGET_HASH_MISMATCH`、`E_PATCH_MEMORY_BUDGET`，信封增加 `reason` 字段。四个分支分别走 `apply_patch` 的源哈希检查、容器头检查、内存预算，以及复用 plan 时的 `verify_plan`，不是手写 payload。
 
 ## [1.0.0-rc.4] - 2026-11-15
 
