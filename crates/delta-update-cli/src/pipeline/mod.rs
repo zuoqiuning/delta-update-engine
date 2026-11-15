@@ -1571,11 +1571,13 @@ fn simulate_failure(args: &DoctorArgs, mode: SimulateMode) -> anyhow::Result<()>
     } else {
         output::info(&format!("scenario: {}", mode.as_str()));
         output::warn(&format!("{}: {}", payload.code, payload.message));
+        let action = serde_json::to_value(payload.action)?;
+        let category = serde_json::to_value(payload.category)?;
         output::info(&format!(
             "action: {}  retryable: {}  category: {}",
-            serde_json::to_value(payload.action)?,
+            action.as_str().unwrap_or_default(),
             payload.retryable,
-            serde_json::to_value(payload.category)?
+            category.as_str().unwrap_or_default()
         ));
         output::info(&payload.user_action);
     }
