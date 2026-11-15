@@ -340,6 +340,46 @@ fn staging_overwrites_external_edit_after_backup() {
     );
 }
 
+/// J-10b: a staged file modified after `begin_commit` is rejected by replay
+/// itself, not only by the pre-commit check that ran in the original process.
+#[test]
+fn tampered_staged_source_blocks_replay() {
+    let (fixture, config, journal) = journal_fixture();
+    std::fs::write(fixture.staging().join("files/App.exe"), b"tampered").unwrap();
+
+    match replay_with(&config, &journal) {
+        JournalOutcome::ReplayFailed { op_index, reason } => {
+            assert_eq!(op_index, 1);
+            assert!(reason.contains("hash mismatch"), "{reason}");
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+    assert!(!fixture.root().join("added.txt").exists());
+}
+
+/// J-13: a lock left behind by a process killed mid-update does not block the
+/// next startup; recovery reacquires it and finishes the journal.
+#[test]
+fn stale_lock_after_kill_does_not_block_recovery() {
+    let (fixture, _config, journal) = journal_fixture();
+    std::fs::write(
+        fixture.journal().join("update.lock"),
+        br#"{"pid":424242,"started_at_unix":1,"boot_id":1}"#,
+    )
+    .unwrap();
+
+    match fixture.engine.recover_and_cleanup().unwrap() {
+        StartupOutcome::Recovered { ops_completed, .. } => {
+            assert_eq!(ops_completed, journal.ops.len())
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read(fixture.root().join("App.exe")).unwrap(),
+        NEW_APP
+    );
+}
+
 fn journal_fixture() -> (common::Fixture, ApplyConfig, Journal) {
     let fixture = fixture();
     let pending = fixture.engine.begin_commit(&fixture.prepared).unwrap();
