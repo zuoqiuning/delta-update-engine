@@ -131,17 +131,22 @@ fi
   "channel": "stable",
   "bucket": "cos://app-releases",
   "prefix": "releases",
+  "release_kind": "incremental",
   "files": 128,
   "changed": 6,
   "objects": 7,
   "delta_bytes": 12000,
   "changed_bytes": 1048576,
-  "full_download_bytes": 4096,
-  "net_savings_bytes": 1032480,
-  "uploaded_full_bytes": 8192,
-  "uploaded_delta_bytes": 12000,
-  "reused_full_bytes": 1036288,
-  "reused_full_blobs": 120,
+  "client": {
+    "full_download_bytes": 4096,
+    "net_savings_bytes": 1032480
+  },
+  "publish": {
+    "uploaded_full_bytes": 8192,
+    "uploaded_delta_bytes": 12000,
+    "reused_full_bytes": 1036288,
+    "reused_full_blobs": 120
+  },
   "coverage": {
     "modified": 5,
     "patched": 4,
@@ -154,14 +159,15 @@ fi
 }
 ```
 
-首次发布（`--initial`）时 `self_test` 为 `{ "ran": false, "reason": "initial release" }`；未传 `--watch` 时 `watch` 为 `null`。任一步失败都不会写报告，命令以对应退出码退出。
+首次发布（`--initial`）时 `self_test` 为 `{ "ran": false, "reason": "initial release" }`，`release_kind` 为 `"initial"`；未传 `--watch` 时 `watch` 为 `null`。任一步失败都不会写报告，命令以对应退出码退出。
 
-报告的“节省”是**净传输量**，不是宣传口径：
+报告把**客户端收益**与**发布侧成本**分开，避免把“上传了多少”误解为“用户要下多少”：
 
-- `net_savings_bytes = patched_full - delta_bytes`：被打补丁文件若整文件下发的大小，减去实际补丁大小。`changed_bytes` 包含新增文件与回退全量的文件，不能当节省额。
-- `full_download_bytes = changed_bytes - patched_full`：客户端仍需以整文件下载的变化文件（新增 + 回退）。
-- `uploaded_full_bytes` / `uploaded_delta_bytes`：本次真正写入发布端的字节。全量对象按内容寻址，键已存在且大小一致时跳过，计入 `reused_full_bytes` / `reused_full_blobs`。
-- `--dry-run` 不接触发布端，`uploaded_*` / `reused_*` 字段均为 0；`--pipeline` 与 `--dry-run` 互斥，所以正常流程里这些字段总有意义。
+- `client.net_savings_bytes = patched_full - delta_bytes`：被打补丁文件若整文件下发的大小，减去实际补丁大小。`changed_bytes` 包含新增与回退全量的文件，不能当节省额。
+- `client.full_download_bytes = changed_bytes - patched_full`：客户端仍需以整文件下载的变化文件（新增 + 回退）。
+- `publish.uploaded_full_bytes` / `publish.uploaded_delta_bytes`：本次真正写入发布端的字节。全量对象按内容寻址，键已存在且大小一致时跳过，计入 `reused_full_bytes` / `reused_full_blobs`。
+- `release_kind` 为 `initial` 时没有基线：`client.net_savings_bytes` 与 `publish.reused_full_blobs` 都是 0，`publish.uploaded_full_bytes` ≈ 全部文件大小。这是首次发布的正常形态，不是“增量没有收益”。
+- `--pipeline` 与 `--dry-run` 互斥，所以正常流程里这些字段总有意义。
 
 ### 2.5 `inspect --bundle --json`
 

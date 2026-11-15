@@ -36,14 +36,35 @@
 
 ## S7 发布原子性
 
-多签名把一个对象变成一组对象，发布顺序必须保证“客户端看到的任何中间态都可验证”：
+**当前实现（1.0.0-rc.x，事实记录）**：`publish_manifests` 的 PUT 顺序是“version 签名 → latest 签名 → version manifest → latest manifest”；客户端 `check()` 并发拉取 manifest 与 `.minisig` 后只验一次，签名失败不重试（`engine.rs` 直接返回 `EngineError::Signature`）。
 
-1. **先写所有附加签名**（`minisig.<id>`），再写主签名 `.minisig`。
-2. 然后是版本化清单 `manifests/<version>.json`，最后是 `latest.json` 及其签名。
-3. 客户端在 `latest.json` 可见时一定能读到主签名；附加签名可能尚未可见，此时按“忽略该条”处理——这正是兼容矩阵第 1 行的路径，不会失败。
-4. 因此 `signing_key_ids` 只描述“可选的附加签名”，**不能**用它要求客户端必须看到哪些文件。
-5. `rollback --to-version` 复用已发布清单与其签名集合；若该版本没有附加签名，只重写主签名与 `latest.json`，不重建补丁。
-6. 隐藏风险：主签名先于 `latest.json` 更新的窗口里，若 `latest.json` 已指向新清单而主签名还是旧的，验签失败。现有顺序（签名先于清单）已经覆盖，S4 只增加“附加签名更早”。
+这会产生一个真实窗口：发布 v2 时，`latest.json.minisig` 已写成 v2 的签名，而 `latest.json` 仍指向 v1。两者之间的读取会得到“v1 manifest + v2 signature”，验签必然失败。反过来先写 manifest 也一样（“v2 manifest + v1 signature”）。**根因是 `latest.json` 与 `latest.json.minisig` 是两个独立对象，任何先后顺序都有一个不匹配窗口**，这不是实现细节。
+
+多签名只是把对象数从 2 变成 2+N，窗口本身不变。S4 的发布顺序因此是：所有附加签名 → 主签名 → version manifest → latest 签名 → latest manifest，把“附加签名缺失”限制在无害区间。
+
+### 方案 A：单对象信封（1.1.0 目标）
+
+把 `latest.json` 与签名合成一个对象，单次 PUT 原子生效：
+
+```json
+{ "schema": 2, "manifest": { ...原 latest.json 内容... }, "signature": "..." }
+```
+
+**不能直接复用 `latest.json` 这个键**：旧客户端会把信封当 manifest 解析，`schema: 2` 触发 `E_MANIFEST_SCHEMA_TOO_NEW`，等于一次 flag day。因此信封写到新键（例如 `latest.envelope.json`）：
+
+- 新客户端优先读信封，单对象 + 内嵌签名，窗口消失；
+- 信封缺失时回退旧的 `latest.json` + `.minisig`，兼容过渡期；
+- 旧客户端继续读旧键，行为不变（窗口仍在，见方案 B）。
+
+发布顺序：先写真名清单与旧签名（旧客户端可用），再写信封（新客户端从此无窗口）。信封可重复写，内容不变即幂等。
+
+### 方案 B：客户端重试（1.0.x 必须有的兜底）
+
+旧客户端无法理解信封，只能靠重试跨过窗口：验签失败后重新拉取 manifest 与签名，最多 2 次，退避 200ms / 600ms（窗口通常是两个 PUT 之间，远小于此）。
+
+- 重试期间不得接受任何未通过验签的内容，也不缓存失败结果；
+- 重试耗尽后仍返回签名错误（`E_SIGNATURE_INVALID` / `E_SIGNATURE_NO_TRUSTED_KEY`，`retryable` 保持 `false`），但在 `detail` 中写入“manifest 与签名连续 N 次不匹配，发布可能正在进行”；
+- **不把耗尽后的结果改成“请稍后重试”的新错误码**：真实的清单篡改同样是“签名不匹配”，把它降级为瞬时错误会让攻击与发布窗口无法区分。提示放在 detail，错误码保持真实。
 
 ## 迁移
 
@@ -60,7 +81,7 @@
 
 ## 测试计划
 
-契约测试放在 `crates/delta-update-engine/tests/security_contract.rs`，实现前先写、先失败：
+契约测试放在 `crates/delta-update-engine/tests/security_contract.rs`，实现前先写、先失败。为了让“先测试”成立，测试针对一个新的 `SignatureSource` 抽象（`primary(manifest_key)` / `attachment(manifest_key, key_id)`），生产实现走 HTTP，测试实现读内存或本地目录；HTTP 细节不在契约里。
 
 1. 旧格式（无 `signing_key_ids`、无附加文件）→ 与 1.0 行为完全一致。
 2. 主签名无效、附加签名有效 → 接受，记录附加 key id。
@@ -68,8 +89,11 @@
 4. 声明了 `signing_key_ids` 但对应文件缺失 → 回退到主签名结果，不因缺文件失败。
 5. 未知 `key_id` 的附加文件被忽略。
 6. 发布侧：同一次 `release` 写出的附加签名数与 `--signing-key` 数量一致，且每个都能被对应公钥验证。
+7. **窗口内读取**：第一次取到 v1 manifest + v2 签名（不匹配），重试后取到匹配对 → 通过，不向用户报错。
+8. **重试耗尽**：连续不匹配 → 返回签名错误，`detail` 含“发布可能正在进行”，`retryable` 仍为 `false`。
 
 ## 未决问题
 
 - 附加签名的拉取策略：按需（主签名未命中时才拉），避免常态多一次请求。
+- 信封键名（`latest.envelope.json` 或 `latest.json.v2`）在实现时定，协议只承诺“新键 + 单对象”。
 - 发布侧 `--signing-key` 可重复传入属于实现细节，不写进本 RFC 的契约。

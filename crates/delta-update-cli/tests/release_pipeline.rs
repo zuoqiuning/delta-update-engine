@@ -258,20 +258,24 @@ fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
 
     let changed = report["changed_bytes"].as_u64().unwrap();
     let delta = report["delta_bytes"].as_u64().unwrap();
-    let patched_full = changed - report["full_download_bytes"].as_u64().unwrap();
+    let patched_full = changed - report["client"]["full_download_bytes"].as_u64().unwrap();
+    assert_eq!(report["release_kind"], "incremental");
     assert_eq!(
-        report["net_savings_bytes"].as_u64().unwrap(),
+        report["client"]["net_savings_bytes"].as_u64().unwrap(),
         patched_full - delta,
         "net savings must be measured against the patched files, not all changed files"
     );
-    assert!(report["net_savings_bytes"].as_u64().unwrap() > 0);
-    assert_eq!(report["uploaded_delta_bytes"], report["delta_bytes"]);
+    assert!(report["client"]["net_savings_bytes"].as_u64().unwrap() > 0);
     assert_eq!(
-        report["reused_full_bytes"].as_u64().unwrap(),
+        report["publish"]["uploaded_delta_bytes"],
+        report["delta_bytes"]
+    );
+    assert_eq!(
+        report["publish"]["reused_full_bytes"].as_u64().unwrap(),
         unchanged.metadata().unwrap().len()
     );
-    assert_eq!(report["reused_full_blobs"], 1);
-    assert!(report["uploaded_full_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(report["publish"]["reused_full_blobs"], 1);
+    assert!(report["publish"]["uploaded_full_bytes"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -315,6 +319,9 @@ fn pipeline_skips_self_test_for_an_initial_release() {
     assert_eq!(report["self_test"]["ran"], false);
     assert_eq!(report["self_test"]["reason"], "initial release");
     assert_eq!(report["audit"]["ok"], true);
+    assert_eq!(report["release_kind"], "initial");
+    assert_eq!(report["client"]["net_savings_bytes"], 0);
+    assert_eq!(report["publish"]["reused_full_blobs"], 0);
 }
 
 fn rollback_args(fixture: &Fixture, to_version: &str) -> RollbackArgs {

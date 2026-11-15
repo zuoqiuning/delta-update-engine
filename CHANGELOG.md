@@ -23,8 +23,8 @@
 - **错误码与建议同表**：`EngineError` 文档说明 `code`/`action`/`user_action` 是三张穷尽匹配表，新增变体不补建议就无法编译；补测试覆盖每个变体至少有非空错误码与用户建议。
 - **pinned-keys 的轮换与信任边界说明**：交集为空时的启动错误直接给出轮换顺序（先发布 pinned 含新公钥的客户端，再切服务端密钥）；`security.md` 增加“安装形态 × 信任根”矩阵，说明信任根是编译期内嵌配置、pinned-keys 防的是构建期配置被改而非二进制替换；`versioning.md` §5 同步轮换时序。
 - **锁与契约的收尾**：`UpdateLock::drop` 在 panic 展开时同样截断元数据（新增用例证明），`write_info` 失败也会清空文件；参数来源契约的扫描器改为“解析失败即报错”，并补“带路径的命令必须被扫出”等正反用例；发布流水线在 publish 前用 `cargo package --list` 断言三个 crate 的包内容包含 `Cargo.toml`/`src/lib.rs`（插件另含 `permissions/default.toml`），弥补 `--no-verify` 跳过的打包检查。
-- **发布报告改为净传输量**：`release --pipeline` 报告新增 `full_download_bytes`（仍以整文件下发的字节）、`net_savings_bytes`（被打补丁文件的全量之和减补丁之和）、`uploaded_full_bytes` / `uploaded_delta_bytes` / `reused_full_bytes` / `reused_full_blobs`（真正写入与按内容寻址复用）。`changed_bytes` 只作全量基数，不再被当成节省额。
-- **RFC 0001 推进为 Accepted**：动机改为“轮换窗口”，补 S7 发布原子性与旧/新客户端兼容矩阵；S4 多签名实现仍在 1.1.0，契约测试随实现落地。
+- **发布报告改为净传输量**：`release --pipeline` 报告新增 `release_kind`（`initial` / `incremental`），并把指标拆成 `client`（`full_download_bytes`、`net_savings_bytes`）与 `publish`（`uploaded_full_bytes` / `uploaded_delta_bytes` / `reused_full_bytes` / `reused_full_blobs`）两个子对象。`changed_bytes` 只作全量基数，不再被当成节省额；首次发布明确显示“无增量收益”，不会读成“增量无用”。
+- **RFC 0001 推进为 Accepted**：动机改为“轮换窗口”，补 S7 的真实不匹配窗口分析（`publish_manifests` 当前的 PUT 顺序与客户端不重试的事实）、单对象信封（方案 A，新键避免 flag day）与客户端重试（方案 B，1.0.x 兜底），测试计划扩到 8 条并写明契约测试针对 `SignatureSource` 抽象编写。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

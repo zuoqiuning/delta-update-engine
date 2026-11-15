@@ -550,11 +550,30 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         }
     }
     if args.pipeline {
-        // Honest accounting: `full_download_bytes` is what clients still fetch
-        // as whole files, `net_savings_bytes` is what the deltas actually save
-        // against shipping those same files in full.
+        // Honest accounting, split by cost: `client` is what users download,
+        // `publish` is what this run writes to the bucket. A first release has
+        // no baseline, so its delta saving is zero by definition.
+        let release_kind = if from_version.is_some() {
+            "incremental"
+        } else {
+            "initial"
+        };
         let full_download_bytes = changed_bytes.saturating_sub(patched_bytes);
         let net_savings_bytes = patched_bytes.saturating_sub(delta_bytes);
+        if release_kind == "initial" {
+            output::info(&format!(
+                "publish: {} full uploaded (baseline; a first release has no delta savings)",
+                human_bytes(uploaded_full_bytes)
+            ));
+        } else {
+            output::info(&format!(
+                "client savings: {} over full downloads; publish: {} full + {} delta uploaded, {} full blobs reused",
+                human_bytes(net_savings_bytes),
+                human_bytes(uploaded_full_bytes),
+                human_bytes(uploaded_delta_bytes),
+                reused_full_blobs
+            ));
+        }
         let report = serde_json::json!({
             "v": 1,
             "tool": "delta-update-cli",
@@ -563,17 +582,22 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             "channel": &args.channel,
             "bucket": &args.bucket,
             "prefix": &prefix,
+            "release_kind": release_kind,
             "files": to_scan.len(),
             "changed": changed,
             "objects": objects,
             "delta_bytes": delta_bytes,
             "changed_bytes": changed_bytes,
-            "full_download_bytes": full_download_bytes,
-            "net_savings_bytes": net_savings_bytes,
-            "uploaded_full_bytes": uploaded_full_bytes,
-            "uploaded_delta_bytes": uploaded_delta_bytes,
-            "reused_full_bytes": reused_full_bytes,
-            "reused_full_blobs": reused_full_blobs,
+            "client": {
+                "full_download_bytes": full_download_bytes,
+                "net_savings_bytes": net_savings_bytes,
+            },
+            "publish": {
+                "uploaded_full_bytes": uploaded_full_bytes,
+                "uploaded_delta_bytes": uploaded_delta_bytes,
+                "reused_full_bytes": reused_full_bytes,
+                "reused_full_blobs": reused_full_blobs,
+            },
             "coverage": {
                 "modified": modified_total,
                 "patched": patched,
