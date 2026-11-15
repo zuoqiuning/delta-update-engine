@@ -553,7 +553,9 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         // Honest accounting, split by cost: `client` is what users download,
         // `publish` is what this run writes to the bucket. A first release has
         // no baseline, so its delta saving is zero by definition.
-        let release_kind = if from_version.is_some() {
+        let release_kind = if args.rollback {
+            "rollback"
+        } else if from_version.is_some() {
             "incremental"
         } else {
             "initial"
@@ -567,7 +569,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             ));
         } else {
             output::info(&format!(
-                "client savings: {} over full downloads; publish: {} full + {} delta uploaded, {} full blobs reused",
+                "{release_kind}: client savings {} over full downloads; publish {} full + {} delta uploaded, {} full blobs reused",
                 human_bytes(net_savings_bytes),
                 human_bytes(uploaded_full_bytes),
                 human_bytes(uploaded_delta_bytes),

@@ -163,10 +163,10 @@ fi
 
 报告把**客户端收益**与**发布侧成本**分开，避免把“上传了多少”误解为“用户要下多少”：
 
-- `client.net_savings_bytes = patched_full - delta_bytes`：被打补丁文件若整文件下发的大小，减去实际补丁大小。`changed_bytes` 包含新增与回退全量的文件，不能当节省额。
+- `client.net_savings_bytes = patched_full - delta_bytes`：`patched_full` 的定义是**实际走 delta 的文件的新版本 full size 之和**（回退成 full 的 Modified 文件不计入），`delta_bytes` 是这些补丁的字节数。`changed_bytes` 包含新增与回退全量的文件，不能当节省额。
 - `client.full_download_bytes = changed_bytes - patched_full`：客户端仍需以整文件下载的变化文件（新增 + 回退）。
 - `publish.uploaded_full_bytes` / `publish.uploaded_delta_bytes`：本次真正写入发布端的字节。全量对象按内容寻址，键已存在且大小一致时跳过，计入 `reused_full_bytes` / `reused_full_blobs`。
-- `release_kind` 为 `initial` 时没有基线：`client.net_savings_bytes` 与 `publish.reused_full_blobs` 都是 0，`publish.uploaded_full_bytes` ≈ 全部文件大小。这是首次发布的正常形态，不是“增量没有收益”。
+- `release_kind`：`initial`（无 `--from`，没有基线）、`incremental`（有 `--from-version`）、`rollback`（`--rollback`，重新发布旧版本）。`initial` 时 `client.net_savings_bytes` 与 `publish.reused_full_blobs` 都是 0，`publish.uploaded_full_bytes` ≈ 全部文件大小，这是正常形态而不是“增量没有收益”。
 - `--pipeline` 与 `--dry-run` 互斥，所以正常流程里这些字段总有意义。
 
 ### 2.5 `inspect --bundle --json`

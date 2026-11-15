@@ -73,15 +73,22 @@ pub fn verify_objects(publisher: &dyn Publisher, objects: &[ObjectUpload]) -> an
 
 /// Publish in the only safe order: signatures, versioned manifest, latest
 /// manifest last.
+///
+/// The versioned manifest goes first so a reader that lands mid-publish sees
+/// "manifest without signature" (clear) instead of "signature without
+/// manifest". `latest` still cannot be atomic across the two objects: the
+/// signature is written right before the manifest to keep that window as short
+/// as possible, and clients retry a mismatched pair. A single-object envelope
+/// removes the window entirely; see RFC 0001.
 pub fn publish_manifests(publisher: &dyn Publisher, set: &ManifestSet<'_>) -> anyhow::Result<()> {
     let version_key = version_key(set.prefix, set.version);
     let version_signature_key = signature_key(&version_key);
     let latest_key = latest_key(set.prefix);
     let latest_signature_key = signature_key(&latest_key);
 
+    publisher.put(&version_key, set.manifest)?;
     publisher.put(&version_signature_key, set.signature)?;
     publisher.put(&latest_signature_key, set.signature)?;
-    publisher.put(&version_key, set.manifest)?;
     publisher.put(&latest_key, set.manifest)?;
 
     for (key, expected) in [

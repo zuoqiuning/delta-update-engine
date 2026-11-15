@@ -36,11 +36,11 @@
 
 ## S7 发布原子性
 
-**当前实现（1.0.0-rc.x，事实记录）**：`publish_manifests` 的 PUT 顺序是“version 签名 → latest 签名 → version manifest → latest manifest”；客户端 `check()` 并发拉取 manifest 与 `.minisig` 后只验一次，签名失败不重试（`engine.rs` 直接返回 `EngineError::Signature`）。
+**当前实现（事实记录）**：`publish_manifests` 的 PUT 顺序是“version manifest → version 签名 → latest 签名 → latest manifest”；1.0.0-rc.x 的客户端 `check()` 并发拉取 manifest 与 `.minisig` 后只验一次，签名失败不重试。**1.0.1 起** `check()` 对不匹配的一对重拉两次（200ms / 600ms），再失败才返回错误（见方案 B）。
 
 这会产生一个真实窗口：发布 v2 时，`latest.json.minisig` 已写成 v2 的签名，而 `latest.json` 仍指向 v1。两者之间的读取会得到“v1 manifest + v2 signature”，验签必然失败。反过来先写 manifest 也一样（“v2 manifest + v1 signature”）。**根因是 `latest.json` 与 `latest.json.minisig` 是两个独立对象，任何先后顺序都有一个不匹配窗口**，这不是实现细节。
 
-多签名只是把对象数从 2 变成 2+N，窗口本身不变。S4 的发布顺序因此是：所有附加签名 → 主签名 → version manifest → latest 签名 → latest manifest，把“附加签名缺失”限制在无害区间。
+多签名只是把对象数从 2 变成 2+N，窗口本身不变。S4 的发布顺序因此是：所有附加签名 → version manifest → 主签名 → latest 签名 → latest manifest，附加签名缺失仍落在无害区间。
 
 ### 方案 A：单对象信封（1.1.0 目标）
 
@@ -58,13 +58,23 @@
 
 发布顺序：先写真名清单与旧签名（旧客户端可用），再写信封（新客户端从此无窗口）。信封可重复写，内容不变即幂等。
 
-### 方案 B：客户端重试（1.0.x 必须有的兜底）
+### 方案 B：客户端重试（1.0.1，已实现）
 
 旧客户端无法理解信封，只能靠重试跨过窗口：验签失败后重新拉取 manifest 与签名，最多 2 次，退避 200ms / 600ms（窗口通常是两个 PUT 之间，远小于此）。
 
 - 重试期间不得接受任何未通过验签的内容，也不缓存失败结果；
-- 重试耗尽后仍返回签名错误（`E_SIGNATURE_INVALID` / `E_SIGNATURE_NO_TRUSTED_KEY`，`retryable` 保持 `false`），但在 `detail` 中写入“manifest 与签名连续 N 次不匹配，发布可能正在进行”；
-- **不把耗尽后的结果改成“请稍后重试”的新错误码**：真实的清单篡改同样是“签名不匹配”，把它降级为瞬时错误会让攻击与发布窗口无法区分。提示放在 detail，错误码保持真实。
+- 重试耗尽后仍返回签名错误（`E_SIGNATURE_INVALID` / `E_SIGNATURE_NO_TRUSTED_KEY`，`retryable` 保持 `false`），并在错误消息里写入“manifest 与签名连续 N 次不匹配，发布可能正在进行”（`ErrorPayload.detail` 没有通用写入通道，不为一句提示新增字段）；
+- **不把耗尽后的结果改成“请稍后重试”的新错误码**：真实的清单篡改同样是“签名不匹配”，把它降级为瞬时错误会让攻击与发布窗口无法区分。提示放在消息里，错误码保持真实。
+
+### 双键发布语义
+
+方案 A 落地后，一次发布要写“新键信封 + 旧键分离签名”两套对象，必须固定三件事：
+
+**写入顺序**：先写新键信封（单对象、无窗口），再写旧键组（version manifest → version signature → latest signature → latest manifest）。这样任何时刻新客户端读到的都是最新版本；旧客户端要么 v1 要么 v2，不会读到“v2 manifest + v1 签名”。
+
+**旧键写入失败**：信封已可用时，旧键失败**不回滚信封**（回滚会把新客户端也退回 v1）。记 `event=legacy_key_publish_failed`；`--pipeline` 模式按失败退出（发布未完成），非 pipeline 模式警告但成功退出（新客户端已可用）。
+
+**旧键退役**：当 `min_supported_version` 已经高于“只读旧键”的最新客户端版本时，停止写旧键。这一步与移除旧公钥属于同一个窗口，不能早于它。
 
 ## 迁移
 
@@ -81,16 +91,46 @@
 
 ## 测试计划
 
-契约测试放在 `crates/delta-update-engine/tests/security_contract.rs`，实现前先写、先失败。为了让“先测试”成立，测试针对一个新的 `SignatureSource` 抽象（`primary(manifest_key)` / `attachment(manifest_key, key_id)`），生产实现走 HTTP，测试实现读内存或本地目录；HTTP 细节不在契约里。
+契约测试放在 `crates/delta-update-engine/tests/security_contract.rs`。为了让“先测试”成立，先落一个 `SignatureSource` 抽象，一次取回完整的签名集合：
 
-1. 旧格式（无 `signing_key_ids`、无附加文件）→ 与 1.0 行为完全一致。
-2. 主签名无效、附加签名有效 → 接受，记录附加 key id。
-3. 全部无效 → `E_SIGNATURE_NO_TRUSTED_KEY`。
-4. 声明了 `signing_key_ids` 但对应文件缺失 → 回退到主签名结果，不因缺文件失败。
-5. 未知 `key_id` 的附加文件被忽略。
-6. 发布侧：同一次 `release` 写出的附加签名数与 `--signing-key` 数量一致，且每个都能被对应公钥验证。
-7. **窗口内读取**：第一次取到 v1 manifest + v2 签名（不匹配），重试后取到匹配对 → 通过，不向用户报错。
-8. **重试耗尽**：连续不匹配 → 返回签名错误，`detail` 含“发布可能正在进行”，`retryable` 仍为 `false`。
+```rust
+pub enum SignaturePayload {
+    Detached { primary: Vec<u8>, attachments: Vec<(String, Vec<u8>)> },
+    Envelope { signature: Vec<u8>, manifest: Vec<u8> },
+}
+
+pub trait SignatureSource {
+    fn fetch(&self, manifest_key: &str) -> Result<SignaturePayload>;
+}
+```
+
+旧键实现返回 `Detached`，新键实现返回 `Envelope`（manifest 与签名来自同一个对象）。HTTP 细节不在契约里。
+
+### 1.0.1：窗口兜底（Detached 单签名）
+
+| # | 用例 | 期望 |
+| --- | --- | --- |
+| 1 | 第一次读到 v1 manifest + v2 签名，重试后读到匹配对 | 通过，不向用户报错 |
+| 2 | 连续不匹配 | 签名错误，消息含“发布可能正在进行”，`retryable = false`，共 3 次请求 |
+
+### 1.1.0 · Detached（多签名）
+
+| # | 用例 | 期望 |
+| --- | --- | --- |
+| 1 | 旧格式（无 `signing_key_ids`、无附加文件） | 与 1.0 行为完全一致 |
+| 2 | 主签名无效、附加签名有效 | 接受，记录附加 key id |
+| 3 | 全部无效 | `E_SIGNATURE_NO_TRUSTED_KEY` |
+| 4 | 声明了 `signing_key_ids` 但对应文件缺失 | 回退到主签名结果，不因缺文件失败 |
+| 5 | 未知 `key_id` 的附加文件 | 忽略 |
+| 6 | 发布侧附加签名数与 `--signing-key` 数量一致，且各自可验证 | 通过 |
+
+### 1.1.0 · Envelope（方案 A）
+
+| # | 用例 | 期望 |
+| --- | --- | --- |
+| 1 | 信封签名有效 | 通过，使用信封内的 manifest |
+| 2 | 信封缺失 | 回退旧键，行为与 1.0 相同 |
+| 3 | 信封存在但签名无效 | 拒绝，**不回退旧键**（回退等于允许把攻击降级到弱路径） |
 
 ## 未决问题
 

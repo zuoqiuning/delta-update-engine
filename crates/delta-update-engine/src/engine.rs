@@ -139,6 +139,21 @@ fn acquire_update_lock_retrying(journal_root: &Path) -> Result<UpdateLock, Engin
     Err(EngineError::UpdateLocked)
 }
 
+/// Attach the publish-window hint to a signature failure that survived the
+/// retries. The code and `retryable` stay untouched on purpose: a tampered
+/// manifest produces the same mismatch, and downgrading it to "try later"
+/// would hide an attack behind an operational message.
+fn publish_window_hint(error: EngineError, attempts: usize) -> EngineError {
+    match error {
+        EngineError::Signature(SignatureError::Invalid(message)) => {
+            EngineError::Signature(SignatureError::Invalid(format!(
+                "{message} (manifest and signature disagreed after {attempts} attempts; a release may be in progress)"
+            )))
+        }
+        other => other,
+    }
+}
+
 /// The manifest that passed signature verification in the last successful
 /// check, plus the diff computed against it. Prepare consumes this snapshot so
 /// callers can never substitute an unverified manifest.
@@ -212,21 +227,50 @@ impl Engine {
         &self.config
     }
 
+    /// Fetch and verify the manifest, retrying the pair a couple of times.
+    ///
+    /// `latest.json` and `latest.json.minisig` are two separate objects, so a
+    /// release briefly exposes a manifest with the previous or next signature.
+    /// Retrying is safe: nothing is parsed or cached until the pair verifies.
+    /// Exhausting the retries returns the real signature error with a hint that
+    /// a release may be in flight; inventing a "try later" code would make real
+    /// tampering indistinguishable from a publish window.
+    async fn fetch_verified_manifest(&self) -> Result<(Vec<u8>, String), EngineError> {
+        const BACKOFF_MS: [u64; 2] = [200, 600];
+        let attempts = BACKOFF_MS.len() + 1;
+        let mut last = None;
+        for attempt in 0..attempts {
+            let (raw_manifest, raw_signature) = tokio::try_join!(
+                self.config.fetcher.fetch_manifest(),
+                self.config.fetcher.fetch_signature()
+            )?;
+            let signature = std::str::from_utf8(&raw_signature)
+                .map_err(|_| {
+                    EngineError::Signature(SignatureError::Invalid(
+                        "signature is not valid UTF-8".into(),
+                    ))
+                })?
+                .to_string();
+            match verify_manifest(&raw_manifest, &signature, &self.config.signing_public_keys) {
+                Ok(()) => return Ok((raw_manifest, signature)),
+                Err(error) => {
+                    last = Some(error);
+                    if let Some(delay) = BACKOFF_MS.get(attempt) {
+                        tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+                    }
+                }
+            }
+        }
+        Err(publish_window_hint(
+            last.unwrap_or(EngineError::Signature(SignatureError::NoTrustedKey)),
+            attempts,
+        ))
+    }
+
     /// Fetch, verify, parse, apply channel/version guards, then diff against
     /// the install root. The verified snapshot is cached for `prepare`.
     pub async fn check(&self) -> Result<CheckOutcome, EngineError> {
-        let (raw_manifest, raw_signature) = tokio::try_join!(
-            self.config.fetcher.fetch_manifest(),
-            self.config.fetcher.fetch_signature()
-        )?;
-        let signature = std::str::from_utf8(&raw_signature)
-            .map_err(|_| {
-                EngineError::Signature(SignatureError::Invalid(
-                    "signature is not valid UTF-8".into(),
-                ))
-            })?
-            .to_string();
-        verify_manifest(&raw_manifest, &signature, &self.config.signing_public_keys)?;
+        let (raw_manifest, signature) = self.fetch_verified_manifest().await?;
         let manifest = parse_manifest(&raw_manifest, &self.config.limits)?;
         let channel = manifest.channel.as_deref().unwrap_or("stable");
         if channel != self.config.channel {

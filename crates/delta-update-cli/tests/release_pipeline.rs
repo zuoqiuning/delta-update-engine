@@ -259,11 +259,33 @@ fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
     let changed = report["changed_bytes"].as_u64().unwrap();
     let delta = report["delta_bytes"].as_u64().unwrap();
     let patched_full = changed - report["client"]["full_download_bytes"].as_u64().unwrap();
+    let app = fixture.to.join("bin/app.exe").metadata().unwrap().len();
+    let icon = fixture
+        .to
+        .join("resources/icon.png")
+        .metadata()
+        .unwrap()
+        .len();
+    let added = fixture.to.join("added.txt").metadata().unwrap().len();
+    assert_eq!(
+        changed,
+        app + icon + added,
+        "unchanged files are not part of changed_bytes"
+    );
+    assert_eq!(
+        report["client"]["full_download_bytes"].as_u64().unwrap(),
+        icon + added,
+        "a modified file that fell back to full must not count as patched"
+    );
     assert_eq!(report["release_kind"], "incremental");
     assert_eq!(
         report["client"]["net_savings_bytes"].as_u64().unwrap(),
         patched_full - delta,
         "net savings must be measured against the patched files, not all changed files"
+    );
+    assert_eq!(
+        patched_full, app,
+        "only the file that actually got a delta contributes to the baseline"
     );
     assert!(report["client"]["net_savings_bytes"].as_u64().unwrap() > 0);
     assert_eq!(
@@ -276,6 +298,29 @@ fn pipeline_self_tests_uploads_audits_and_writes_a_report() {
     );
     assert_eq!(report["publish"]["reused_full_blobs"], 1);
     assert!(report["publish"]["uploaded_full_bytes"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn rollback_release_is_reported_as_its_own_kind() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    pipeline::release(&release_args(
+        &fixture,
+        "2.0.0",
+        Some("1.0.0"),
+        false,
+        false,
+    ))
+    .unwrap();
+
+    let report_path = fixture._temp.path().join("rollback-report.json");
+    let mut args = release_args(&fixture, "1.5.0", Some("2.0.0"), true, false);
+    args.pipeline = true;
+    args.report = report_path.clone();
+    pipeline::release(&args).unwrap();
+
+    let report: Value = serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+    assert_eq!(report["release_kind"], "rollback");
 }
 
 #[test]
