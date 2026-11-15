@@ -1,4 +1,13 @@
-//! Tauri 2 adapter for the delta update engine.
+//! Tauri 2 adapter for the delta update engine, **Windows 10+ desktop only**.
+//!
+//! macOS, Linux and mobile are out of scope: their installers own the
+//! integrity model (code signing, AppImage/deb/rpm state), and replacing files
+//! underneath them would break it. Non-Windows builds fail at compile time
+//! with an explicit error instead of silently disabling the updater.
+//!
+//! In scope: per-user installs (`%LocalAppData%`), per-machine installs
+//! (`%ProgramFiles%`, with UAC for the replacement worker) and portable layouts
+//! that set `install_dir`.
 
 // One unsafe call site is allowed in `applier` for ShellExecuteW("runas");
 // everything else stays safe Rust.

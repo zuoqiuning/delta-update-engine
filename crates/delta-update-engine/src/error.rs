@@ -192,6 +192,16 @@ impl PatchError {
     }
 }
 
+/// Every failure that can reach a caller, a log or a UI.
+///
+/// The wire contract is three exhaustive tables in this file: [`code`] (stable
+/// identifier), [`action`] (machine-readable next step) and [`user_action`]
+/// (prose next step). Adding a variant fails to compile until all three are
+/// updated, so a code can never exist without a documented follow-up.
+///
+/// [`code`]: EngineError::code
+/// [`action`]: EngineError::action
+/// [`user_action`]: EngineError::user_action
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum EngineError {
@@ -525,5 +535,67 @@ mod tests {
             2
         );
         assert_eq!(EngineError::Internal("bug".into()).exit_code(), 3);
+    }
+
+    #[test]
+    fn every_variant_has_a_code_and_a_follow_up() {
+        for error in samples() {
+            assert!(!error.code().is_empty());
+            assert!(!error.user_action().is_empty(), "{error:?}");
+        }
+    }
+
+    /// One variant per distinct match arm above. Adding a variant means adding
+    /// it here too, so an undocumented failure cannot ship silently.
+    fn samples() -> Vec<EngineError> {
+        vec![
+            EngineError::Network(NetworkError::Connect("dns".into())),
+            EngineError::Network(NetworkError::Timeout("slow".into())),
+            EngineError::Network(NetworkError::RateLimited {
+                retry_after_secs: Some(1),
+            }),
+            EngineError::Network(NetworkError::PresignExpired),
+            EngineError::Signature(SignatureError::NoTrustedKey),
+            EngineError::ManifestSchemaTooNew {
+                client: 1,
+                required: 2,
+            },
+            EngineError::ManifestInvalid("bad".into()),
+            EngineError::VersionRollback {
+                remote: "1.0.0".into(),
+                local: "2.0.0".into(),
+            },
+            EngineError::PathEscape("..".into()),
+            EngineError::InsufficientDiskSpace {
+                required: 1,
+                available: 0,
+            },
+            EngineError::PermissionDenied("denied".into()),
+            EngineError::UacCancelled,
+            EngineError::PatchFailed(PatchError::MemoryBudget {
+                file_size: 2,
+                budget: 1,
+            }),
+            EngineError::JournalCorrupt("bad".into()),
+            EngineError::JournalFormatTooNew {
+                client: 1,
+                actual: 2,
+            },
+            EngineError::UpdateLocked,
+            EngineError::RollbackFailed("failed".into()),
+            EngineError::ConfigInvalid("bad".into()),
+            EngineError::ConfigMigrationRequired { from: 1, to: 2 },
+            EngineError::EndpointInsecure("http://example.com".into()),
+            EngineError::UnsupportedPlatform("linux".into()),
+            EngineError::ApplyHelperFailed("failed".into()),
+            EngineError::ElevatedRecoveryTimeout { timeout_ms: 1 },
+            EngineError::NotPrepared,
+            EngineError::InvalidTransition {
+                from: "Idle".into(),
+                to: "Prepared".into(),
+            },
+            EngineError::Cancelled,
+            EngineError::Internal("bug".into()),
+        ]
     }
 }

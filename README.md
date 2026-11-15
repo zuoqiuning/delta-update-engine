@@ -2,10 +2,15 @@
 
 面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> **`1.0.0-rc.4` is out** — 这是 1.0 的候选版本，公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
->
-> 平台范围是刻意的：只支持 Windows per-user / per-machine / 便携版。macOS 签名 `.app` 与 Linux 包管理器/AppImage 使用不同的完整性模型，不在本插件范围内；其他平台请使用官方安装器或包管理器。
->
+> **`1.0.0-rc.4` is out** — 公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
+
+| 支持矩阵 | |
+| --- | --- |
+| 操作系统 | Windows 10+ 桌面（x64 / arm64） |
+| 安装形态 | per-user（`%LocalAppData%`）、per-machine（`%ProgramFiles%`，替换进程走 UAC）、便携版（配置 `install_dir`） |
+| 不支持 | macOS、Linux、移动端：这些平台由安装器或包管理器持有完整性模型，请使用官方 `tauri-plugin-updater` 或系统包管理器 |
+| 非 Windows 构建 | 编译期直接失败（`compile_error!`），不会静默禁用更新 |
+
 > 核心 crate 为 `delta-update-engine`，Tauri 接入层为 `tauri-plugin-delta-update`，发布侧为 `delta-update-cli`。
 
 ## 安装（rc 期间）

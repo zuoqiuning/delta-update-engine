@@ -19,6 +19,7 @@
 ## 设计（为什么这样做）
 
 - [架构与不变量](design/architecture.md)：模块边界、执行顺序与失败关闭原则。
+- [协议 RFC 流程与索引](rfcs/README.md)：需要先写 RFC 的变更、评审与实现顺序。
 - [模块职责](design/modules.md)：每个模块负责什么、依赖方向如何。
 - [协议与清单](design/protocol.md)：清单 schema、补丁容器与对象命名。
 - [安全模型](design/security.md)：信任边界、签名绑定与提权路径。
@@ -51,7 +52,7 @@
 
 ## 维护规则
 
-- 新增文档必须进入 `guides/`、`tutorials/`、`reference/`、`operations/`、`testing/`、`design/`、`security/` 或 `integrations/`，不得堆在 `docs/` 根目录。
+- 新增文档必须进入 `guides/`、`tutorials/`、`reference/`、`operations/`、`testing/`、`design/`、`security/`、`integrations/` 或 `rfcs/`，不得堆在 `docs/` 根目录。
 - 文件名使用英文 `kebab-case`；中文只出现在标题和正文。
 - 交叉引用使用相对路径链接，确保可点击。
 - 任何协议、命令、错误码或目录结构变更，先改对应文档，再改代码。

@@ -58,3 +58,27 @@
 - 把 `journal_dir` / `staging_dir` 指到 `%ProgramData%` 时，需要给普通用户写权限；否则 `prepare` 会因权限失败，或者每一步都要提权。
 - 机器级安装下，用户拒绝 UAC 是正常操作；应用应把它当作“更新未完成”而不是崩溃，并允许稍后重试。
 - 不要通过 `socat` / 端口转发把 `serve` 暴露到公网，也不要把签名私钥放在安装目录。
+
+## 5. 最小配置示例
+
+### 5.1 NSIS per-machine
+
+```json
+{
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
+  }
+}
+```
+
+安装后 `install_root` 是 `%ProgramFiles%\<ProductName>`，普通用户只读。用户在“重启更新”时点击一次 UAC，插件用 `ShellExecuteExW(..., "runas", ...)` 启动同一个 exe 的 `--delta-update-apply`；提交中断后的启动恢复走 §2 的同一条路径。`install_dir` 不要指向父目录：release 构建要求它等于 exe 所在目录，否则 `E_CONFIG_INVALID`。
+
+`both` 形态下 NSIS 会按用户选择落两个目录，而插件只更新**运行中 exe 所在**的那一份，所以 `doctor --check-config` 会对 `perMachine`/`both` 搭配 `auto_apply: true` 给出告警：这会在用户没有预期时触发 UAC。
+
+### 5.2 计划任务（未实现）
+
+把提权 worker 改成一次性计划任务（`schtasks /create ... /rl highest`）可以避免启动时 UAC，但它把“一次点击授权”变成常驻的高权限入口，还需要额外的创建、清理与防篡改设计。1.0 不做，原因与 §3 的信任边界相同。

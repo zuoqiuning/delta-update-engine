@@ -12,6 +12,15 @@
 - **接入漏接检测**：`run_applier_from_context` 会记录入口已被调用；插件 `setup` 若发现"配置存在但入口未调用"，debug 构建直接 panic 并给出正确写法，release 构建以同一条消息禁用更新。这是最隐蔽的接入失败模式——漏接后更新能准备成功，但重启进 worker 的那一步永远不会执行。
 - **安装形态交叉校验**：`doctor --check-config` 读取 `bundle.windows.nsis.installMode`，当 `perMachine` / `both` 搭配 `auto_apply: true` 时给出警告（提权会出现在用户未预期的时刻），JSON 信封增加 `install_mode` 与 `warnings`。
 - **`init` 最后一公里**：缺少 `--public-key` 时直接给出三步命令（`minisign -G` → `key-info` → 重跑 `init`）；接入步骤打印可直接粘贴的 `main.rs` 片段。
+- **编译期公钥 pin（`pinned-keys` feature）**：启用后信任根变为 `signing_public_keys ∩ DELTA_UPDATE_PINNED_PUBLIC_KEYS`，交集为空时 GUI 与 worker 都拒绝启动并给出明确错误。per-user 安装的配置目录可写，这是把"配置正确才安全"变成"编译期确定才安全"的分水岭；未启用 feature 时行为与之前完全一致。
+- **发布侧签名自验**：`sign_manifest` 写完签名后立即用同一把密钥派生的公钥验签，签名与公钥不匹配时中止发布，避免发布出客户端必然拒绝的版本。
+- **前端参数来源契约**：新增 `param_provenance_contract`，静态断言所有 Tauri 命令只接收 `AppHandle` / `State` / 受限的 `limit`，写入目标、信任公钥、版本号不能来自前端。
+- **`update.lock` 携带持有者信息**：持锁期间写入 `{pid, started_at_unix, boot_id}`，正常释放时截断。因此"文件里还有内容"精确表示上一个进程在更新中被杀，回收锁时以 `cleared an update lock left by a process...` 记录 pid、间隔与是否跨启动；`update.lock` 本身仍由 OS 释放，不会阻塞下一次启动。
+- **replay 重校验 staged 源**：新增 `tampered_staged_source_blocks_replay`，证明 `begin_commit` 之后被改写的暂存文件会在重放阶段（而不是只在原进程的提交前检查）被拒绝。
+- **协议治理入口**：新增 [RFC 流程与索引](docs/rfcs/README.md)，多签名与密钥轮换作为首个 RFC（Draft，目标 1.1.0）落地；`CONTRIBUTING.md` 写明 rc 只收修复、公开 API 新增进 minor、契约测试先行，PR 模板补对应勾选项。
+- **发布流水线平台解耦**：`release.yml` 的 publish 改到 `ubuntu-latest`（crate 本身是 Windows-only，用 `--no-verify` 发布，Windows 的 verify job 已完成构建与测试）；npm 步骤同步改为 bash。
+- **平台矩阵前置**：README 首屏与插件 crate 文档首段明确 Windows 10+ 桌面、三种安装形态与不支持项；`per-machine-install.md` 补 NSIS `perMachine` 最小配置与 UAC 路径示例。
+- **错误码与建议同表**：`EngineError` 文档说明 `code`/`action`/`user_action` 是三张穷尽匹配表，新增变体不补建议就无法编译；补测试覆盖每个变体至少有非空错误码与用户建议。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

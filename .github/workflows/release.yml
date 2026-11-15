@@ -50,7 +50,11 @@ jobs:
 
   publish:
     needs: verify
-    runs-on: windows-latest
+    # crates.io and npm publishing are platform-independent network steps. The
+    # crates themselves are Windows-only (the plugin has a compile_error! off
+    # Windows), so publishes use --no-verify: the Windows `verify` job already
+    # built, linted and tested this exact tree.
+    runs-on: ubuntu-latest
     environment: release
     steps:
       - uses: actions/checkout@v4
@@ -90,21 +94,25 @@ jobs:
             echo "timed out waiting for $crate $version" >&2
             return 1
           }
-          cargo publish -p delta-update-engine --locked
+          cargo publish -p delta-update-engine --locked --no-verify
           wait_for_crate delta-update-engine "$version"
-          cargo publish -p tauri-plugin-delta-update --locked
+          cargo publish -p tauri-plugin-delta-update --locked --no-verify
           wait_for_crate tauri-plugin-delta-update "$version"
-          cargo publish -p delta-update-cli --locked
+          cargo publish -p delta-update-cli --locked --no-verify
       - name: publish npm package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
         run: |
-          if (-not $env:NODE_AUTH_TOKEN) {
-            Write-Output "::error::NPM_TOKEN is not set; add the npm automation token as a repository secret"
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN is not set; add the npm automation token as a repository secret"
             exit 1
-          }
+          fi
           pnpm install --frozen-lockfile
           pnpm build
-          $version = (Get-Content packages/plugin-api/package.json -Raw | ConvertFrom-Json).version
-          $tag = if ($version -match '-') { 'next' } else { 'latest' }
-          pnpm --filter tauri-plugin-delta-update-api publish --access public --no-git-checks --tag $tag
+          version=$(node -p "require('./packages/plugin-api/package.json').version")
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          pnpm --filter tauri-plugin-delta-update-api publish --access public --no-git-checks --tag "$tag"

@@ -9,6 +9,9 @@
 - [ ] 未修改 `Config` 字段（若修改，已加 `#[serde(default)]` 并更新 `docs/reference/api.md`）
 - [ ] 未新增命令或 CLI 参数（若新增，已更新 `docs/cli-contract.md`，`cargo xtask contract-check` 通过）
 - [ ] 未改变退出码语义
+- [ ] 若目标是 `1.0.0-rc.x` 修复：未新增公开 API（新增 API 进 minor，见 `CONTRIBUTING.md`）
+- [ ] 若改协议、签名或错误码：先有 `docs/rfcs/` 下的 RFC，再有契约测试
+- [ ] 新增前端可见字段/事件：前端包已补兼容用例
 
 ## 验证
 
