@@ -167,7 +167,7 @@ delta-update inspect --journal-dir ... --export support-bundle.json
 
 签名类错误**不可自动重试**，因为它们不因时间或网络变化而消失。支持人员应优先核对密钥配对和签名流程。
 
-**轮换期间的 `E_SIGNATURE_NO_TRUSTED_KEY` 是预期的**：桥接版本尚未覆盖到的旧客户端只信任旧公钥，自然会拒绝新公钥签名的清单。它不是攻击信号——确认发布端按 [密钥轮换 runbook](release.md#133-密钥轮换的当前边界) 操作，等待客户端更新即可；不要因此回退签名密钥。
+**轮换期间的 `E_SIGNATURE_NO_TRUSTED_KEY` 是预期的**：桥接版本尚未覆盖到的旧客户端只信任旧公钥，自然会拒绝新公钥签名的清单。它不是攻击信号——确认发布端按 [密钥轮换 runbook](release.md#134-密钥轮换的当前边界) 操作，等待客户端更新即可；不要因此回退签名密钥。
 
 **`fetch_signature` 返回 `E_NETWORK_HTTP_4XX`**：说明客户端无法读取 `.minisig` 对象。按顺序检查 (a) bucket policy / 对象 ACL 是否允许读取 `latest.json.minisig`，(b) 使用预签名地址时 `signing_endpoint` 是否配置正确且未被改写，(c) 对象键是否与 `release --prefix` 一致。配置了 signing service 时 403 会自动刷新重试，通常不会以该错误暴露给用户。
 

@@ -741,3 +741,29 @@ git push origin v1.0.0-rc.4
 1. 用**当前签名密钥**发布桥接版本：二进制内嵌 `{旧, 新1, 新2}`，清单仍由旧密钥签名；确认目标用户版本分布已覆盖该桥接版本。
 2. 下一个版本起改用新密钥签名；运行 `delta-update verify --public-key <新公钥>` 确认对象可用。
 3. 观察一个发布周期后，再从内嵌集移除旧公钥；旧私钥离线归档，不删除历史签名。
+
+### 13.5 1.0.0 首次稳定版前置清单
+
+> **适用范围**：本节**仅适用于 `1.0.0` 首次稳定版发布**。`rc.5` 或 `1.1.0` 发布时跳过第 3、4、5 条（`latest` 已指向稳定版、无本地 rc tag 可清理），按常规发布流程执行。
+>
+> 每条标注 **[一次性]**（只对 1.0.0 成立，做完即失效）或 **[长期]**（每次发布都该做）。1.0.0 发布完成后，删除本节里的一次性条目，只留长期条目作为常规流程。
+
+| # | 动作 | 类型 |
+| --- | --- | --- |
+| 1 | 本地过一遍打包与校验：`cargo publish --dry-run -p delta-update-engine --locked` | [长期] |
+| 2 | CHANGELOG 的 `## [未发布]` 改写为 `## [1.0.0] - <日期>`：把 rc.4 之后的并行哈希、`..` 诊断、跨卷 e2e、故障注入断言、`--reason` 归入该条目 | [一次性] |
+| 3 | README 安装命令从 `@next` 改回裸包名（`pnpm add tauri-plugin-delta-update-api`） | [一次性] |
+| 4 | [versioning.md](../reference/versioning.md) 的 npm `latest` 例外段改写为"1.0 之后 `latest` 指向稳定版" | [一次性] |
+| 5 | 清理本地 `rc.1`–`rc.3` tag（远端只有 `rc.4`）：`git tag -d v1.0.0-rc.1 v1.0.0-rc.2 v1.0.0-rc.3`；`rc.4` 保留为已发布历史 | [一次性] |
+| 6 | 全量门禁：`cargo xtask ci`、`cargo xtask docs-check`、`cargo xtask version-sync`、`cargo run -p delta-update-e2e`、`pnpm typecheck && pnpm test`，全绿后打 `v1.0.0` 并推送 | [长期] |
+| 7 | **干净环境首装演练**（见下） | [一次性] |
+
+**第 1 条的坑**：本机 `~/.cargo/config.toml` 若把 `crates-io` 替换成国内镜像，`cargo publish` 会被直接拒绝——`crates-io is replaced with non-remote-registry source`。先临时移走镜像段，或用干净的 `CARGO_HOME` 再跑 dry-run，不要把它当成打包错误排查。
+
+**第 7 条：干净环境首装演练**。`rc.4` 发布失败的根因是 runner 的 `%TEMP%` 走 8.3 短名（`RUNNER~1`），而本机 `%TEMP%` 没有短名别名，所以本地与常规 CI 都是绿的；这类"同一目录两种拼写"的问题只在干净环境暴露。
+
+1. 启用 Windows Sandbox（`启用或关闭 Windows 功能` → 勾选 `Windows Sandbox` → 重启），把仓库复制进沙箱。
+2. 在沙箱里完整跑一遍 `real-test\run.ps1`：`serve --port 0` 的端口解析、update、confirm 都要走通。
+3. 用 `cmd /c for %I in ("%TEMP%") do @echo %~sI` 取当前 TEMP 的短名形式，把它赋给 `TEMP` / `TMP` 后复跑一遍。
+
+把"等第一个用户报告"换成一次可复现的证据。1.0 之后不必每次发布都做；当改动涉及路径比较（`long_path`、`install_root` / `journal_root` 校验、`serve` 路径解析）时再按需复跑。
