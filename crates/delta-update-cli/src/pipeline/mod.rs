@@ -140,17 +140,20 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                 / 2)
             .clamp(1, 4);
             let jobs = args.jobs.unwrap_or(default_jobs);
-            // qbsdiff holds source + target + a 4-byte suffix array per source
-            // byte + delta. The previous estimate used 4x; 6x covers the
-            // suffix array plus the diff/extra buffers on both sides.
-            let estimated_peak = (jobs as u64)
-                .saturating_mul(args.patch_max_file_size)
-                .saturating_mul(6);
+            let inputs =
+                patches::patch_input_sizes(&planned, from_scan, &to_scan, args.patch_max_file_size);
+            let estimated_peak = patches::estimated_peak_bytes(&inputs, jobs);
             output::info(&format!(
-                "patch jobs: {jobs} (max file {}, estimated peak ~{})",
-                human_bytes(args.patch_max_file_size),
+                "patch jobs: {jobs} ({} files, largest {}, estimated peak ~{})",
+                inputs.len(),
+                human_bytes(inputs.first().map_or(0, |(_, size)| *size)),
                 human_bytes(estimated_peak),
             ));
+            if args.dry_run {
+                for (path, size) in inputs.iter().take(10) {
+                    output::info(&format!("  patch input: {path} {}", human_bytes(*size)));
+                }
+            }
             let mut system = sysinfo::System::new();
             system.refresh_memory();
             let total_memory = system.total_memory();

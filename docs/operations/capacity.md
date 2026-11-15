@@ -57,7 +57,7 @@
 
 `2.5` 是按 qbsdiff 当前内存模型（`source + 解压 payload` 同时驻留）校准的经验值；升级 qbsdiff major 版本或更换容器编解码器后，需要重新验证 `patch_header` 基准与 `security_fault_injection` 中的解压上限测试，再决定是否调整。
 
-发布端按 `jobs × patch_max_file_size × 6` 估算峰值（覆盖 suffix array 与 diff/extra），超过物理内存 75% 会告警。**小内存 CI（< 4 GiB）建议 `--jobs 1`，或把 `--patch-max-file-size` 降到 32 MiB**；告警不阻断发布，但 OOM 会。
+发布端按**逐文件槽位**估算峰值：每个并行槽位同时只处理一个文件，槽位峰值是该文件较大一侧的 6 倍（覆盖 suffix array 与 diff/extra）；整个池子的峰值是最大的 `jobs` 个输入之和。不可压缩扩展名与超过 `--patch-max-file-size` 的文件不会进入 qbsdiff，也不计入。超过物理内存 75% 会告警。**小内存 CI（< 4 GiB）建议 `--jobs 1`，或把 `--patch-max-file-size` 降到 32 MiB**；告警不阻断发布，但 OOM 会。`--dry-run` 会打印前 10 个最大补丁输入，便于直接调整这两个参数。
 
 **进程级峰值不是单文件值**：`prepare` 默认最多 `max_concurrent_downloads = 4` 个文件同时处理，补丁应用也在这 4 路并发内。最坏情况下进程峰值约为 **并发数 × 单文件预算**（默认 4 × 640 MB）。对包含大补丁的发布，建议把 `max_concurrent_downloads` 降到 1–2，或把最大的 sidecar 强制标记为 `full`；小文件为主的常规发布保持默认值即可。
 

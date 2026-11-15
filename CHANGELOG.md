@@ -27,6 +27,9 @@
 - **发布顺序收紧**：`publish_manifests` 改为 version manifest 先写，`latest` 签名与 `latest` manifest 紧挨着写 —— 版本化清单的中间态是“清单无签名”（错误清晰），`latest` 的不匹配窗口缩到最小。
 - **发布报告改为净传输量**：`release --pipeline` 报告新增 `release_kind`（`initial` / `incremental` / `rollback`），并把指标拆成 `client`（`full_download_bytes`、`net_savings_bytes`）与 `publish`（`uploaded_full_bytes` / `uploaded_delta_bytes` / `reused_full_bytes` / `reused_full_blobs`）两个子对象。`patched_full` 只统计实际走 delta 的文件，回退 full 的 Modified 文件不计入；`changed_bytes` 只作全量基数。
 - **RFC 0001 推进为 Accepted**：动机改为“轮换窗口”，补 S7 的真实不匹配窗口分析（`publish_manifests` 当前的 PUT 顺序与客户端不重试的事实）、单对象信封（方案 A，新键避免 flag day）、客户端重试（方案 B，1.0.x 兜底）与双键发布语义（写入顺序、旧键失败不回滚信封、旧键退役条件）；测试计划按 `Detached` / `Envelope` 分组并标注 1.0.1 / 1.1.0 目标版本。
+- **发布端内存估算改为逐文件槽位**：峰值按“最大的 `jobs` 个补丁输入之和 × 6”计算，不再用 `jobs × patch_max_file_size`；不可压缩扩展名与超过上限的文件不会进入 qbsdiff，也不计入。`--dry-run` 额外打印前 10 个最大输入，便于直接调 `--jobs` / `--patch-max-file-size`。
+- **`init --write` 校验 capability 覆盖**：写出 `capabilities/delta-update.json` 后检查它是否真的授予 `delta-update:*`、是否覆盖 `tauri.conf.json` 里的所有窗口；缺权限或漏窗口时打印要改的文件与确切数组项，避免运行时只看到“command not allowed”。
+- **依赖自动升级**：新增 `.github/dependabot.yml`，覆盖 cargo、npm 与 GitHub Actions。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

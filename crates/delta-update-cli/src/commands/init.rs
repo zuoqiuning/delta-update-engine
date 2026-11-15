@@ -133,6 +133,7 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
     });
     if args.write {
         crate::scaffold::write_capability(&args.dir, &capabilities)?;
+        report_capability_coverage(&args.dir, &args.permission_set);
     }
 
     println!(
@@ -159,6 +160,73 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         println!("\n提示：endpoint 仍是占位值，请用 --endpoint 重新生成。");
     }
     Ok(())
+}
+
+/// `init --write` owns `capabilities/delta-update.json`. If that file was left
+/// untouched by an earlier run (or only covers some windows), the commands are
+/// denied at runtime with no hint, so say exactly what to edit.
+fn report_capability_coverage(dir: &Path, permission_set: &str) {
+    let path = dir.join("src-tauri/capabilities/delta-update.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    let grants = value["permissions"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|item| item.starts_with("delta-update:"))
+    });
+    if !grants {
+        println!(
+            "警告：{} 的 `permissions` 缺少 delta-update 权限，前端调用会被拒绝；把 \"delta-update:{permission_set}\" 加入该数组。",
+            path.display()
+        );
+        return;
+    }
+    let covered: Vec<&str> = value["windows"]
+        .as_array()
+        .map(|windows| windows.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let missing: Vec<String> = window_labels(dir)
+        .into_iter()
+        .filter(|label| !covered.contains(&label.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        println!(
+            "警告：{} 只覆盖窗口 {covered:?}；窗口 {missing:?} 的更新命令会被拒绝。把缺失的标签加入该文件的 `windows`，或把 \"delta-update:{permission_set}\" 加到覆盖这些窗口的 capability。",
+            path.display()
+        );
+    }
+}
+
+/// Window labels from `tauri.conf.json`. Tauri creates a `main` window when the
+/// config lists none.
+fn window_labels(dir: &Path) -> Vec<String> {
+    let Some(mut windows) = std::fs::read(dir.join("src-tauri/tauri.conf.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|json| json.pointer("/app/windows").cloned())
+        .and_then(|windows| windows.as_array().cloned())
+    else {
+        return vec!["main".to_string()];
+    };
+    let mut labels: Vec<String> = Vec::new();
+    for label in windows
+        .iter_mut()
+        .filter_map(|window| window.get("label"))
+        .filter_map(Value::as_str)
+    {
+        if !labels.iter().any(|existing| existing == label) {
+            labels.push(label.to_string());
+        }
+    }
+    if labels.is_empty() {
+        labels.push("main".to_string());
+    }
+    labels
 }
 
 fn detect(dir: &Path) -> Option<Existing> {

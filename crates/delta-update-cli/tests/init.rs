@@ -209,6 +209,68 @@ fn write_requires_a_tauri_project() {
 }
 
 #[test]
+fn write_warns_when_a_window_is_not_covered() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src-tauri")).unwrap();
+    std::fs::write(
+        dir.path().join("src-tauri/tauri.conf.json"),
+        r#"{"app":{"windows":[{"label":"main"},{"label":"settings"}]}}"#,
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args([
+            "init",
+            "--write",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--endpoint",
+            "https://example.com/manifests/latest.json",
+            "--public-key",
+            KEY,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("只覆盖窗口"), "{text}");
+    assert!(text.contains("settings"), "{text}");
+}
+
+#[test]
+fn write_reports_an_existing_capability_without_the_permission() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src-tauri/capabilities")).unwrap();
+    std::fs::write(
+        dir.path().join("src-tauri/capabilities/delta-update.json"),
+        r#"{"identifier":"delta-update","windows":["main"],"permissions":["core:default"]}"#,
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args([
+            "init",
+            "--write",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--endpoint",
+            "https://example.com/manifests/latest.json",
+            "--public-key",
+            KEY,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("缺少 delta-update 权限"), "{text}");
+    assert!(text.contains("delta-update:manage"), "{text}");
+}
+
+#[test]
 fn requires_a_public_key() {
     let output = Command::cargo_bin("delta-update")
         .unwrap()

@@ -37,6 +37,54 @@ impl PatchCandidate {
     }
 }
 
+/// Memory held by one patch job, relative to the larger side of the file.
+/// qbsdiff keeps source, target, a four-byte suffix array per source byte and
+/// the delta; 6x covers the suffix array plus diff/extra buffers.
+pub const PATCH_MEMORY_FACTOR: u64 = 6;
+
+/// Files that will actually reach qbsdiff, largest first.
+///
+/// Incompressible extensions and files above `max_file_size` are skipped before
+/// any of them is read, so counting them in the peak estimate would
+/// over-provision memory (and under-provision nothing).
+pub fn patch_input_sizes<'a>(
+    plan: &'a [PlannedFile],
+    from_scan: &crate::pipeline::scan::ScanResult,
+    to_scan: &crate::pipeline::scan::ScanResult,
+    max_file_size: u64,
+) -> Vec<(&'a str, u64)> {
+    let mut sizes: Vec<(&str, u64)> = plan
+        .iter()
+        .filter(|file| file.kind == ChangeKind::Modified && !is_incompressible(&file.path))
+        .filter_map(|file| {
+            let source = from_scan.get(&file.path)?;
+            let target = to_scan.get(&file.path)?;
+            if target.size == 0 || source.size > max_file_size || target.size > max_file_size {
+                return None;
+            }
+            Some((file.path.as_str(), source.size.max(target.size)))
+        })
+        .collect();
+    sizes.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    sizes
+}
+
+/// Peak memory of the whole pool.
+///
+/// Each job processes one file at a time, so a slot's peak is its largest
+/// input. The pool peak is therefore the sum of the `jobs` largest inputs, not
+/// `jobs × patch_max_file_size`: a release with one big file and many small
+/// ones should not be estimated as if every slot held a big file.
+pub fn estimated_peak_bytes(sizes: &[(&str, u64)], jobs: usize) -> u64 {
+    let jobs = jobs.max(1);
+    sizes
+        .iter()
+        .take(jobs)
+        .map(|(_, size)| *size)
+        .fold(0, u64::saturating_add)
+        .saturating_mul(PATCH_MEMORY_FACTOR)
+}
+
 /// Generate `.tdp` candidates for every modified file that is worth patching.
 /// Files that are already compressed or too large are reported as skipped so
 /// `--require-delta` and verbose output stay accurate.
@@ -157,6 +205,46 @@ mod tests {
     use crate::ignore::DeltaIgnore;
     use crate::pipeline::plan::plan;
     use crate::pipeline::scan::scan;
+
+    #[test]
+    fn peak_is_the_sum_of_the_largest_inputs_per_slot() {
+        let sizes = [("a", 100_u64), ("b", 90), ("c", 40), ("d", 1)];
+        assert_eq!(
+            estimated_peak_bytes(&sizes, 2),
+            (100 + 90) * PATCH_MEMORY_FACTOR
+        );
+        assert_eq!(estimated_peak_bytes(&sizes, 1), 100 * PATCH_MEMORY_FACTOR);
+        assert_eq!(estimated_peak_bytes(&sizes, 8), 231 * PATCH_MEMORY_FACTOR);
+        assert_eq!(estimated_peak_bytes(&[], 4), 0);
+    }
+
+    #[test]
+    fn patch_inputs_skip_files_that_never_reach_qbsdiff() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        let to = dir.path().join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        // Oversized: above the 1 KiB limit, never read by qbsdiff.
+        std::fs::write(from.join("big.bin"), vec![b'a'; 2048]).unwrap();
+        std::fs::write(to.join("big.bin"), vec![b'a'; 2048]).unwrap();
+        // Incompressible extension.
+        std::fs::write(from.join("icon.png"), b"old-icon").unwrap();
+        std::fs::write(to.join("icon.png"), b"new-icon").unwrap();
+        // Eligible.
+        std::fs::write(from.join("small.bin"), b"aaaa").unwrap();
+        std::fs::write(to.join("small.bin"), b"bbbb").unwrap();
+
+        let ignore = DeltaIgnore::default();
+        let from_scan = scan(&from, &ignore).unwrap();
+        let to_scan = scan(&to, &ignore).unwrap();
+        let planned = plan(Some(&from_scan), &to_scan);
+        let inputs = patch_input_sizes(&planned, &from_scan, &to_scan, 1024);
+        assert_eq!(
+            inputs.iter().map(|(path, _)| *path).collect::<Vec<_>>(),
+            ["small.bin"]
+        );
+    }
 
     #[test]
     fn generates_a_container_that_round_trips() {
