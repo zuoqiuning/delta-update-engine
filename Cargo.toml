@@ -9,8 +9,6 @@ edition = "2021"
 rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/zuoqiuning/delta-update-engine"
-homepage = "https://github.com/zuoqiuning/delta-update-engine"
-authors = ["delta-update-engine contributors"]
 
 [workspace.dependencies]
 # serialization / errors

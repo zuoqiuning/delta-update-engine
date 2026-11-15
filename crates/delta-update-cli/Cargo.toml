@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Build-side release CLI for delta-update-engine (Windows targets)"
 readme = "README.md"
 keywords = ["tauri", "updater", "delta", "release", "cli"]

@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Windows-only Tauri 2 plugin for file-level delta updates"
 readme = "README.md"
 keywords = ["tauri", "updater", "delta", "plugin", "update"]
