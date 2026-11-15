@@ -25,6 +25,11 @@ jobs:
           cargo xtask ci 2>&1 | Tee-Object -FilePath ci.log
           if ($LASTEXITCODE -ne 0) {
             Get-Content ci.log -Tail 200 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+            # Annotations are the only failure output readable without the raw
+            # job log (REST API), and they show up inline on the pull request.
+            Select-String -Path ci.log -Pattern 'error(\[E\d+\])?:|panicked at|^---- |^test result: FAILED|xtask failed' |
+              Select-Object -First 10 |
+              ForEach-Object { Write-Output "::error::$($_.Line)" }
             exit 1
           }
       - name: docs links
