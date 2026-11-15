@@ -27,7 +27,9 @@ function Wait-ForServePort([string]$log, $process) {
             throw "HTTP 服务启动失败（退出码 $($process.ExitCode)）"
         }
         if (Test-Path $log) {
-            $match = [regex]::Match((Get-Content $log -Raw), 'http://\S+:(\d+)')
+            # Anchor on the banner ("serving <dir> at http://host:port") so a
+            # second URL in the log cannot be mistaken for the listener.
+            $match = [regex]::Match((Get-Content $log -Raw), 'at http://[^:\s]+:(\d+)')
             if ($match.Success) {
                 return [int]$match.Groups[1].Value
             }
