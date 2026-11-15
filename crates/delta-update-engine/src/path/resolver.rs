@@ -47,8 +47,11 @@ pub fn resolve_install_root(
 ///
 /// Residual boundary: a tail that does not exist yet keeps its original
 /// spelling, so a short name *below* the last existing directory is not
-/// expanded. Staging and journal roots exist by the time their contents matter,
-/// and install roots always exist, so this only affects freshly typed paths.
+/// expanded, and a `..` component there is preserved rather than resolved.
+/// Callers that compare this result must reject `..` themselves
+/// ([`crate::apply::applier`] does, and both sides of every comparison here are
+/// roots the caller already validated); a leftover `..` makes the comparison
+/// fail closed instead of matching a different directory.
 pub fn long_path(path: &Path) -> PathBuf {
     if let Ok(resolved) = dunce::canonicalize(path) {
         return resolved;
@@ -66,10 +69,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_path_normalizes_a_verbatim_prefix() {
+    fn long_path_strips_a_verbatim_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let verbatim = PathBuf::from(format!("\\\\?\\{}", dir.path().display()));
-        assert_eq!(long_path(&verbatim), long_path(dir.path()));
+        let resolved = long_path(&verbatim);
+        assert_eq!(resolved, dunce::canonicalize(dir.path()).unwrap());
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]
