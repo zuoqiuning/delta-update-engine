@@ -113,6 +113,19 @@ pub fn apply_commit_verified(
     commit_id: &str,
     keys: &[String],
 ) -> Result<CommitStatus, EngineError> {
+    apply_commit_verified_with_fs(journal_root, commit_id, keys, &RealFs)
+}
+
+/// Same as [`apply_commit_verified`] with an injected filesystem.
+///
+/// Tests use it to force the cross-volume copy fallback on any volume without
+/// changing the verified production sequence.
+pub fn apply_commit_verified_with_fs(
+    journal_root: &Path,
+    commit_id: &str,
+    keys: &[String],
+    fs: &dyn FileSystem,
+) -> Result<CommitStatus, EngineError> {
     let config = state::read_apply_config(journal_root)?.ok_or(EngineError::NotPrepared)?;
     if config.commit_id != commit_id {
         return Err(EngineError::JournalCorrupt(
@@ -123,7 +136,7 @@ pub fn apply_commit_verified(
         .map_err(|err| EngineError::JournalCorrupt(format!("read journal: {err}")))?;
     let journal = Journal::decode(&bytes)?;
     crate::journal::verify::verify_commit_journal(journal_root, &config, &journal, keys, false)?;
-    DirectWriter.apply_decoded_journal_with_fs(&config, &journal, &RealFs)
+    DirectWriter.apply_decoded_journal_with_fs(&config, &journal, fs)
 }
 
 /// Execute the journal that `begin_commit` persisted.

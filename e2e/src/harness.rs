@@ -293,6 +293,29 @@ pub fn apply(engine: &Engine, prepared: &PreparedUpdate) -> Result<PendingCommit
     }
 }
 
+/// Same as [`apply`], but the journal runs against an injected filesystem so a
+/// scenario can force the cross-volume copy fallback on any volume.
+pub fn apply_with_fs(
+    engine: &Engine,
+    prepared: &PreparedUpdate,
+    fs: &dyn delta_update_engine::fs::FileSystem,
+) -> Result<PendingCommit, String> {
+    let pending = engine
+        .begin_commit(prepared)
+        .map_err(|err| format!("begin_commit: {err}"))?;
+    let status = delta_update_engine::apply::apply_commit_verified_with_fs(
+        &engine.config().journal_root,
+        &pending.commit_id,
+        &engine.config().signing_public_keys,
+        fs,
+    )
+    .map_err(|err| format!("apply journal: {err}"))?;
+    match status {
+        CommitStatus::Completed { .. } => Ok(pending),
+        other => Err(format!("unexpected commit status: {other:?}")),
+    }
+}
+
 pub fn assert_root(root: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
     for (path, expected) in files {
         let actual = std::fs::read(root.join(path)).map_err(|err| format!("read {path}: {err}"))?;

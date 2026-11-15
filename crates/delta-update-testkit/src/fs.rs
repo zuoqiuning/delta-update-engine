@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use delta_update_engine::fs::{FileSystem, RealFs};
@@ -14,6 +15,7 @@ pub struct FaultyFs {
     inner: RealFs,
     fail: Mutex<Option<(PathBuf, io::ErrorKind)>>,
     corrupt: Mutex<Option<PathBuf>>,
+    fired: AtomicBool,
 }
 
 impl FaultyFs {
@@ -34,6 +36,13 @@ impl FaultyFs {
         next.corrupt = Mutex::new(Some(to.into()));
         next
     }
+
+    /// Whether a fault was actually injected. A test that expects the fallback
+    /// path must assert this: an unmatched target would otherwise pass without
+    /// exercising anything.
+    pub fn fired(&self) -> bool {
+        self.fired.load(Ordering::SeqCst)
+    }
 }
 
 impl FileSystem for FaultyFs {
@@ -43,6 +52,7 @@ impl FileSystem for FaultyFs {
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         if let Some(kind) = take_fault(&self.fail, to) {
+            self.fired.store(true, Ordering::SeqCst);
             return Err(io::Error::new(
                 kind,
                 format!("injected failure renaming to {}", to.display()),
