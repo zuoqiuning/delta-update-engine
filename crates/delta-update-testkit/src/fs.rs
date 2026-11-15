@@ -60,6 +60,7 @@ impl FileSystem for FaultyFs {
         }
         self.inner.rename(from, to)?;
         if take_target(&self.corrupt, to).is_some() {
+            self.fired.store(true, Ordering::SeqCst);
             std::fs::write(to, b"corrupted-after-rename")
                 .map_err(|err| io::Error::other(format!("corrupt {}: {err}", to.display())))?;
         }

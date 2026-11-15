@@ -118,8 +118,11 @@ pub fn apply_commit_verified(
 
 /// Same as [`apply_commit_verified`] with an injected filesystem.
 ///
-/// Tests use it to force the cross-volume copy fallback on any volume without
-/// changing the verified production sequence.
+/// **Only for tests and fault injection.** Production must call
+/// [`apply_commit_verified`]: a caller that supplies its own `FileSystem` can
+/// bypass the real disk entirely, and the journal is then not applied to the
+/// install tree.
+#[doc(hidden)]
 pub fn apply_commit_verified_with_fs(
     journal_root: &Path,
     commit_id: &str,

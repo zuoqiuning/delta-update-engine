@@ -27,6 +27,7 @@ struct MockState {
     active: AtomicUsize,
     max_active: AtomicUsize,
     delay_ms: AtomicU64,
+    faults: AtomicU64,
 }
 
 /// In-process HTTP fixture for check/prepare tests.
@@ -145,6 +146,15 @@ impl MockServer {
     pub fn reset_max_concurrent(&self) {
         self.state.max_active.store(0, Ordering::SeqCst);
     }
+
+    /// How many injected faults (`fail_next`, `forbid_next`, `cut_next`, an
+    /// expired presigned URL) were actually served.
+    ///
+    /// A test that expects the client to recover from a fault must assert this:
+    /// an unmatched path would let it pass without exercising anything.
+    pub fn faults_served(&self) -> u64 {
+        self.state.faults.load(Ordering::SeqCst)
+    }
 }
 
 struct ActiveGuard<'a>(&'a MockState);
@@ -203,12 +213,15 @@ async fn serve(State(state): State<Arc<MockState>>, request: Request) -> Respons
         .query()
         .is_some_and(|query| query.split('&').any(|part| part == "sig=expired"))
     {
+        state.faults.fetch_add(1, Ordering::SeqCst);
         return response(StatusCode::FORBIDDEN, Vec::new(), None);
     }
     if take(&state.fail_5xx, &path) > 0 {
+        state.faults.fetch_add(1, Ordering::SeqCst);
         return response(StatusCode::INTERNAL_SERVER_ERROR, Vec::new(), None);
     }
     if take(&state.forbidden, &path) > 0 {
+        state.faults.fetch_add(1, Ordering::SeqCst);
         return response(StatusCode::FORBIDDEN, Vec::new(), None);
     }
     let Some(body) = state.files.get(&path).cloned() else {
@@ -218,6 +231,7 @@ async fn serve(State(state): State<Arc<MockState>>, request: Request) -> Respons
     // Announce the full length but close the body early once, so the client
     // sees a retryable transport error and resumes with a Range request.
     if let Some(at) = take_cut(&state.cut_at, &path) {
+        state.faults.fetch_add(1, Ordering::SeqCst);
         let prefix = body[..at.min(body.len())].to_vec();
         return truncated_response(prefix, body.len() as u64);
     }

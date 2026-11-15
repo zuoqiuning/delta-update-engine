@@ -102,6 +102,7 @@ fn disk_full_during_commit_is_retried_on_next_start() {
     let error = DirectWriter
         .apply_journal_with_fs(&config, &pending.journal_path, &faulty)
         .unwrap_err();
+    assert!(faulty.fired(), "the injected rename fault never fired");
     assert_eq!(error.code(), "E_JOURNAL_REPLAY_FAILED");
     assert_failed_status(&fixture);
     // The backup was taken before the failing place.
@@ -137,6 +138,7 @@ fn permission_denied_during_commit_is_retried_on_next_start() {
     let error = DirectWriter
         .apply_journal_with_fs(&config, &pending.journal_path, &faulty)
         .unwrap_err();
+    assert!(faulty.fired(), "the injected rename fault never fired");
     assert_eq!(error.code(), "E_JOURNAL_REPLAY_FAILED");
     match state::read_commit_status(&fixture.journal()).unwrap() {
         Some(CommitStatus::Failed { message, .. }) => {
@@ -165,6 +167,7 @@ fn corrupted_target_after_place_rolls_back() {
     let error = DirectWriter
         .apply_journal_with_fs(&config, &pending.journal_path, &faulty)
         .unwrap_err();
+    assert!(faulty.fired(), "the injected corruption never fired");
     assert_eq!(error.code(), "E_JOURNAL_REPLAY_FAILED");
     assert_failed_status(&fixture);
     assert!(!app.exists(), "the corrupted target must be removed");

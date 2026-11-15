@@ -132,6 +132,10 @@ async fn resumes_after_mid_body_disconnect() {
 
     let staged = std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap();
     assert_eq!(staged, content);
+    assert!(
+        fixture.server.faults_served() > 0,
+        "the injected mid-body cut never fired"
+    );
     let ranges = fixture.server.ranges();
     assert!(
         ranges
@@ -155,6 +159,10 @@ async fn range_unsupported_falls_back_to_full_download() {
 
     let staged = std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap();
     assert_eq!(staged, content);
+    assert!(
+        fixture.server.faults_served() > 0,
+        "the injected mid-body cut never fired"
+    );
     assert!(
         fixture
             .server

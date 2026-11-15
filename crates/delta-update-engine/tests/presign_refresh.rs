@@ -111,6 +111,10 @@ async fn refreshes_expired_signed_url() {
         b"new"
     );
     assert!(
+        fixture.server.faults_served() > 0,
+        "the expired presigned URL was never served"
+    );
+    assert!(
         signing_calls(&fixture.server) >= 4,
         "expected a refresh for the expired URL"
     );
