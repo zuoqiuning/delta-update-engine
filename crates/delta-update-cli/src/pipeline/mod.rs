@@ -995,6 +995,29 @@ fn migration_guide(
          +     .plugin(tauri_plugin_delta_update::init())\n\
          -     .run(tauri::generate_context!())\n\
          +     .run_with_delta_update(tauri::generate_context!())\n```\n\n\
+         ## 5. 前端 API 对照\n\n\
+         | `@tauri-apps/plugin-updater` | delta-update |\n\
+         | --- | --- |\n\
+         | `check()` → `Update \\| null` | `check()` → `CheckResult`（`available` / `version` / `download_bytes`） |\n\
+         | `update.downloadAndInstall(cb)` | `prepare()`；进度由 `delta-update://state` 事件推送 |\n\
+         | `update.install()` / `relaunch()` | `restartToApply()`：worker 替换文件后重启 |\n\
+         | `onUpdaterEvent(cb)` | `listen(STATE_EVENT)` 或 `createUpdateController()` |\n\
+         | `update.close()` | 无对应：prepare 产物由 journal 与 staging 管理 |\n\
+         | （无） | `cancelPrepare()` 在下载/准备阶段取消 |\n\
+         | （无） | `confirmHealthy()` 新版本首次启动自检，失败自动回滚 |\n\n\
+         最小接入（框架无关）：\n\n\
+         ```ts\n\
+         import {{ createUpdateController }} from 'tauri-plugin-delta-update-api';\n\n\
+         const updater = createUpdateController();\n\
+         await updater.start();              // 订阅 delta-update://state 并读取快照\n\n\
+         const result = await updater.check();\n\
+         if (result.available) {{\n\
+         \x20\x20await updater.prepare();\n\
+         \x20\x20await updater.restart();       // 需要用户确认时先弹窗，再调用\n\
+         }}\n\
+         ```\n\n\
+         React 项目可直接用 `useUpdater()`（`tauri-plugin-delta-update-api/react`），\n\
+         它返回同一份状态与命令，无需自己订阅事件。\n\n\
          ## 检查清单\n\n\
          - 删除 `plugins.updater` 配置块与 `tauri-plugin-updater` 依赖\n\
          - 删除默认 capability 里的 `updater:default` 权限\n\
@@ -2258,5 +2281,31 @@ mod tests {
     fn formats_bytes_for_humans() {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(1536), "1.5 KB");
+    }
+
+    /// The guide is printed and written to disk from this one string, so a
+    /// missing row here would silently disappear from both.
+    #[test]
+    fn migration_guide_maps_the_frontend_api() {
+        let guide = migration_guide(
+            Path::new("src-tauri/tauri.conf.json"),
+            &serde_json::json!({"plugins": {"delta-update": {}}}),
+            &serde_json::json!({"identifier": "delta-update"}),
+        )
+        .unwrap();
+        for expected in [
+            "## 5. 前端 API 对照",
+            "`update.downloadAndInstall(cb)`",
+            "`restartToApply()`",
+            "`createUpdateController()`",
+            "`confirmHealthy()`",
+            "`useUpdater()`",
+            "tauri-plugin-delta-update-api",
+        ] {
+            assert!(guide.contains(expected), "guide is missing {expected}");
+        }
+        // An unescaped brace would mean a `format!` placeholder leaked into the
+        // generated TypeScript snippet.
+        assert!(!guide.contains("{{"), "guide has an unrendered brace");
     }
 }

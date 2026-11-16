@@ -888,7 +888,7 @@ migrate:
 
 `verify` 从对象存储重新下载清单、验签、抽样下载补丁、应用补丁、校验目标哈希。`doctor` 额外校验：所有备用端点的版本一致性、清单字段合法性、对象可访问性与字节数；`doctor --check-config` 不访问网络，直接使用引擎的配置 schema 校验 `plugins.delta-update`，因此 CI 无需安装应用。`doctor --watch <SECONDS>` 按 `--interval` 反复执行同一套检查，适合发布后 5–10 分钟的 CDN 传播观察窗口；任何一轮失败都会让整个命令失败。
 
-`migrate --write` 只创建两个新文件（capability 与 `delta-update-migration.md`），**不修改** `tauri.conf.json`、`Cargo.toml` 或 `main.rs`；已存在的文件一律跳过，因此不需要备份或冲突合并。
+`migrate --write` 只创建两个新文件（capability 与 `delta-update-migration.md`），**不修改** `tauri.conf.json`、`Cargo.toml` 或 `main.rs`；已存在的文件一律跳过，因此不需要备份或冲突合并。迁移指南包含五节：配置替换、capability、Cargo 依赖、`main.rs` diff，以及官方前端 API（`check()` / `downloadAndInstall` / `relaunch` / `onUpdaterEvent`）到 `check()` / `prepare()` / `restartToApply()` / `listen(STATE_EVENT)` 的对照表与一段可直接粘贴的 `createUpdateController()` 片段。
 
 `inspect --journal-dir` 离线读取 journal 目录，输出待处理提交、PREPARED、回滚与损坏状态；退出码 `1` 表示未完成 Journal（可重启恢复），`2` 表示状态损坏（需人工介入）。
 
