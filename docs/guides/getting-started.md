@@ -65,6 +65,8 @@ minisign -G -p release-2.pub -s release-2.key
 
 两把公钥在首次发布时就要写进客户端配置。`tauri.conf.json` 在编译期被嵌入二进制，运行期不会从磁盘重新读取，因此它等价于“编译期内嵌的信任锚”。**不要等到需要轮换时才引入第二把**——旧客户端不会信任它，轮换将无法通过更新通道完成。
 
+取公钥不必手工复制：`delta-update init --signing-key release-1.key --signing-key release-2.key` 会从私钥派生公钥并填入 `signing_public_keys`。私钥必须带密码（`minisign -G` 默认如此），CLI 从 `MINISIGN_PASSWORD` 读取密码；用 `minisign -W` 生成的无密码密钥无法被读取，请重新生成。
+
 **③ 一个构建侧 CLI**
 
 `delta-update-cli` 在你的 CI 中运行，负责扫描产物、生成清单、生成补丁、签名、上传。没有它，增量更新无法自动化。

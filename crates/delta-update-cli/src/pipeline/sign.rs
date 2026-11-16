@@ -9,10 +9,25 @@ pub struct DetachedSignature {
 
 /// Load a minisign secret key from a file. The password, when needed, comes
 /// from `MINISIGN_PASSWORD` so it never appears in the process arguments.
+///
+/// `password: None` means "prompt on stdin", which would hang CI, so it is never
+/// passed. Unencrypted keys (`minisign -W`) store an all-zero checksum that this
+/// crate cannot validate, hence the explicit hint on a verify error.
 pub fn load_secret_key(key_path: &Path) -> anyhow::Result<minisign::SecretKey> {
     let password = std::env::var("MINISIGN_PASSWORD").unwrap_or_default();
-    minisign::SecretKey::from_file(key_path, Some(password))
-        .with_context(|| format!("load secret key {}", key_path.display()))
+    // Read first so a missing file reports "read ...", not a misleading
+    // password error; every remaining failure comes from the key box itself.
+    let text = std::fs::read_to_string(key_path)
+        .with_context(|| format!("read the minisign secret key {}", key_path.display()))?;
+    let password_missing = password.is_empty();
+    minisign::SecretKey::from_box(text.into(), Some(password)).map_err(|error| {
+        let hint = if password_missing {
+            "set MINISIGN_PASSWORD if this key is password protected; keys created with `minisign -W` have no password and cannot be read, regenerate with `minisign -G`"
+        } else {
+            "check MINISIGN_PASSWORD (it must match the key)"
+        };
+        anyhow::Error::new(error).context(format!("{hint}: {}", key_path.display()))
+    })
 }
 
 /// Sign the raw manifest bytes. The signature covers the bytes on disk, not a

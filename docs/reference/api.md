@@ -920,6 +920,7 @@ init:
 --dir <DIR>             项目根目录，默认 .
 --endpoint <URL>        清单地址；省略时打印占位符
 --public-key <KEY>      受信公钥，可重复（轮换用）；至少一把
+--signing-key <PATH>    从私钥派生公钥，可重复；免去手工复制 base64
 --channel <NAME>        默认 stable
 --write                 生成 src-tauri/capabilities/delta-update.json（不改 tauri.conf.json）
 --permission-set <SET>  manage（默认）/ monitor / default

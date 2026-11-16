@@ -46,6 +46,8 @@
 - **`inspect --bundle` 报出最新 worker 事件**：JSON 增加 `worker_event`（`name` / `ts` / 失败时的 `msg`），人类输出在汇总行后附一行；`inspect --journal-dir` 同样在末尾打印这条事件，工单与 CI 不必解析 `worker.log` 就能看到这次是成功还是失败。旧版纯文本日志下该字段为 `null`。
 - **后台自动准备失败不再静默**：自动检查后触发的 `prepare` 失败原本被 `let _ =` 丢弃，现在写 `tracing::warn`（状态早已广播给前端），宿主日志里能看到原因；发布路径里三处“刚赋过 Some 又 unwrap”的写法改为局部变量，去掉可 panic 的分支。
 - **补齐 CLI 参数参考与前端守卫测试**：`docs/reference/api.md` 补上 `release --additional-signing-key` / `--notes-file` / `--mandatory` / `--min-supported`、`doctor --simulate-failure` / `--reason`、`init` 与 `report --json`，并把 `--jobs` 默认值改为实际的 `min(max(核数/2, 1), 4)`；`packages/plugin-api` 新增 `types.test.ts`，覆盖 `isCommitted` / `isRolledBack` / `isFailed` / `isUpdateRequired` / `isBusy` 五个此前只有类型检查的状态守卫。
+- **`init --signing-key` 免去手工复制公钥**：传入私钥路径即可派生公钥并写入 `signing_public_keys`，可重复以一次写入轮换用的多把；`init` 的缺失公钥提示同步改为这条一步路径。
+- **私钥加载报错可读**：`--key` / `--signing-key` 读不到密钥时不再只说 “Wrong password”，而是提示设置 `MINISIGN_PASSWORD`，并说明 `minisign -W` 生成的无密码密钥无法被读取、需用 `minisign -G` 重新生成。密钥文件缺失则报 “read …”，不再被密码错误掩盖。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

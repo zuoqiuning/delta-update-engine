@@ -22,6 +22,9 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
     let mut notes = Vec::new();
     let mut endpoint = args.endpoint.clone();
     let mut keys = args.public_keys.clone();
+    for path in &args.signing_keys {
+        keys.push(derive_public_key(path)?);
+    }
 
     if let Some(existing) = &existing {
         if endpoint.is_none() {
@@ -61,7 +64,7 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
     let endpoint_is_placeholder = endpoint == PLACEHOLDER_ENDPOINT;
 
     if !keys.is_empty() {
-        let from_args = !args.public_keys.is_empty();
+        let from_args = !args.public_keys.is_empty() || !args.signing_keys.is_empty();
         for key in &keys {
             if validate_public_key(key).is_err() {
                 if from_args {
@@ -77,8 +80,8 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         anyhow::bail!(
             "at least one --public-key is required; a placeholder key would make the app fail to start.\n\
              1) 生成密钥：minisign -G -p release.pub -s release.key\n\
-             2) 取出公钥：delta-update key-info --key release.key\n\
-             3) 重跑：delta-update init --public-key <公钥>"
+             2) 重跑：delta-update init --signing-key release.key（自动派生公钥）\n\
+             或先 `delta-update key-info --key release.key`，再用 --public-key <公钥>"
         );
     }
 
@@ -96,7 +99,7 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
     }
 
     println!("下一步（4 项）：");
-    println!("1. 生成密钥：minisign -G -p release.pub -s release.key；用 `delta-update key-info --key release.key` 取出公钥填入 signing_public_keys，私钥离线保管。");
+    println!("1. 生成密钥：minisign -G -p release.pub -s release.key；再执行 `delta-update init --signing-key release.key` 自动派生公钥，私钥离线保管。");
     println!("2. 用 `BuilderExt` 接入：`.plugin(tauri_plugin_delta_update::init()).run_with_delta_update(context)`；它会先处理 worker 模式，避免顺序漏接。");
     println!("   fn main() {{");
     println!("       let context = tauri::generate_context!();");
@@ -160,6 +163,15 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         println!("\n提示：endpoint 仍是占位值，请用 --endpoint 重新生成。");
     }
     Ok(())
+}
+
+/// `--signing-key` exists so onboarding is "generate a key, point init at it"
+/// instead of copy-pasting a base64 line out of `key-info`.
+fn derive_public_key(path: &Path) -> anyhow::Result<String> {
+    let secret = crate::pipeline::sign::load_secret_key(path)?;
+    let public = minisign::PublicKey::from_secret_key(&secret)
+        .with_context(|| format!("derive a public key from {}", path.display()))?;
+    Ok(public.to_base64())
 }
 
 /// `init --write` owns `capabilities/delta-update.json`. If that file was left

@@ -328,6 +328,10 @@ pub struct InitArgs {
     /// Trusted minisign public key; repeat for key rotation. At least one is required.
     #[arg(long = "public-key")]
     pub public_keys: Vec<String>,
+    /// minisign secret key file; its public key is derived and used instead of
+    /// pasting base64 by hand. Repeat to embed several keys for rotation.
+    #[arg(long = "signing-key", value_name = "PATH")]
+    pub signing_keys: Vec<PathBuf>,
     /// Update channel written into the config.
     #[arg(long, default_value = "stable")]
     pub channel: String,

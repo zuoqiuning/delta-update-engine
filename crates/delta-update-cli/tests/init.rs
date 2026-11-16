@@ -127,6 +127,35 @@ fn key_info_prints_the_public_key_and_id() {
 }
 
 #[test]
+fn init_derives_the_public_key_from_a_signing_key() {
+    let dir = tempfile::tempdir().unwrap();
+    // Empty password: `load_secret_key` reads MINISIGN_PASSWORD, which is unset
+    // here, and never prompts.
+    let keypair = minisign::KeyPair::generate_encrypted_keypair(Some(String::new())).unwrap();
+    let key_path = dir.path().join("release.key");
+    std::fs::write(&key_path, keypair.sk.to_box(None).unwrap().to_bytes()).unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args([
+            "init",
+            "--endpoint",
+            "https://example.com/manifests/latest.json",
+            "--signing-key",
+        ])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(&keypair.pk.to_base64()),
+        "the derived public key must appear in the config: {text}"
+    );
+}
+
+#[test]
 fn permission_set_flag_narrows_the_capability() {
     let output = Command::cargo_bin("delta-update")
         .unwrap()
