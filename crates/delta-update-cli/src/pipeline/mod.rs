@@ -98,14 +98,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
     }
 
     let ignore = DeltaIgnore::from_root(&args.to)?;
-    // One parallelism knob for the whole release: scanning and patch generation
-    // run one after the other, so sharing `--jobs` avoids oversubscribing.
-    let default_jobs = (std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1)
-        / 2)
-    .clamp(1, 4);
-    let jobs = args.jobs.unwrap_or(default_jobs);
+    let jobs = effective_jobs(args.jobs);
     let to_scan = scan::scan_with_jobs(&args.to, &ignore, jobs)?;
     let from_scan = match &args.from {
         Some(root) => Some(scan::scan_with_jobs(root, &ignore, jobs)?),
@@ -655,6 +648,15 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         output::info(&format!("report: {}", path.display()));
     }
     Ok(())
+}
+
+/// One parallelism knob for the whole release.
+///
+/// `--jobs 0` would make rayon pick its own thread count while the memory
+/// estimate assumed a single slot, underestimating peak usage; clamping here
+/// keeps scanning, patching and the estimate on the same number.
+fn effective_jobs(requested: Option<usize>) -> usize {
+    requested.unwrap_or_else(scan::default_jobs).max(1)
 }
 
 /// `--report` with a `.json` extension is a file; anything else (or an existing
@@ -2282,6 +2284,13 @@ mod tests {
     fn formats_bytes_for_humans() {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn effective_jobs_clamps_zero_and_defaults() {
+        assert_eq!(effective_jobs(Some(0)), 1);
+        assert_eq!(effective_jobs(Some(3)), 3);
+        assert!(effective_jobs(None) >= 1);
     }
 
     /// The guide is printed and written to disk from this one string, so a

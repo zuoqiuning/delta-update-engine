@@ -51,6 +51,7 @@
 - **`serve` 直接打印可用 endpoint**：启动时输出 `http://<host>:<port>/manifests/latest.json` 与 `allow_insecure_http: true` 提示；绑定 `0.0.0.0` 时改印回环地址并警告明文 HTTP 只对回环生效，省去手工拼 URL 与踩“从别的机器连不上”的坑。
 - **前端新增 `describeUpdate(state)`**：把 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `isUpdateRequired` / `error` 等 UI 判断收敛成一份实现，React hook 与 Vue/Svelte/原生 JS 共用同一套语义，不再各自比较状态字符串；`UpdateView` 一并导出。
 - **`inspect --journal-dir --json` 补齐 `worker_event`**：人类输出早已打印最新 worker 事件，JSON 现在也带同一个字段（`name`/`ts`/`msg`），CI 与工单系统拿到的信息与人看到的一致。
+- **`--jobs 0` 不再让估计与实际并行度分叉**：此前扫描按 1 个线程、补丁池按 rayon 默认线程运行，而内存峰值估计按 1 个槽位计算，可能低估真实峰值；现在统一收敛到 `max(jobs, 1)`，扫描、补丁与内存估算使用同一个数。默认并行度的计算也只剩 `scan::default_jobs()` 一处。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

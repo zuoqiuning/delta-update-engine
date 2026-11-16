@@ -77,7 +77,7 @@ pub fn scan_with_jobs(
 }
 
 /// Half the cores, capped, matching the patch pool default.
-fn default_jobs() -> usize {
+pub(crate) fn default_jobs() -> usize {
     (std::thread::available_parallelism()
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1)
