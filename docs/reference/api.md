@@ -672,6 +672,21 @@ permissions = [
 
 `delta-update init --permission-set monitor|manage|default` 可直接生成对应的 capability；**默认是 `manage`**（不含 `confirm_healthy`），需要前端确认健康时显式使用 `default`。`confirm_healthy` 只应由应用自身在关键初始化完成后调用，因此不进入 `manage`。
 
+### 3.6 前端 SDK（`tauri-plugin-delta-update-api`）
+
+npm 包是命令与状态的薄封装，无额外运行时依赖（React 仅作为 `react` 子路径的可选 peer）：
+
+| 导出 | 用途 |
+| --- | --- |
+| `check` / `prepare` / `cancelPrepare` / `status` / `confirmHealthy` / `restartToApply` / `exportDiagnostics` / `openDiagnosticsFolder` / `clearSkippedVersion` / `getUpdateHistory` | 与命令一一对应，返回的类型见 §3.2 |
+| `createUpdateController()` | 启动快照 + 事件订阅（引用计数）+ 命令包装，框架无关 |
+| `describeUpdate(state)` | 派生 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `isUpdateRequired` / `error`，与 React hook 共用同一实现 |
+| `isPrepared` / `isCommitted` / `isRolledBack` / `isFailed` / `isUpdateRequired` / `isBusy` | 单状态类型守卫（带谓词收窄） |
+| `STATE_EVENT` / `STATE_NAMES` | `delta-update://state` 与全部状态名 |
+| `useUpdater()`（`react` 子路径） | `useSyncExternalStore` + controller，返回值包含 `describeUpdate` 的全部字段 |
+
+`prepare()` 返回 `state: 'Prepared'` 才代表产物可用；`restartToApply()` 成功后进程会被替换并重启，因此不要在它之后继续依赖当前进程的状态。UI 判断优先用 `describeUpdate`，不要在业务代码里散落字符串比较——规则变更时只需升级这个包。
+
 ## 4. 错误类型
 
 ### 4.1 引擎错误枚举
