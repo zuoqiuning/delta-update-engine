@@ -209,6 +209,8 @@
 
 `pinned-keys` 防的是“构建期配置被改”：发布环境另外注入一份公钥集合，客户端只信任**两者交集**。配置被 PR 篡改、分支带错密钥、或轮换只改了配置没改构建变量时，交集为空，应用拒绝启动（`E_CONFIG_INVALID`）而不是带着错误信任根运行。它**不防**二进制被替换——那属于代码签名与分发渠道，见 §1.2 前提 2。
 
+宿主还可以在 `main` 开头调用 `set_trusted_keys(keys, mode)`，把进程信任根收窄到自己掌握的集合：`Intersect` 与内嵌配置取交集（为空则拒绝启动），`PinnedOnly` 用宿主集合替代内嵌集合（唯一可能放宽信任根的模式，由宿主承担该责任）。它必须早于 builder，因为替换 worker 在插件存在之前就要验 journal；晚调用会让 GUI 与 worker 拿到两个不同信任根。一次进程只解析一次，第二次调用报错。
+
 轮换顺序见 [版本与兼容承诺 §5](../reference/versioning.md#5-密钥轮换)：先发布 pinned 集合已包含新公钥的客户端构建，再用新密钥签名。
 
 **`commit.meta.json` 与 `old_hashes.json` 的信任边界**：两者都是本地可写文件，**没有独立签名或 MAC**，因此不能作为独立信任根。`verify_commit_journal` 要求 `commit.meta.json` 存在，并重新验证 `verified_manifest.json` 的 minisign 签名；每个 `Place` 的 `dst/sha256/size` 必须出现在该签名清单中，`Backup.dst` 必须精确为 `.old/<commit_id>/<src>`。所以篡改 meta 或 `old_hashes` 不能把任意字节写进安装根，只能尝试改变“forward / rollback”的语义配对与回滚素材的选择。回滚 `Restore` 的哈希来自受签名清单绑定的 `installed_manifest.json` 或 `old_hashes`；前者是强约束，后者在本地被同时篡改时只能恢复“另一份曾经合法存在过的内容”，不能凭空写入新代码。这是有意接受的残余风险：跨进程 HMAC 需要传递密钥，得不偿失。

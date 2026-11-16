@@ -40,6 +40,7 @@
 - **journal 重放属性测试**：随机内容 + 任意中断点（`0..=ops`）下，先重放前缀再重放完整 journal 的最终树与直接完整重放一致，且第二次重放不改变任何文件哈希；覆盖 `Backup` / `Place` / `Trash` / `RemoveTrash` 的组合，而不只是固定用例。
 - **`worker.log` 结构化为 `event=` 行**：每条记录改为 `event=<name> key=value ...`（值含空格/引号时才加双引号，`worker_log::parse` 可还原），`inspect --bundle` 优先按该格式读取回退证据，并继续兼容旧版纯文本行；日志仍是一行一条，异常消息里的换行仍会被压平。
 - **`migrate` 给出前端 API 对照**：迁移指南新增第 5 节，把官方 `check()` / `downloadAndInstall` / `relaunch` / `onUpdaterEvent` 映射到 `check()` / `prepare()` / `restartToApply()` / `listen(STATE_EVENT)`，并附一段可直接粘贴的 `createUpdateController()` 片段；`--write` 写出的文件与 stdout 仍来自同一个字符串，另有测试锁住这两者不会漏行。
+- **运行期信任根 `set_trusted_keys`**：宿主可在 `main` 开头用 `TrustMode::Intersect` 把进程信任根收窄为“内嵌配置 ∩ 宿主集合”（交集为空即拒绝启动），或用 `TrustMode::PinnedOnly` 显式接管信任根。两者都作用于同一处解析，所以 GUI 与替换 worker 不会拿到两个不同的信任集合；每次进程只解析一次，重复调用返回错误。构建期 `pinned-keys` 与它仍按先后顺序叠加，收窄只会更窄。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

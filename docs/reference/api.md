@@ -266,7 +266,7 @@ pub struct Limits {
 }
 ```
 
-`signing_public_keys` 只接受公钥文本（原始 base64 或 `.pub` 文件内容）。引擎公开 API 不出现 `minisign_verify` 类型，也不接受任何私钥材料。
+`signing_public_keys` 只接受公钥文本（原始 base64 或 `.pub` 文件内容）。引擎公开 API 不出现 `minisign_verify` 类型，也不接受任何私钥材料。插件侧可在 `main` 开头调用 `set_trusted_keys(keys, TrustMode::Intersect | PinnedOnly)` 把进程信任根收窄到宿主掌握的集合：`Intersect` 只保留内嵌配置也信任的公钥（交集为空则拒绝启动），`PinnedOnly` 用宿主集合替代内嵌集合；两者都必须在 builder 运行前调用，才能同时作用于 GUI 与替换 worker。
 
 `PreparedUpdate` 是 `commit` 的输入。它持有暂存区的根路径和清单哈希，**不持有远程连接或未完成的下载任务**。如果用户本次不退出，`PreparedUpdate` 的信息被持久化为 `PREPARED` 计划，下次启动时 `recover_and_cleanup()` 可以直接重建它，无需重新 prepare。
 

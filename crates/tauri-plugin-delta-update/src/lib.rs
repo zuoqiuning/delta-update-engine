@@ -40,6 +40,30 @@
 //! allowlist; an empty intersection refuses to start. It defends against a
 //! build-time config injection, not runtime tampering: the trust root is always
 //! the embedded config, so editing `tauri.conf.json` requires a rebuild.
+//!
+//! # Runtime trust root
+//!
+//! A host that owns the key set outside the app can narrow it further at
+//! start-up, before the builder runs:
+//!
+//! ```ignore
+//! fn main() {
+//!     tauri_plugin_delta_update::set_trusted_keys(
+//!         managed_keys(),
+//!         tauri_plugin_delta_update::TrustMode::Intersect,
+//!     )
+//!     .expect("trust root");
+//!     tauri::Builder::default()
+//!         .plugin(tauri_plugin_delta_update::init())
+//!         .run_with_delta_update(tauri::generate_context!())
+//! }
+//! ```
+//!
+//! It must run before the builder because the replacement worker verifies the
+//! journal before the plugin exists; setting keys later would give the GUI and
+//! the worker two different trust roots. `TrustMode::Intersect` keeps only keys
+//! the embedded config also trusts, while `TrustMode::PinnedOnly` replaces the
+//! embedded set entirely and is documented as widening the trust root.
 
 // One unsafe call site is allowed in `applier` for ShellExecuteW("runas");
 // everything else stays safe Rust.
@@ -61,10 +85,12 @@ pub mod events;
 pub mod lifecycle;
 pub mod state;
 
-/// Compile-time pinned keys. Public so the `pinned-keys` contract test can
-/// exercise it; not part of the supported API.
+/// Compile-time and start-up pinned keys. Public so the `pinned-keys` contract
+/// test can exercise it; the supported entry points are re-exported below.
 #[doc(hidden)]
 pub mod pinned;
+
+pub use pinned::{set_trusted_keys, TrustMode};
 
 /// Set once [`run_applier_from_context`] has run, whatever the mode.
 ///
