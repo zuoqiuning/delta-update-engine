@@ -38,7 +38,8 @@ async fn run_inner() -> Result<(), String> {
     scenario.seed_known(&["legacy.txt"])?;
     let release = Release::start(NEW_VERSION, OLD_VERSION, &old, &new, false).await?;
 
-    // E2E-02: an up-to-date client downloads nothing but the manifest pair.
+    // E2E-02: an up-to-date client downloads exactly one object — the envelope,
+    // which carries the manifest and its signature together.
     let up_to_date = scenario.engine(&release.server, &release.keys, NEW_VERSION)?;
     let outcome = up_to_date
         .check()
@@ -48,11 +49,7 @@ async fn run_inner() -> Result<(), String> {
         return Err("an update was offered to an up-to-date client".into());
     }
     let requests = release.requests();
-    if requests.len() != 2
-        || requests.iter().any(|request| {
-            request != "manifests/latest.json" && request != "manifests/latest.json.minisig"
-        })
-    {
+    if requests != ["manifests/latest.envelope.json"] {
         return Err(format!(
             "unexpected requests for a no-op check: {requests:?}"
         ));

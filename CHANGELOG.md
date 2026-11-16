@@ -42,6 +42,7 @@
 - **`migrate` 给出前端 API 对照**：迁移指南新增第 5 节，把官方 `check()` / `downloadAndInstall` / `relaunch` / `onUpdaterEvent` 映射到 `check()` / `prepare()` / `restartToApply()` / `listen(STATE_EVENT)`，并附一段可直接粘贴的 `createUpdateController()` 片段；`--write` 写出的文件与 stdout 仍来自同一个字符串，另有测试锁住这两者不会漏行。
 - **运行期信任根 `set_trusted_keys`**：宿主可在 `main` 开头用 `TrustMode::Intersect` 把进程信任根收窄为“内嵌配置 ∩ 宿主集合”（交集为空即拒绝启动），或用 `TrustMode::PinnedOnly` 显式接管信任根。两者都作用于同一处解析，所以 GUI 与替换 worker 不会拿到两个不同的信任集合；每次进程只解析一次，重复调用返回错误。构建期 `pinned-keys` 与它仍按先后顺序叠加，收窄只会更窄。
 - **文档进入 CI 门禁**：`cargo xtask ci` 新增 `RUSTDOCFLAGS=-D warnings cargo doc`，公开文档里的私有项 intra-doc 链接不再能悄悄失效；顺手修掉 `worker_log::parse` 与 `rollback` 的两处断链。
+- **e2e 改测信封主路径**：模拟发布同时提供 `latest.envelope.json`（清单与签名在同一对象里），`delta_update` 断言“已是最新时只下载一个对象”；此前夹具只发布清单 + 签名，等于一直在测回退路径。旧客户端的回退行为由 `envelope_contract` 覆盖。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

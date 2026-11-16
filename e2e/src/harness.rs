@@ -225,7 +225,21 @@ impl Release {
         let manifest =
             serde_json::to_vec(&manifest).map_err(|err| format!("serialize manifest: {err}"))?;
         let signature = keys.sign(&manifest);
+        // Serve the single-object envelope, which is what a current client
+        // reads first. The detached pair stays next to it so the fallback path
+        // remains reachable for older clients and for the contract tests.
+        let envelope = json!({
+            "schema": 2,
+            "manifest": String::from_utf8(manifest.clone())
+                .map_err(|err| format!("manifest is not utf-8: {err}"))?,
+            "signature": signature.clone(),
+        });
         let mut served = vec![
+            (
+                "manifests/latest.envelope.json".to_string(),
+                serde_json::to_vec(&envelope)
+                    .map_err(|err| format!("serialize envelope: {err}"))?,
+            ),
             ("manifests/latest.json".to_string(), manifest),
             (
                 "manifests/latest.json.minisig".to_string(),
