@@ -35,7 +35,7 @@
 - **扫描与补丁共享 `--jobs`**：哈希扫描改为在固定大小线程池里并行（walk 仍串行以保持大小写冲突错误的确定性），`--jobs` 同时控制扫描与补丁生成，避免两个阶段各自按核数开池。
 - **`inspect --bundle` 交叉检查**：新增 `journal_only`，列出“journal 触碰过但签名清单没有”的路径（排除被删除的文件）；正常 bundle 为空，非空说明 bundle 混了版本或 journal 被篡改。未变化文件“清单有、journal 无”不列为异常。
 - **bench 分级门禁**：`bench-check` 按操作类型使用阈值——`scan_tree` / `patch_header` / `hash_tree` 为 5%，其余 I/O 类保持 10%；`bench.yml` 显式传入两个阈值，输出也按实际阈值报告。
-- **worker 启动记录安装形态**：`apply started` / `recovery started` 行新增 `form=per-machine|per-user|portable`，由可执行文件位置推断；只用于诊断，不改变任何行为。
+- **worker 启动记录安装形态**：`apply_started` / `recovery_started` 事件新增 `form=per-machine|per-user|portable`，由可执行文件位置推断；只用于诊断，不改变任何行为。
 - **子进程崩溃矩阵**：引擎新增 `fault-injection` feature（仅 testkit 启用），worker 在“应用某个 op 之前/之后”按 `DELTA_UPDATE_CRASH_AT` abort；测试对两个阶段各跑一次，断言下一次启动重放到同一棵树、无残留文件。生产二进制不含该钩子。
 - **journal 重放属性测试**：随机内容 + 任意中断点（`0..=ops`）下，先重放前缀再重放完整 journal 的最终树与直接完整重放一致，且第二次重放不改变任何文件哈希；覆盖 `Backup` / `Place` / `Trash` / `RemoveTrash` 的组合，而不只是固定用例。
 - **`worker.log` 结构化为 `event=` 行**：每条记录改为 `event=<name> key=value ...`（值含空格/引号时才加双引号，`worker_log::parse` 可还原），`inspect --bundle` 优先按该格式读取回退证据，并继续兼容旧版纯文本行；日志仍是一行一条，异常消息里的换行仍会被压平。

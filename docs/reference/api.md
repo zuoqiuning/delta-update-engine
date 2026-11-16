@@ -400,6 +400,25 @@ pub enum FileOp {
 
 **`RemoveTrash` 只在 `confirm_healthy` 之后生成**：健康确认前的物理删除会让回滚失去素材。
 
+### 2.8 worker.log 读取
+
+```rust
+pub mod worker_log {
+    pub const FILE: &str = "worker.log";
+
+    pub struct Event { pub name: String, /* 字段私有 */ }
+
+    impl Event {
+        pub fn get(&self, key: &str) -> Option<&str>;
+    }
+
+    /// 解析 `event=<name> key=value ...`；旧版纯文本行与手写日志返回 None。
+    pub fn parse(line: &str) -> Option<Event>;
+}
+```
+
+`worker.log` 由 worker 与 `prepare` 追加，每行一条事件；值含空格或引号时用双引号包裹并转义。公开的只有读取侧：`filter_map(worker_log::parse)` 可以安全跳过任何非结构化行。写入侧不公开，避免外部代码绕过“单行、有界体积”的约束。
+
 ## 3. tauri-plugin-delta-update 公开 API
 
 ### 3.1 插件注册与配置

@@ -178,6 +178,8 @@ fn assert_clean(root: &Path);
 
 **J-08 的特殊说明**：删除 journal 时中断导致 journal 部分存在——这与“journal 写入时中断”不同。删除是 `unlink` 系统调用，在 POSIX/Windows 上要么成功要么失败，**不会产生“部分删除”的文件**。因此不引入“根据目录状态猜测是否完成”的分支：如果确实读到 checksum 失败的 journal，一律返回 `E_JOURNAL_CORRUPT`，**不尝试重放，也不猜测目录状态**。测试应断言这一确定行为。
 
+**J-13（属性测试，覆盖上表之间的组合）**：`journal_property` 取随机文件内容与 `0..=ops` 的任意中断点，先重放前缀 journal、再重放完整 journal，断言最终树与“直接完整重放”一致（新内容就位、未触碰文件不变、被删文件消失、备份仍在、trash 已清），并断言第二次完整重放不改变任何文件哈希。逐点用例证明“每个注入点都被想到”，属性测试证明“任意切分位置都收敛”，两者互补。
+
 ### 3.3 Committer 故障注入矩阵
 
 | #    | 注入点                       | 期望状态                                                    | 断言                             |
@@ -382,13 +384,13 @@ A、B、C 为必做项（提权、杀软、云同步是最高频的真实故障�
 ### 9.1 每次 PR 必须通过
 
 - [ ] 全部 L1 单元测试
-- [ ] L2 Journal 故障注入 J-01 至 J-12
+- [ ] L2 Journal 故障注入 J-01 至 J-13
 - [ ] L2 Committer 故障注入 C-01 至 C-07
 - [ ] L2 Staging / Fetcher S-01 至 S-08、F-01 至 F-10
 - [ ] L2 安全测试 SEC-01 至 SEC-19
 - [ ] L3 插件生命周期 P-01 至 P-21
 
-**当前自动化状态**：J-01..J-12 由 `tests/journal_fault_injection.rs` 以磁盘状态注入覆盖（模拟崩溃后的确定状态，不依赖系统调用内中断）；C-01..C-07 与 R-09/R-10 由 `tests/committer_fault_injection.rs` 覆盖（C-01 用真实运行进程验证镜像重命名备份，C-03/C-04/C-06 用 `FaultyFs` 注入重命名失败与落盘损坏）；R-11/R-12 由 `tests/committer_contract.rs` 覆盖（是否需要写安装根、提权恢复不重复计数）；F-01/F-04/F-05/F-06/F-08/F-09/F-10 由 `tests/fetch_fault_injection.rs` 与 `tests/staging_contract.rs` 覆盖，F-02/F-03 由 `tests/presign_refresh.rs` 覆盖（F-07 由 `check_contract` 与 e2e 覆盖）；S-04/S-05/S-07/S-08 在 `tests/staging_contract.rs`（S-05 用超大声明体积触发真实可用空间不足，断言下载前失败）。SEC-01/02/03/08/14/16/17/18/19 由 `tests/security_fault_injection.rs` 覆盖，SEC-04/05/06/07/09/15 由 check/staging/journal 测试覆盖；SEC-10 的行为断言已覆盖（告警日志未断言），SEC-12/13 由插件 `tests/lifecycle_contract.rs` 的命令面测试覆盖。P-01/P-02/P-03/P-04/P-06/P-11/P-14 由插件 `tests/lifecycle_contract.rs` 通过 Tauri mock runtime 覆盖（启动恢复、崩溃循环、后台 prepare 与 `Prepared` 事件、退出提交、无 ACL 拒绝），同文件覆盖 `auto_confirm` 的窗口就绪延迟确认与 `confirm_healthy` 命令的备份清理契约；P-05/P-07/P-09/P-10/P-12/P-13 已覆盖，P-15 的 Commit 锁由 C-07 覆盖，P-16 的真实 UAC 交互需在提权环境手动执行；P-17 的配置校验由 `config_contract` 覆盖，定时循环本身不等待 60 秒，需在真实应用中观察；P-18 由启动回滚测试断言 `RolledBack`，P-19 由 `worker_mode_requested` 单元测试覆盖，P-20 由 `prepare_reuses_a_recent_check` 断言清单只请求一次，P-21 由 `confirm_healthy_does_not_wait_for_a_prepare_lock` 覆盖。`check` 的 notes/mandatory 与 64 KiB 上限由 `tests/check_contract.rs` 覆盖，下载进度累计值与单调性由 `tests/staging_contract.rs` 断言，`ErrorPayload.action` 与 `proxy` 配置由 `error_contract` / `config_contract` 覆盖，前端控制器由 `packages/plugin-api/tests/controller.test.ts` 覆盖，React hook 由 `pnpm typecheck` 校验。平台范围仅 Windows 桌面，移动端不作为门禁项。桌面环境可自动化的矩阵项已全部覆盖。
+**当前自动化状态**：J-01..J-12 由 `tests/journal_fault_injection.rs` 以磁盘状态注入覆盖（模拟崩溃后的确定状态，不依赖系统调用内中断）；C-01..C-07 与 R-09/R-10 由 `tests/committer_fault_injection.rs` 覆盖（C-01 用真实运行进程验证镜像重命名备份，C-03/C-04/C-06 用 `FaultyFs` 注入重命名失败与落盘损坏）；R-11/R-12 由 `tests/committer_contract.rs` 覆盖（是否需要写安装根、提权恢复不重复计数）；F-01/F-04/F-05/F-06/F-08/F-09/F-10 由 `tests/fetch_fault_injection.rs` 与 `tests/staging_contract.rs` 覆盖，F-02/F-03 由 `tests/presign_refresh.rs` 覆盖（F-07 由 `check_contract` 与 e2e 覆盖）；S-04/S-05/S-07/S-08 在 `tests/staging_contract.rs`（S-05 用超大声明体积触发真实可用空间不足，断言下载前失败）。SEC-01/02/03/08/14/16/17/18/19 由 `tests/security_fault_injection.rs` 覆盖，SEC-04/05/06/07/09/15 由 check/staging/journal 测试覆盖；SEC-10 的行为断言已覆盖（告警日志未断言），SEC-12/13 由插件 `tests/lifecycle_contract.rs` 的命令面测试覆盖。P-01/P-02/P-03/P-04/P-06/P-11/P-14 由插件 `tests/lifecycle_contract.rs` 通过 Tauri mock runtime 覆盖（启动恢复、崩溃循环、后台 prepare 与 `Prepared` 事件、退出提交、无 ACL 拒绝），同文件覆盖 `auto_confirm` 的窗口就绪延迟确认与 `confirm_healthy` 命令的备份清理契约；P-05/P-07/P-09/P-10/P-12/P-13 已覆盖，P-15 的 Commit 锁由 C-07 覆盖，P-16 的真实 UAC 交互需在提权环境手动执行；P-17 的配置校验由 `config_contract` 覆盖，定时循环本身不等待 60 秒，需在真实应用中观察；P-18 由启动回滚测试断言 `RolledBack`，P-19 由 `worker_mode_requested` 单元测试覆盖，P-20 由 `prepare_reuses_a_recent_check` 断言清单只请求一次，P-21 由 `confirm_healthy_does_not_wait_for_a_prepare_lock` 覆盖。`check` 的 notes/mandatory 与 64 KiB 上限由 `tests/check_contract.rs` 覆盖，下载进度累计值与单调性由 `tests/staging_contract.rs` 断言，`ErrorPayload.action` 与 `proxy` 配置由 `error_contract` / `config_contract` 覆盖，前端控制器由 `packages/plugin-api/tests/controller.test.ts` 覆盖，React hook 由 `pnpm typecheck` 校验。平台范围仅 Windows 桌面，移动端不作为门禁项。J-13 由 `tests/journal_property.rs` 以随机内容 + 任意中断点覆盖；多签名、单对象信封与发布窗口分别由 `tests/multi_signature_contract.rs`、`tests/envelope_contract.rs`、`tests/signature_window.rs` 覆盖；信任根由 `tests/pinned_keys_contract.rs`（构建期）与 `tests/runtime_trust.rs`（运行期）覆盖。桌面环境可自动化的矩阵项已全部覆盖。
 
 ### 9.2 每次发布前必须通过
 
