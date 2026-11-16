@@ -29,13 +29,19 @@ pub(crate) fn append(journal_root: &Path, message: &str) {
     let _ = writeln!(file, "{}", oneline(message));
 }
 
-/// Append one structured event: `event=<name> key=value ...`.
+/// Append one structured event: `event=<name> ts=<unix> key=value ...`.
 ///
 /// Values are quoted only when they would otherwise split the line, so the
 /// common case stays readable (`event=apply_ok commit=abc ms=12 retries=0`)
-/// while paths with spaces still survive a round trip through [`parse`].
+/// while paths with spaces still survive a round trip through [`parse`]. The
+/// timestamp is what lets a bundle be lined up with the Windows event log or an
+/// antivirus quarantine entry.
 pub(crate) fn event(journal_root: &Path, name: &str, fields: &[(&str, &str)]) {
-    let mut line = format!("event={name}");
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let mut line = format!("event={name} ts={seconds}");
     for (key, value) in fields {
         line.push(' ');
         line.push_str(key);
@@ -197,6 +203,12 @@ mod tests {
         let ok = parse(lines.next().unwrap()).unwrap();
         assert_eq!(ok.name, "apply_ok");
         assert_eq!(ok.get("commit"), Some("abc"));
+        let ts: u64 = ok
+            .get("ts")
+            .expect("structured events carry a timestamp")
+            .parse()
+            .expect("ts is a unix second count");
+        assert!(ts > 1_700_000_000, "ts looks like a real clock: {ts}");
     }
 
     #[test]

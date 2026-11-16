@@ -12,21 +12,18 @@ pnpm add tauri-plugin-delta-update-api
 ```
 
 ```rust
-fn main() {
-    let context = tauri::generate_context!();
-    // Worker mode: the same binary verifies the signed manifest and performs
-    // the replacement or startup recovery without loading Tauri. Passing the
-    // context lets it read the embedded signing keys.
-    if let Some(code) = tauri_plugin_delta_update::run_applier_from_context(&context) {
-        std::process::exit(code);
-    }
+use tauri_plugin_delta_update::BuilderExt;
 
+fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_delta_update::init())
-        .run(context)
+        // 替换 .run(context)：若是替换/恢复 worker，在创建窗口前处理并退出。
+        .run_with_delta_update(tauri::generate_context!())
         .expect("error while running app");
 }
 ```
+
+入口必须用 `run_with_delta_update`（或自行在 builder 之前调用 `run_applier_from_context`）——漏接时更新能准备成功，但重启进 worker 的那一步永远不会执行；debug 构建会直接 panic 提醒。
 
 在 `capabilities/default.json` 中授予 `delta-update:default`。配置写在 `tauri.conf.json` 的 `plugins.delta-update` 下。需要最小权限时可改用 `delta-update:monitor`（仅 `check`/`status`）或 `delta-update:manage`（除 `confirm_healthy` 外的管理命令）。
 

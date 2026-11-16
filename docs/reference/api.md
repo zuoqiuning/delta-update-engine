@@ -266,7 +266,7 @@ pub struct Limits {
 }
 ```
 
-`signing_public_keys` 只接受公钥文本（原始 base64 或 `.pub` 文件内容）。引擎公开 API 不出现 `minisign_verify` 类型，也不接受任何私钥材料。插件侧可在 `main` 开头调用 `set_trusted_keys(keys, TrustMode::Intersect | PinnedOnly)` 把进程信任根收窄到宿主掌握的集合：`Intersect` 只保留内嵌配置也信任的公钥（交集为空则拒绝启动），`PinnedOnly` 用宿主集合替代内嵌集合；两者都必须在 builder 运行前调用，才能同时作用于 GUI 与替换 worker。
+`signing_public_keys` 只接受公钥文本（原始 base64 或 `.pub` 文件内容）。引擎公开 API 不出现 `minisign_verify` 类型，也不接受任何私钥材料。
 
 `PreparedUpdate` 是 `commit` 的输入。它持有暂存区的根路径和清单哈希，**不持有远程连接或未完成的下载任务**。如果用户本次不退出，`PreparedUpdate` 的信息被持久化为 `PREPARED` 计划，下次启动时 `recover_and_cleanup()` 可以直接重建它，无需重新 prepare。
 
@@ -417,7 +417,7 @@ pub mod worker_log {
 }
 ```
 
-`worker.log` 由 worker 与 `prepare` 追加，每行一条事件；值含空格或引号时用双引号包裹并转义。公开的只有读取侧：`filter_map(worker_log::parse)` 可以安全跳过任何非结构化行。写入侧不公开，避免外部代码绕过“单行、有界体积”的约束。
+`worker.log` 由 worker 与 `prepare` 追加，每行一条事件，形如 `event=<name> ts=<unix> key=value ...`；值含空格或引号时用双引号包裹并转义。公开的只有读取侧：`filter_map(worker_log::parse)` 可以安全跳过任何非结构化行。写入侧不公开，避免外部代码绕过“单行、有界体积”的约束。
 
 ## 3. tauri-plugin-delta-update 公开 API
 
@@ -464,6 +464,15 @@ pub struct Config {
 ```
 
 配置字段的完整语义见协议文档 §9。**Config 结构体不启用 `deny_unknown_fields`**，以便未来新增字段时旧客户端可以忽略；但未知字段会输出警告日志，帮助发现拼写错误。`config_version` 低于当前实现时插件启动失败并返回 `E_CONFIG_MIGRATION_REQUIRED`；配置非法返回 `E_CONFIG_INVALID`。
+
+**信任根**（三选一，可叠加收窄）：内嵌 `signing_public_keys`（默认）→ 构建期 `pinned-keys`（`config ∩ DELTA_UPDATE_PINNED_PUBLIC_KEYS`，为空拒绝启动）→ 运行期 `set_trusted_keys(keys, mode)`：
+
+```rust
+pub enum TrustMode { Intersect, PinnedOnly }
+pub fn set_trusted_keys(keys: Vec<String>, mode: TrustMode) -> Result<(), EngineError>;
+```
+
+`Intersect` 只保留内嵌（或已 pin）集合里也存在的公钥，交集为空即拒绝启动；`PinnedOnly` 用宿主集合替代前面的结果，是唯一可能放宽信任根的模式。两者都作用于 `pinned::effective_keys` 这一处解析，因此 GUI 与替换 worker 拿到同一集合；必须在 builder 运行前调用（worker 在插件存在之前就要验 journal），每次进程只解析一次，重复调用返回 `E_CONFIG_INVALID`。
 
 ### 3.2 Tauri 命令
 
