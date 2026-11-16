@@ -36,21 +36,28 @@ pub enum TrustMode {
 }
 
 static RUNTIME_KEYS: OnceLock<(Vec<String>, TrustMode)> = OnceLock::new();
+static RESOLVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Restrict this process to `keys`.
 ///
 /// Call at the top of `main`, before the builder runs: the replacement worker
 /// verifies the journal before the plugin exists, so a trust root set later
 /// would apply to the GUI only. A worker narrower than the GUI would then fail
-/// after the user had already restarted.
+/// after the user had already restarted, so a late call is refused instead of
+/// silently leaving two trust roots.
 ///
-/// Returns an error for an empty key list and for a second call; the trust root
-/// is resolved once per process, never re-negotiated.
+/// Returns an error for an empty key list, a second call, and any call after
+/// the trust root has already been resolved.
 pub fn set_trusted_keys(keys: Vec<String>, mode: TrustMode) -> Result<(), EngineError> {
     if keys.iter().all(|key| payload_line(key).is_empty()) {
         return Err(EngineError::ConfigInvalid(
             "set_trusted_keys was called without a usable key; an empty set would trust nothing"
                 .into(),
+        ));
+    }
+    if RESOLVED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(EngineError::ConfigInvalid(
+            "set_trusted_keys ran after the trust root was already resolved; call it at the top of main, before the builder starts".into(),
         ));
     }
     RUNTIME_KEYS.set((keys, mode)).map_err(|_| {
@@ -63,6 +70,7 @@ pub fn set_trusted_keys(keys: Vec<String>, mode: TrustMode) -> Result<(), Engine
 /// Resolve the keys this process verifies against.
 pub fn effective_keys(configured: &[String]) -> Result<Vec<String>, EngineError> {
     let base = compile_time_keys(configured)?;
+    RESOLVED.store(true, std::sync::atomic::Ordering::Relaxed);
     match RUNTIME_KEYS.get() {
         Some((keys, mode)) => narrow(base, keys, *mode),
         None => Ok(base),

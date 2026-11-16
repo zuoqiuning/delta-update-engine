@@ -24,16 +24,17 @@ fn embedded_keys() -> Vec<String> {
 #[test]
 fn runtime_keys_narrow_the_embedded_config_for_the_whole_process() {
     let embedded = embedded_keys();
-    assert_eq!(pinned::effective_keys(&embedded).unwrap(), embedded);
-
     // The first embedded key is also pinned when the feature is on, so the
     // narrowed set has the same shape in both builds.
     let kept = embedded[0].clone();
     set_trusted_keys(vec![kept.clone()], TrustMode::Intersect).unwrap();
     assert_eq!(pinned::effective_keys(&embedded).unwrap(), vec![kept]);
 
+    // The trust root is frozen by the first resolution: a late call cannot
+    // silently leave the GUI and the worker with different key sets.
+    let late = set_trusted_keys(vec!["RWQother".into()], TrustMode::PinnedOnly).unwrap_err();
     assert!(
-        set_trusted_keys(vec!["RWQother".into()], TrustMode::PinnedOnly).is_err(),
-        "the trust root is resolved once, not re-negotiated"
+        late.to_string().contains("resolved"),
+        "a late call must say the trust root is already resolved: {late}"
     );
 }

@@ -472,7 +472,7 @@ pub enum TrustMode { Intersect, PinnedOnly }
 pub fn set_trusted_keys(keys: Vec<String>, mode: TrustMode) -> Result<(), EngineError>;
 ```
 
-`Intersect` 只保留内嵌（或已 pin）集合里也存在的公钥，交集为空即拒绝启动；`PinnedOnly` 用宿主集合替代前面的结果，是唯一可能放宽信任根的模式。两者都作用于 `pinned::effective_keys` 这一处解析，因此 GUI 与替换 worker 拿到同一集合；必须在 builder 运行前调用（worker 在插件存在之前就要验 journal），每次进程只解析一次，重复调用返回 `E_CONFIG_INVALID`。
+`Intersect` 只保留内嵌（或已 pin）集合里也存在的公钥，交集为空即拒绝启动；`PinnedOnly` 用宿主集合替代前面的结果，是唯一可能放宽信任根的模式。两者都作用于 `pinned::effective_keys` 这一处解析，因此 GUI 与替换 worker 拿到同一集合；必须在 builder 运行前调用，且信任根一旦解析就冻结——第二次调用或解析之后的“迟到调用”都返回 `E_CONFIG_INVALID`，不会只改到一半。
 
 ### 3.2 Tauri 命令
 

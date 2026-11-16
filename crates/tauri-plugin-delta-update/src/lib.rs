@@ -61,7 +61,8 @@
 //!
 //! It must run before the builder because the replacement worker verifies the
 //! journal before the plugin exists; setting keys later would give the GUI and
-//! the worker two different trust roots. `TrustMode::Intersect` keeps only keys
+//! the worker two different trust roots, so a late call (or a second call) is
+//! refused instead of applied half-way. `TrustMode::Intersect` keeps only keys
 //! the embedded config also trusts, while `TrustMode::PinnedOnly` replaces the
 //! embedded set entirely and is documented as widening the trust root.
 
