@@ -44,11 +44,11 @@ fn main() {
 推荐使用框架无关的控制器，避免自己维护快照和事件订阅生命周期：
 
 ```typescript
-import { createUpdateController } from 'tauri-plugin-delta-update-api';
+import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
 
 const updater = createUpdateController();
 updater.subscribe((state) => {
-  if (state?.state === 'Prepared') showUpdateReadyBanner(state.version);
+  if (describeUpdate(state).isReady) showUpdateReadyBanner(state?.version ?? '');
 });
 await updater.start();
 // updater.check() / prepare() / cancel() / confirm() / restart()

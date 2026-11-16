@@ -239,12 +239,13 @@ delta-update init \
 **推荐先看 `createUpdateController`**。它把“启动快照 + 事件订阅 + 取消订阅 + 六个命令”收进一个框架无关的小控制器，React/Vue/Svelte 都无需自己维护监听生命周期：
 
 ```typescript
-import { createUpdateController } from 'tauri-plugin-delta-update-api';
+import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
 
 const updater = createUpdateController();
 const unsubscribe = updater.subscribe((state) => {
-  if (state?.state === 'Prepared') showUpdateReadyBanner(state.version);
-  if (state?.state === 'RolledBack') showToast(`已回滚到 ${state.version}`);
+  const view = describeUpdate(state);
+  if (view.isReady) showUpdateReadyBanner(state?.version ?? '');
+  if (view.isRolledBack) showToast(`已回滚到 ${state?.version}`);
 });
 
 await updater.start();          // 读取快照并开始监听
@@ -253,18 +254,7 @@ await updater.start();          // 读取快照并开始监听
 // 卸载时：unsubscribe(); updater.stop();
 ```
 
-“该显示什么”同样不用自己写状态比较：`describeUpdate(state)` 返回 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `error` 等派生字段，React hook 返回的也是同一组（同一份实现，Vue/Svelte/原生 JS 行为一致）：
-
-```typescript
-import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
-
-const updater = createUpdateController();
-updater.subscribe((state) => {
-  const view = describeUpdate(state);
-  banner.hidden = !view.isReady;
-  retryButton.disabled = !view.canPrepare;
-});
-```
+按钮的可用性也来自同一处：`view.canPrepare` / `view.canRestart` / `view.isBusy`。React hook 返回的就是这些字段（同一份实现），Vue/Svelte 直接对 `describeUpdate(state)` 的结果做条件渲染，语义不会分叉。
 
 React 18+ 可以直接用子路径 hook（`react` 是可选 peer 依赖）：
 

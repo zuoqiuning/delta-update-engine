@@ -7,15 +7,16 @@ pnpm add tauri-plugin-delta-update-api
 ```
 
 ```ts
-import { createUpdateController } from 'tauri-plugin-delta-update-api';
+import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
 
 const updater = createUpdateController();
 updater.subscribe((state) => {
-  if (state?.state === 'Prepared') {
-    console.log(`v${state.version} ready on next launch`);
+  const view = describeUpdate(state);
+  if (view.isReady) {
+    console.log(`v${state?.version} ready on next launch`);
   }
-  if (state?.state === 'RolledBack') {
-    console.log(`rolled back to v${state.version}`);
+  if (view.isRolledBack) {
+    console.log(`rolled back to v${state?.version}`);
   }
 });
 
@@ -28,15 +29,15 @@ if (result.available) {
 }
 ```
 
-React 18+ can use the optional hook subpath:
+`describeUpdate` is the only place that encodes "what can the UI do now": `isReady`, `canPrepare`, `canRestart`, `isBusy`, `isUpdateRequired` and `error`. Gate buttons on those flags instead of comparing state strings. React 18+ can use the optional hook subpath; its return value already contains the same flags:
 
 ```tsx
 import { useUpdater } from 'tauri-plugin-delta-update-api/react';
 
 function UpdateBanner() {
-  const { state, restart } = useUpdater();
-  return state?.state === 'Prepared'
-    ? <button onClick={() => void restart()}>Restart into v{state.version}</button>
+  const { state, isReady, restart } = useUpdater();
+  return isReady
+    ? <button onClick={() => void restart()}>Restart into v{state?.version}</button>
     : null;
 }
 ```
@@ -58,14 +59,15 @@ works without an extra adapter:
 ```svelte
 <script>
   import { onDestroy, onMount } from 'svelte';
-  import { createUpdateController } from 'tauri-plugin-delta-update-api';
+  import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
 
   const updater = createUpdateController();
+  $: view = describeUpdate($updater);
   onMount(() => void updater.start());
   onDestroy(() => updater.stop());
 </script>
 
-{#if $updater?.state === 'Prepared'}
+{#if view.isReady}
   <button on:click={() => updater.restart()}>Restart into v{$updater.version}</button>
 {/if}
 ```
@@ -74,11 +76,12 @@ Vue 3 composition API:
 
 ```vue
 <script setup lang="ts">
-import { onScopeDispose, shallowRef } from 'vue';
-import { createUpdateController } from 'tauri-plugin-delta-update-api';
+import { computed, onScopeDispose, shallowRef } from 'vue';
+import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
 
 const updater = createUpdateController();
 const state = shallowRef(updater.getState());
+const view = computed(() => describeUpdate(state.value));
 const unsubscribe = updater.subscribe((next) => {
   state.value = next;
 });
@@ -90,8 +93,8 @@ onScopeDispose(() => {
 </script>
 
 <template>
-  <button v-if="state?.state === 'Prepared'" @click="updater.restart()">
-    Restart into v{{ state.version }}
+  <button v-if="view.isReady" @click="updater.restart()">
+    Restart into v{{ state?.version }}
   </button>
 </template>
 ```
