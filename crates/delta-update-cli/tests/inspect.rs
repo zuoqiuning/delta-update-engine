@@ -99,44 +99,10 @@ fn accepts_a_clean_journal_directory() {
 fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_path = dir.path().join("bundle.json");
-    let bundle = serde_json::json!({
-        "tool": "tauri-plugin-delta-update",
-        "report": {
-            "journal_dir": "<journal_root>",
-            "apply": {
-                "version": "2.0.0",
-                "commit_id": COMMIT_ID,
-                "install_root": "<install_root>",
-                "staging_root": "<staging_root>",
-                "parent_pid": 1
-            },
-            "status": { "state": "completed", "version": "2.0.0", "commit_id": COMMIT_ID },
-            "journal": {
-                "file": "commit.journal",
-                "commit_id": COMMIT_ID,
-                "version": "2.0.0",
-                "from_version": "1.0.0",
-                "ops": 2,
-                "backup": 0,
-                "place": 1,
-                "trash": 1,
-                "restore": 0,
-                "remove_trash": 0,
-                "ops_detail": [
-                    { "kind": "Place", "path": "App.exe", "status": "landed" },
-                    { "kind": "Trash", "path": "legacy.txt", "status": "landed" }
-                ]
-            },
-            "rollback_journal": null,
-            "prepared": null,
-            "attempts": 1,
-            "skipped_version": null,
-            "warnings": [],
-            "diagnosis": "ok"
-        },
-        "worker_log": "apply started commit=x\npatch fallback: bin/core.dll: E_PATCH_APPLY_FAILED\n"
-    });
-    std::fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+    write_bundle(
+        &bundle_path,
+        "apply started commit=x\npatch fallback: bin/core.dll: E_PATCH_APPLY_FAILED\n",
+    );
 
     let output = Command::cargo_bin("delta-update")
         .unwrap()
@@ -174,6 +140,74 @@ fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
         row("legacy.txt")["ops"],
         serde_json::json!(["Trash (landed)"])
     );
+}
+
+/// A minimal exported bundle: one placed file, one removal, and whatever the
+/// worker log contained when it was exported.
+fn write_bundle(path: &std::path::Path, worker_log: &str) {
+    let bundle = serde_json::json!({
+        "tool": "tauri-plugin-delta-update",
+        "report": {
+            "journal_dir": "<journal_root>",
+            "apply": {
+                "version": "2.0.0",
+                "commit_id": COMMIT_ID,
+                "install_root": "<install_root>",
+                "staging_root": "<staging_root>",
+                "parent_pid": 1
+            },
+            "status": { "state": "completed", "version": "2.0.0", "commit_id": COMMIT_ID },
+            "journal": {
+                "file": "commit.journal",
+                "commit_id": COMMIT_ID,
+                "version": "2.0.0",
+                "from_version": "1.0.0",
+                "ops": 2,
+                "backup": 0,
+                "place": 1,
+                "trash": 1,
+                "restore": 0,
+                "remove_trash": 0,
+                "ops_detail": [
+                    { "kind": "Place", "path": "App.exe", "status": "landed" },
+                    { "kind": "Trash", "path": "legacy.txt", "status": "landed" }
+                ]
+            },
+            "rollback_journal": null,
+            "prepared": null,
+            "attempts": 1,
+            "skipped_version": null,
+            "warnings": [],
+            "diagnosis": "ok"
+        },
+        "worker_log": worker_log
+    });
+    std::fs::write(path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+}
+
+#[test]
+fn bundle_reports_the_newest_structured_worker_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_path = dir.path().join("bundle.json");
+    write_bundle(
+        &bundle_path,
+        "event=apply_started ts=1763000000 commit=x\n\
+         event=apply_failed ts=1763000042 commit=x ms=8 retries=0 msg=\"locked by antivirus\"\n",
+    );
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--bundle"])
+        .arg(&bundle_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["worker_event"]["name"], "apply_failed");
+    assert_eq!(report["worker_event"]["ts"], "1763000042");
+    assert_eq!(report["worker_event"]["msg"], "locked by antivirus");
 }
 
 #[test]
