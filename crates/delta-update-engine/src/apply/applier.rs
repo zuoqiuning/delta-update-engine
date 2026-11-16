@@ -127,38 +127,38 @@ pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
         // Each worker process runs one mode only; resetting here keeps the
         // recovery line scoped to this pass instead of inheriting unknown state.
         crate::fs::reset_retry_count();
-        crate::worker_log::append(
+        crate::worker_log::event(
             Path::new(&journal_root),
-            &format!(
-                "recovery started journal={} exe={} form={}",
-                journal_root.display(),
-                current_exe_display(),
-                current_install_form()
-            ),
+            "recovery_started",
+            &[
+                ("journal", &journal_root.display().to_string()),
+                ("exe", &current_exe_display()),
+                ("form", current_install_form()),
+            ],
         );
         let started = Instant::now();
         return Some(
             match run_recovery_with_keys(Path::new(&journal_root), threshold, keys) {
                 Ok(()) => {
-                    crate::worker_log::append(
+                    crate::worker_log::event(
                         Path::new(&journal_root),
-                        &format!(
-                            "recovery ok in {} ms (retries {})",
-                            started.elapsed().as_millis(),
-                            crate::fs::retry_count()
-                        ),
+                        "recovery_ok",
+                        &[
+                            ("ms", &started.elapsed().as_millis().to_string()),
+                            ("retries", &crate::fs::retry_count().to_string()),
+                        ],
                     );
                     0
                 }
                 Err(error) => {
-                    crate::worker_log::append(
+                    crate::worker_log::event(
                         Path::new(&journal_root),
-                        &format!(
-                            "recovery failed after {} ms (retries {}): {}",
-                            started.elapsed().as_millis(),
-                            crate::fs::retry_count(),
-                            crate::worker_log::oneline(&error.to_string())
-                        ),
+                        "recovery_failed",
+                        &[
+                            ("ms", &started.elapsed().as_millis().to_string()),
+                            ("retries", &crate::fs::retry_count().to_string()),
+                            ("msg", &error.to_string()),
+                        ],
                     );
                     eprintln!("delta update recovery failed: {error}");
                     1
@@ -193,14 +193,15 @@ pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
     crate::fs::reset_retry_count();
     // Write this before any fallible step: if the worker aborts later (panic or
     // `std::process::abort` in a harness), the bundle still shows that it ran.
-    crate::worker_log::append(
+    crate::worker_log::event(
         journal_path,
-        &format!(
-            "apply started commit={commit_id} journal={} exe={} form={}",
-            journal_root.display(),
-            current_exe_display(),
-            current_install_form()
-        ),
+        "apply_started",
+        &[
+            ("commit", &commit_id),
+            ("journal", &journal_root.display().to_string()),
+            ("exe", &current_exe_display()),
+            ("form", current_install_form()),
+        ],
     );
     let started = Instant::now();
     match run_applier_with_keys(journal_path, &commit_id, relaunch, keys) {
@@ -215,25 +216,28 @@ pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
                     _ => None,
                 })
                 .unwrap_or_else(|| "unknown".into());
-            crate::worker_log::append(
+            crate::worker_log::event(
                 journal_path,
-                &format!(
-                    "apply commit {commit_id} ok in {} ms (version {version}, retries {})",
-                    started.elapsed().as_millis(),
-                    crate::fs::retry_count()
-                ),
+                "apply_ok",
+                &[
+                    ("commit", &commit_id),
+                    ("ms", &started.elapsed().as_millis().to_string()),
+                    ("version", &version),
+                    ("retries", &crate::fs::retry_count().to_string()),
+                ],
             );
             Some(0)
         }
         Err(error) => {
-            crate::worker_log::append(
+            crate::worker_log::event(
                 journal_path,
-                &format!(
-                    "apply commit {commit_id} failed after {} ms (retries {}): {}",
-                    started.elapsed().as_millis(),
-                    crate::fs::retry_count(),
-                    crate::worker_log::oneline(&error.to_string())
-                ),
+                "apply_failed",
+                &[
+                    ("commit", &commit_id),
+                    ("ms", &started.elapsed().as_millis().to_string()),
+                    ("retries", &crate::fs::retry_count().to_string()),
+                    ("msg", &error.to_string()),
+                ],
             );
             eprintln!("delta update apply failed: {error}");
             Some(1)

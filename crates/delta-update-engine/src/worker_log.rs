@@ -4,6 +4,7 @@
 //! its outcome survives. `prepare` also records per-file patch fallbacks here,
 //! so a support bundle can answer "why was this update slow" without guessing.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
@@ -26,6 +27,97 @@ pub(crate) fn append(journal_root: &Path, message: &str) {
         return;
     };
     let _ = writeln!(file, "{}", oneline(message));
+}
+
+/// Append one structured event: `event=<name> key=value ...`.
+///
+/// Values are quoted only when they would otherwise split the line, so the
+/// common case stays readable (`event=apply_ok commit=abc ms=12 retries=0`)
+/// while paths with spaces still survive a round trip through [`parse`].
+pub(crate) fn event(journal_root: &Path, name: &str, fields: &[(&str, &str)]) {
+    let mut line = format!("event={name}");
+    for (key, value) in fields {
+        line.push(' ');
+        line.push_str(key);
+        line.push('=');
+        line.push_str(&token(value));
+    }
+    append(journal_root, &line);
+}
+
+/// A parsed structured line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub name: String,
+    fields: BTreeMap<String, String>,
+}
+
+impl Event {
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).map(String::as_str)
+    }
+}
+
+/// Parse a line written by [`event`].
+///
+/// Returns `None` for prose lines, including the pre-`event=` format, so a log
+/// that spans versions keeps working for whoever only knows one of the two.
+pub fn parse(line: &str) -> Option<Event> {
+    let mut fields = parse_fields(line)?;
+    let name = fields.remove("event")?;
+    Some(Event { name, fields })
+}
+
+fn parse_fields(line: &str) -> Option<BTreeMap<String, String>> {
+    let mut fields = BTreeMap::new();
+    let mut rest = line.trim_start();
+    while !rest.is_empty() {
+        let (key, after) = rest.split_once('=')?;
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            return None;
+        }
+        let (value, remaining) = read_value(after)?;
+        fields.insert(key.to_string(), value);
+        rest = remaining.trim_start();
+    }
+    Some(fields)
+}
+
+fn read_value(input: &str) -> Option<(String, &str)> {
+    let Some(stripped) = input.strip_prefix('"') else {
+        let end = input.find(char::is_whitespace).unwrap_or(input.len());
+        return Some((input[..end].to_string(), &input[end..]));
+    };
+    let mut value = String::new();
+    let mut chars = stripped.char_indices();
+    while let Some((index, ch)) = chars.next() {
+        match ch {
+            '\\' => value.push(chars.next()?.1),
+            '"' => return Some((value, &stripped[index + 1..])),
+            _ => value.push(ch),
+        }
+    }
+    None
+}
+
+fn token(value: &str) -> String {
+    let needs_quotes = value.is_empty()
+        || value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch == '"' || ch == '\\');
+    if !needs_quotes {
+        return value.to_string();
+    }
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        if ch == '"' || ch == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(ch);
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// One log entry must stay on one line. `EngineError` messages can embed
@@ -78,6 +170,52 @@ mod tests {
             "denied  second line third"
         );
         assert_eq!(oneline("plain"), "plain");
+    }
+
+    #[test]
+    fn events_round_trip_through_parse() {
+        let temp = tempfile::tempdir().unwrap();
+        event(
+            temp.path(),
+            "patch_fallback",
+            &[
+                ("path", "dir with space/App.exe"),
+                ("code", "E_PATCH_FORMAT_MISMATCH"),
+            ],
+        );
+        event(
+            temp.path(),
+            "apply_ok",
+            &[("commit", "abc"), ("retries", "0")],
+        );
+        let text = std::fs::read_to_string(temp.path().join(FILE)).unwrap();
+        let mut lines = text.lines();
+        let fallback = parse(lines.next().unwrap()).unwrap();
+        assert_eq!(fallback.name, "patch_fallback");
+        assert_eq!(fallback.get("path"), Some("dir with space/App.exe"));
+        assert_eq!(fallback.get("code"), Some("E_PATCH_FORMAT_MISMATCH"));
+        let ok = parse(lines.next().unwrap()).unwrap();
+        assert_eq!(ok.name, "apply_ok");
+        assert_eq!(ok.get("commit"), Some("abc"));
+    }
+
+    #[test]
+    fn quotes_and_backslashes_survive_encoding() {
+        let temp = tempfile::tempdir().unwrap();
+        let value = r#".old/C:\temp\a"b/app.exe"#;
+        event(temp.path(), "apply_failed", &[("msg", value)]);
+        let text = std::fs::read_to_string(temp.path().join(FILE)).unwrap();
+        let parsed = parse(text.trim_end()).unwrap();
+        assert_eq!(parsed.get("msg"), Some(value));
+    }
+
+    #[test]
+    fn prose_lines_are_not_events() {
+        // Lines from the pre-`event=` format must not be mistaken for events.
+        assert!(parse("apply commit 1.0 ok in 12 ms (retries 0)").is_none());
+        assert!(parse("patch fallback: App.exe: E_PATCH_FORMAT_MISMATCH").is_none());
+        assert!(parse("key=value").is_none());
+        assert!(parse("").is_none());
     }
 
     #[test]

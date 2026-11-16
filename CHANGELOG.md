@@ -38,6 +38,7 @@
 - **worker 启动记录安装形态**：`apply started` / `recovery started` 行新增 `form=per-machine|per-user|portable`，由可执行文件位置推断；只用于诊断，不改变任何行为。
 - **子进程崩溃矩阵**：引擎新增 `fault-injection` feature（仅 testkit 启用），worker 在“应用某个 op 之前/之后”按 `DELTA_UPDATE_CRASH_AT` abort；测试对两个阶段各跑一次，断言下一次启动重放到同一棵树、无残留文件。生产二进制不含该钩子。
 - **journal 重放属性测试**：随机内容 + 任意中断点（`0..=ops`）下，先重放前缀再重放完整 journal 的最终树与直接完整重放一致，且第二次重放不改变任何文件哈希；覆盖 `Backup` / `Place` / `Trash` / `RemoveTrash` 的组合，而不只是固定用例。
+- **`worker.log` 结构化为 `event=` 行**：每条记录改为 `event=<name> key=value ...`（值含空格/引号时才加双引号，`worker_log::parse` 可还原），`inspect --bundle` 优先按该格式读取回退证据，并继续兼容旧版纯文本行；日志仍是一行一条，异常消息里的换行仍会被压平。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

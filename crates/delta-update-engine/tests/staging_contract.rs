@@ -305,10 +305,13 @@ async fn prepare_falls_back_to_full_when_patch_is_corrupt() {
         new
     );
     let log = std::fs::read_to_string(dir.path().join("journal/worker.log")).unwrap();
-    assert!(
-        log.contains("patch fallback: App.exe: E_PATCH_FORMAT_MISMATCH"),
-        "worker.log must record the per-file fallback: {log}"
-    );
+    let fallback = log
+        .lines()
+        .filter_map(delta_update_engine::worker_log::parse)
+        .find(|event| event.name == "patch_fallback")
+        .unwrap_or_else(|| panic!("worker.log must record the per-file fallback: {log}"));
+    assert_eq!(fallback.get("path"), Some("App.exe"));
+    assert_eq!(fallback.get("code"), Some("E_PATCH_FORMAT_MISMATCH"));
     drop(dir);
 }
 

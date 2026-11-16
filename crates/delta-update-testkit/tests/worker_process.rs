@@ -16,6 +16,7 @@ use delta_update_engine::crypto::sha256_bytes;
 use delta_update_engine::error::NetworkError;
 use delta_update_engine::fetch::{DownloadReceipt, Fetcher};
 use delta_update_engine::journal::state;
+use delta_update_engine::worker_log::{self, Event};
 use delta_update_engine::{Engine, EngineConfig, EngineError, Limits};
 use delta_update_testkit::TestKeyPair;
 use serde_json::json;
@@ -23,13 +24,18 @@ use url::Url;
 
 const ADDED: &[u8] = b"added by the update";
 
-/// Parse `retries N` out of a worker log line. The exact value depends on
+/// Structured `event=` lines in a worker log. The exact retry count depends on
 /// whether the CI runner's antivirus happened to touch the temp directory, so
-/// tests assert the format here and leave exact counts to the fs retry tests.
-fn retries_in_worker_log(text: &str) -> Option<u64> {
-    let (_, rest) = text.split_once("retries ")?;
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
+/// tests assert the field exists and leave exact counts to the fs retry tests.
+fn worker_events(text: &str) -> Vec<Event> {
+    text.lines().filter_map(worker_log::parse).collect()
+}
+
+fn event<'a>(events: &'a [Event], name: &str, text: &str) -> &'a Event {
+    events
+        .iter()
+        .find(|event| event.name == name)
+        .unwrap_or_else(|| panic!("worker.log should contain a {name} event: {text}"))
 }
 
 struct MapFetcher {
@@ -297,12 +303,14 @@ async fn worker_applies_a_verified_commit_in_a_separate_process() {
         .exists());
     assert!(fixture.journal.join("commit.status").exists());
     let worker_log = std::fs::read_to_string(fixture.journal.join("worker.log")).unwrap();
-    assert!(
-        worker_log.contains(&format!("apply commit {} ok in", fixture.commit_id)),
-        "worker.log should record a successful commit: {worker_log}"
-    );
-    let retries =
-        retries_in_worker_log(&worker_log).expect("worker.log should report a numeric retry count");
+    let events = worker_events(&worker_log);
+    let applied = event(&events, "apply_ok", &worker_log);
+    assert_eq!(applied.get("commit"), Some(fixture.commit_id.as_str()));
+    let retries: u64 = applied
+        .get("retries")
+        .expect("apply_ok should report a retry count")
+        .parse()
+        .unwrap();
     assert!(
         retries <= 3,
         "retries must match the 3-attempt budget: {retries}"
@@ -340,12 +348,13 @@ async fn worker_killed_mid_commit_recovers_on_next_start() {
     drop(lock);
 
     let log = std::fs::read_to_string(fixture.journal.join("worker.log")).unwrap();
+    let events = worker_events(&log);
+    let started = event(&events, "apply_started", &log);
     assert!(
-        log.contains("apply started"),
-        "worker.log must record the killed start: {log}"
-    );
-    assert!(
-        log.contains("form="),
+        matches!(
+            started.get("form"),
+            Some("per-machine" | "per-user" | "portable")
+        ),
         "the start line must record the install form: {log}"
     );
     assert!(
@@ -442,10 +451,9 @@ async fn worker_recovery_rejects_an_untrusted_key() {
     assert!(!fixture.install.join("added.txt").exists());
     assert!(fixture.install.join("old.txt").exists());
     let worker_log = std::fs::read_to_string(fixture.journal.join("worker.log")).unwrap();
-    assert!(
-        worker_log.contains("recovery failed"),
-        "worker.log should record the rejection: {worker_log}"
-    );
+    let events = worker_events(&worker_log);
+    let failed = event(&events, "recovery_failed", &worker_log);
+    assert!(failed.get("msg").is_some_and(|msg| !msg.is_empty()));
 }
 
 #[tokio::test]
@@ -466,12 +474,10 @@ async fn worker_rejects_a_journal_without_the_matching_key() {
     assert!(!fixture.install.join("added.txt").exists());
     assert!(fixture.install.join("old.txt").exists());
     let worker_log = std::fs::read_to_string(fixture.journal.join("worker.log")).unwrap();
+    let events = worker_events(&worker_log);
+    let failed = event(&events, "apply_failed", &worker_log);
     assert!(
-        worker_log.contains("apply commit"),
-        "worker.log should record the rejection: {worker_log}"
-    );
-    assert!(
-        retries_in_worker_log(&worker_log).is_some(),
+        failed.get("retries").is_some(),
         "failure lines should also report a retry count: {worker_log}"
     );
 }

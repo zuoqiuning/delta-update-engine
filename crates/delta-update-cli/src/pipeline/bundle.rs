@@ -81,15 +81,9 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
     }
     let mut fell_back = 0_usize;
     if let Some(log) = &bundle.worker_log {
-        for line in log.lines() {
-            let Some(rest) = line.split_once("patch fallback: ").map(|(_, rest)| rest) else {
-                continue;
-            };
-            let Some((path, code)) = rest.rsplit_once(": ") else {
-                continue;
-            };
-            let row = rows.entry(path.to_string()).or_default();
-            row.fallbacks.push(code.to_string());
+        for (path, code) in fallbacks(log) {
+            let row = rows.entry(path).or_default();
+            row.fallbacks.push(code);
             fell_back += 1;
         }
     }
@@ -170,6 +164,31 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         warn_missing(audit);
     }
     Ok(())
+}
+
+/// Per-file patch fallbacks, from `event=patch_fallback` lines and, for logs
+/// written before that format, from `patch fallback: <path>: <code>` prose.
+fn fallbacks(log: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for line in log.lines() {
+        if let Some(event) = delta_update_engine::worker_log::parse(line) {
+            if event.name == "patch_fallback" {
+                if let (Some(path), Some(code)) = (event.get("path"), event.get("code")) {
+                    found.push((path.to_string(), code.to_string()));
+                }
+            }
+            continue;
+        }
+        let Some((path, code)) = line
+            .split_once("patch fallback: ")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.rsplit_once(": "))
+        else {
+            continue;
+        };
+        found.push((path.to_string(), code.to_string()));
+    }
+    found
 }
 
 fn print_table(rows: &BTreeMap<String, Row>) {

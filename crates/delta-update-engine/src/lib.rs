@@ -25,7 +25,7 @@ pub mod rollback;
 pub mod staging;
 pub mod state;
 pub mod version;
-pub(crate) mod worker_log;
+pub mod worker_log;
 
 pub use apply::{run_applier, run_applier_from_args, run_recovery, DirectWriter, PrivilegedWriter};
 pub use config::EngineConfig;

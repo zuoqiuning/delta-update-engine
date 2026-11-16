@@ -414,9 +414,10 @@ async fn prepare_modified(
                 tracing::warn!(path, %error, "patch failed; falling back to the full object");
                 // Durable evidence for support bundles: the log is the only
                 // place that records which file fell back and why.
-                crate::worker_log::append(
+                crate::worker_log::event(
                     context.journal_root,
-                    &format!("patch fallback: {path}: {}", error.code()),
+                    "patch_fallback",
+                    &[("path", path), ("code", error.code())],
                 );
                 let _ = std::fs::remove_file(&dest);
             }
