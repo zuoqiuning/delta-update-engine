@@ -41,7 +41,9 @@ jobs:
         # rules run. Any key list works; the test asserts the relationship.
         env:
           DELTA_UPDATE_PINNED_PUBLIC_KEYS: RWQpinned1,RWQpinned2
-        run: cargo test -p tauri-plugin-delta-update --features pinned-keys --test pinned_keys_contract
+        run: >-
+          cargo test -p tauri-plugin-delta-update --features pinned-keys
+          --test pinned_keys_contract --test runtime_trust
 
   e2e:
     name: e2e (${{ matrix.os }})
