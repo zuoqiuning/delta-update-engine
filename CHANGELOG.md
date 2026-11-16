@@ -43,6 +43,7 @@
 - **运行期信任根 `set_trusted_keys`**：宿主可在 `main` 开头用 `TrustMode::Intersect` 把进程信任根收窄为“内嵌配置 ∩ 宿主集合”（交集为空即拒绝启动），或用 `TrustMode::PinnedOnly` 显式接管信任根。两者都作用于同一处解析，所以 GUI 与替换 worker 不会拿到两个不同的信任集合；信任根一旦解析即冻结，第二次调用或在 builder 之后调用都返回 `E_CONFIG_INVALID`，而不是只改到一半。构建期 `pinned-keys` 与它仍按先后顺序叠加，收窄只会更窄。
 - **文档进入 CI 门禁**：`cargo xtask ci` 新增 `RUSTDOCFLAGS=-D warnings cargo doc`，公开文档里的私有项 intra-doc 链接不再能悄悄失效；顺手修掉 `worker_log::parse` 与 `rollback` 的两处断链。
 - **e2e 改测信封主路径**：模拟发布同时提供 `latest.envelope.json`（清单与签名在同一对象里），`delta_update` 断言“已是最新时只下载一个对象”；此前夹具只发布清单 + 签名，等于一直在测回退路径。旧客户端的回退行为由 `envelope_contract` 覆盖。
+- **`inspect --bundle` 报出最新 worker 事件**：JSON 增加 `worker_event`（`name` / `ts` / 失败时的 `msg`），人类输出在汇总行后附一行；工单与 CI 不必解析 `worker.log` 就能看到这次是成功还是失败。旧版纯文本日志下该字段为 `null`。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

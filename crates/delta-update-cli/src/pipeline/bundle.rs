@@ -80,7 +80,9 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         }
     }
     let mut fell_back = 0_usize;
-    if let Some(log) = &bundle.worker_log {
+    let mut worker_event = None;
+    if let Some(log) = bundle.worker_log.as_deref() {
+        worker_event = last_event(log);
         for (path, code) in fallbacks(log) {
             let row = rows.entry(path).or_default();
             row.fallbacks.push(code);
@@ -140,6 +142,11 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
                 "full_by_design": full_by_design,
                 "removed": removed,
                 "journal_only": journal_only,
+                "worker_event": worker_event.as_ref().map(|event| serde_json::json!({
+                    "name": &event.name,
+                    "ts": event.get("ts"),
+                    "msg": event.get("msg"),
+                })),
             }))?
         );
     } else {
@@ -147,6 +154,16 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         output::info(&format!(
             "bundle: {patched} files patched, {fell_back} fell back to full, {full_by_design} full by design, {removed} removed"
         ));
+        if let Some(event) = &worker_event {
+            output::info(&format!(
+                "last worker event: {}{}",
+                event.name,
+                event
+                    .get("msg")
+                    .map(|msg| format!(" — {msg}"))
+                    .unwrap_or_default()
+            ));
+        }
         if !journal_only.is_empty() {
             output::warn(&format!(
                 "{} journal entr(y/ies) are missing from the signed manifest (bundle mixes versions or the journal was tampered with): {}",
@@ -164,6 +181,14 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
         warn_missing(audit);
     }
     Ok(())
+}
+
+/// Newest structured event, so a support engineer sees the outcome without
+/// reading the raw log. Legacy prose lines are not events.
+fn last_event(log: &str) -> Option<delta_update_engine::worker_log::Event> {
+    log.lines()
+        .filter_map(delta_update_engine::worker_log::parse)
+        .next_back()
 }
 
 /// Per-file patch fallbacks, from `event=patch_fallback` lines and, for logs
@@ -266,5 +291,16 @@ mod tests {
         rows.insert("ghost.dll".to_string(), row(None, &["Place (landed)"]));
 
         assert_eq!(journal_only(&rows), vec!["ghost.dll"]);
+    }
+
+    #[test]
+    fn last_event_reports_the_newest_structured_line() {
+        let log = "event=apply_started ts=1 commit=c1\n\
+                   event=apply_ok ts=2 commit=c1 retries=0\n\
+                   apply commit c1 ok in 12 ms (retries 0)\n";
+        let event = last_event(log).expect("structured lines are events");
+        assert_eq!(event.name, "apply_ok");
+        assert_eq!(event.get("ts"), Some("2"));
+        assert!(last_event("apply commit c1 failed: locked").is_none());
     }
 }

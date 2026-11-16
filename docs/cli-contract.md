@@ -191,13 +191,16 @@ fi
   "fell_back": 1,
   "full_by_design": 2,
   "removed": 1,
-  "journal_only": []
+  "journal_only": [],
+  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null }
 }
 ```
 
 `strategy`/`size`/`delta_size` 仅在同时提供 `--from-release` 时存在。
 
 `journal_only` 列出“journal 触碰过、但签名清单没有”的路径（排除被删除的文件）。正常 bundle 应为空——worker 会对每个 `Place` 对照签名清单校验；非空说明 bundle 混了版本或 journal 被篡改。反过来“清单有、journal 无”不列为异常：未变化的文件本来就不会出现在 journal 里。
+
+`worker_event` 是 `worker.log` 里最新一条结构化事件（`event=`），`msg` 只对失败事件存在；日志是旧版纯文本时该字段为 `null`。它让 CI 与工单系统不必解析日志就能看到“这次到底是成功还是失败”。
 
 ### 2.6 `report --history --json`
 

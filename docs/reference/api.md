@@ -933,7 +933,7 @@ delta-update inspect --from-release cos://app-releases --version 2.0.0 \
 diff before.txt after.txt
 ```
 
-`inspect --bundle <bundle.json>` 把支持人员最常做的三处对照合并成一张表：`worker.log` 里的每文件补丁回退（`prepare` 写入 `event=patch_fallback path=<path> code=<code>`，旧格式 `patch fallback: <path>: <code>` 同样识别）、journal 的 `ops_detail`（需要 `--export --verbose`），以及 `--from-release` 提供的远端清单策略。四列分别是文件、manifest 策略/体积、journal 实际操作、worker.log 证据；结尾汇总 `N patched / M fell back / K full by design / R removed`。不带 `--from-release` 时只对照本地证据。
+`inspect --bundle <bundle.json>` 把支持人员最常做的三处对照合并成一张表：`worker.log` 里的每文件补丁回退（`prepare` 写入 `event=patch_fallback path=<path> code=<code>`，旧格式 `patch fallback: <path>: <code>` 同样识别）、journal 的 `ops_detail`（需要 `--export --verbose`），以及 `--from-release` 提供的远端清单策略。四列分别是文件、manifest 策略/体积、journal 实际操作、worker.log 证据；结尾汇总 `N patched / M fell back / K full by design / R removed`，并给出来自 `worker.log` 的最新一条结构化事件（`--json` 中的 `worker_event`，含 `name`/`ts`/`msg`）。不带 `--from-release` 时只对照本地证据。
 
 `delta-update report --history <DIR>` 读取 `release --pipeline` 的历史报告（`--report` 指向目录时按 `<version>.json` 归档），按版本排序输出覆盖率趋势表；当覆盖率相比上一版本下降超过 20 个百分点时，额外列出该版本新增的回退文件与原因。
 

@@ -153,6 +153,10 @@ fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
     assert_eq!(report["version"], "2.0.0");
     assert_eq!(report["fell_back"], 1);
     assert_eq!(report["removed"], 1);
+    assert!(
+        report["worker_event"].is_null(),
+        "a pre-`event=` log has no structured event to report"
+    );
 
     let files = report["files"].as_array().unwrap();
     let row = |path: &str| {
