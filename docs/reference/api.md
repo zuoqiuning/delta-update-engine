@@ -847,11 +847,15 @@ delta-update report     # 汇总 release --pipeline 的历史报告，查看增�
 --version <SEMVER>      必填，新版本号
 --bucket <URI>          必填；cos://bucket、s3://bucket 或本地目录
 --key <PATH>            必填（私钥文件路径）
+--additional-signing-key <PATH> 附加私钥，可重复；为每把签名并写入 signing_key_ids
 --from <DIR>            增量发布的基准目录；省略时等价于 --initial
 --from-version <SEMVER> 基准版本号；提供 --from 时必填
 --initial               首次发布，所有文件走全量
 --rollback              生成 rollback: true 的降级清单（必须提供 --from）
 --channel <NAME>        默认 stable
+--notes-file <PATH>     发布说明，写入清单 notes（UTF-8，≤ 64 KiB）
+--mandatory             标记为强制更新
+--min-supported <SEMVER> 最低支持版本；更旧的客户端 check 返回 update_required
 --region <REGION>       COS/S3 区域，默认从 COS_REGION / S3_REGION 读取
 --prefix <PREFIX>       对象键前缀，默认空
 --dry-run               不上传
@@ -864,7 +868,7 @@ delta-update report     # 汇总 release --pipeline 的历史报告，查看增�
 --report <PATH>         --pipeline 的报告路径，默认 release-report.json
 --watch <SECONDS>       --pipeline 发布后继续审计该时长（任何一轮缺对象即失败）
 --interval <SECONDS>    --watch 的审计间隔，默认 60
---jobs <N>              默认 CPU 核数
+--jobs <N>              扫描与补丁生成的并行度，默认 min(max(核数/2, 1), 4)
 --verbose
 ```
 
@@ -893,6 +897,8 @@ doctor:
 --watch <SECONDS>       持续检查该时长；任一轮失败即失败（0 表示只跑一轮）
 --interval <SECONDS>    --watch 的检查间隔，默认 60
 --json                  机器可读输出（不能与 --watch 同时使用）
+--simulate-failure <MODE> lock / patch / disk：用真实代码路径产出对应错误，不写状态
+--reason <REASON>       仅配合 patch：source-mismatch / format / target-hash / memory
 
 inspect:
 --journal-dir <DIR>     本地 journal 目录（--from-release / --bundle 时省略）
@@ -908,6 +914,15 @@ inspect:
 
 report:
 --history <DIR>         release --pipeline 报告目录
+--json                  机器可读输出
+
+init:
+--dir <DIR>             项目根目录，默认 .
+--endpoint <URL>        清单地址；省略时打印占位符
+--public-key <KEY>      受信公钥，可重复（轮换用）；至少一把
+--channel <NAME>        默认 stable
+--write                 生成 src-tauri/capabilities/delta-update.json（不改 tauri.conf.json）
+--permission-set <SET>  manage（默认）/ monitor / default
 
 migrate:
 --dir <DIR>             项目根目录，默认 .

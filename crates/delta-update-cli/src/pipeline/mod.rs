@@ -316,24 +316,25 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                             &args.version,
                             path,
                         );
-                        delta_size = Some(candidate.bytes.len() as u64);
-                        delta_bytes += candidate.bytes.len() as u64;
+                        let size = candidate.bytes.len() as u64;
+                        delta_size = Some(size);
+                        delta_bytes += size;
                         patched_bytes += scanned.size;
                         ratio = Some(candidate.ratio());
                         entry.strategy = "qbsdiff+zstd".to_string();
-                        entry.delta_key = Some(key);
-                        entry.delta_size = delta_size;
+                        entry.delta_key = Some(key.clone());
+                        entry.delta_size = Some(size);
                         objects += 1;
                         if let Some(publisher) = &publisher {
                             publish::upload_objects(
                                 publisher.as_ref(),
                                 &[ObjectUpload {
-                                    key: entry.delta_key.clone().unwrap(),
+                                    key,
                                     body: ObjectBody::Bytes(candidate.bytes),
-                                    size: delta_size.unwrap(),
+                                    size,
                                 }],
                             )?;
-                            uploaded_delta_bytes += delta_size.unwrap();
+                            uploaded_delta_bytes += size;
                         }
                     }
                     Some(PatchAttempt::Skipped(reason)) => skip_reason = Some(reason),

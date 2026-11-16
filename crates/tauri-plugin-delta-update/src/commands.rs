@@ -314,7 +314,12 @@ async fn check_and_prepare<R: Runtime>(
         );
         return;
     }
-    let _ = prepare_now(app, &state, outcome.download_bytes, outcome.files_staged).await;
+    // The failure state is already published by `prepare_now`; log it so a host
+    // that only reads its own logs still sees why the background prepare stopped.
+    if let Err(error) = prepare_now(app, &state, outcome.download_bytes, outcome.files_staged).await
+    {
+        tracing::warn!(%error, "background prepare failed after an automatic check");
+    }
 }
 
 #[tauri::command]
