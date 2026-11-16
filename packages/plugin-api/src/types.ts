@@ -164,3 +164,40 @@ const BUSY_STATES: ReadonlySet<UpdateStateName> = new Set([
 /** The plugin is doing work; commands that need the same gate will fail. */
 export const isBusy = (payload: UpdateStatePayload | null): boolean =>
   payload !== null && BUSY_STATES.has(payload.state);
+
+/**
+ * Everything a UI needs to decide what to render, derived once so every
+ * framework agrees on the same rules.
+ */
+export interface UpdateView {
+  isChecking: boolean;
+  isDownloading: boolean;
+  isReady: boolean;
+  isCommitted: boolean;
+  isRolledBack: boolean;
+  isFailed: boolean;
+  isBusy: boolean;
+  isUpdateRequired: boolean;
+  canPrepare: boolean;
+  canRestart: boolean;
+  error: UpdateError | null;
+}
+
+export function describeUpdate(state: UpdateStatePayload | null): UpdateView {
+  return {
+    isChecking: state?.state === 'Checking',
+    isDownloading: state?.state === 'Downloading' || state?.state === 'Preparing',
+    isReady: state !== null && isPrepared(state),
+    isCommitted: isCommitted(state),
+    isRolledBack: isRolledBack(state),
+    isFailed: isFailed(state),
+    isBusy: isBusy(state),
+    isUpdateRequired: isUpdateRequired(state),
+    canPrepare:
+      state?.state === 'Idle' ||
+      state?.state === 'UpdateRequired' ||
+      isFailed(state),
+    canRestart: state !== null && isPrepared(state),
+    error: state?.error ?? null,
+  };
+}

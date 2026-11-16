@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  describeUpdate,
   isBusy,
   isCommitted,
   isFailed,
@@ -72,5 +73,37 @@ describe('state guards', () => {
       expect(isBusy(payload(state))).toBe(false);
     }
     expect(isBusy(null)).toBe(false);
+  });
+});
+
+describe('describeUpdate', () => {
+  it('reports nothing to do before the first state arrives', () => {
+    const view = describeUpdate(null);
+    expect(view.canPrepare).toBe(false);
+    expect(view.canRestart).toBe(false);
+    expect(view.isBusy).toBe(false);
+    expect(view.error).toBeNull();
+  });
+
+  it('offers restart only for a prepared update', () => {
+    const ready = describeUpdate(payload('Prepared', { version: '2.0.0' }));
+    expect(ready.isReady).toBe(true);
+    expect(ready.canRestart).toBe(true);
+    expect(ready.canPrepare).toBe(false);
+
+    const committing = describeUpdate(payload('Committing', { version: '2.0.0' }));
+    expect(committing.isBusy).toBe(true);
+    expect(committing.canRestart).toBe(false);
+  });
+
+  it('offers prepare from Idle, UpdateRequired and Failed', () => {
+    expect(describeUpdate(payload('Idle')).canPrepare).toBe(true);
+    expect(
+      describeUpdate(payload('UpdateRequired', { min_supported_version: '1.4.0' }))
+        .canPrepare,
+    ).toBe(true);
+    const failed = describeUpdate(payload('Failed', { error: failure }));
+    expect(failed.canPrepare).toBe(true);
+    expect(failed.error?.code).toBe('E_UPDATE_LOCKED');
   });
 });

@@ -49,6 +49,7 @@
 - **`init --signing-key` 免去手工复制公钥**：传入私钥路径即可派生公钥并写入 `signing_public_keys`，可重复以一次写入轮换用的多把；`init` 的缺失公钥提示同步改为这条一步路径。
 - **私钥加载报错可读**：`--key` / `--signing-key` 读不到密钥时不再只说 “Wrong password”，而是提示设置 `MINISIGN_PASSWORD`，并说明 `minisign -W` 生成的无密码密钥无法被读取、需用 `minisign -G` 重新生成。密钥文件缺失则报 “read …”，不再被密码错误掩盖。
 - **`serve` 直接打印可用 endpoint**：启动时输出 `http://<host>:<port>/manifests/latest.json` 与 `allow_insecure_http: true` 提示；绑定 `0.0.0.0` 时改印回环地址并警告明文 HTTP 只对回环生效，省去手工拼 URL 与踩“从别的机器连不上”的坑。
+- **前端新增 `describeUpdate(state)`**：把 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `isUpdateRequired` / `error` 等 UI 判断收敛成一份实现，React hook 与 Vue/Svelte/原生 JS 共用同一套语义，不再各自比较状态字符串；`UpdateView` 一并导出。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

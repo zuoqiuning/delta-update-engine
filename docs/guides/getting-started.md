@@ -253,6 +253,19 @@ await updater.start();          // 读取快照并开始监听
 // 卸载时：unsubscribe(); updater.stop();
 ```
 
+“该显示什么”同样不用自己写状态比较：`describeUpdate(state)` 返回 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `error` 等派生字段，React hook 返回的也是同一组（同一份实现，Vue/Svelte/原生 JS 行为一致）：
+
+```typescript
+import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
+
+const updater = createUpdateController();
+updater.subscribe((state) => {
+  const view = describeUpdate(state);
+  banner.hidden = !view.isReady;
+  retryButton.disabled = !view.canPrepare;
+});
+```
+
 React 18+ 可以直接用子路径 hook（`react` 是可选 peer 依赖）：
 
 ```tsx

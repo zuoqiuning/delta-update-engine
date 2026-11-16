@@ -2,21 +2,19 @@ import { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 import { createUpdateController, type UpdateController } from './controller';
 import {
+  describeUpdate,
   isBusy,
-  isCommitted,
-  isFailed,
   isPrepared,
-  isRolledBack,
-  isUpdateRequired,
   type CancelResult,
   type CheckResult,
   type ConfirmResult,
   type PrepareResult,
   type RestartResult,
   type UpdateStatePayload,
+  type UpdateView,
 } from './types';
 
-export interface UseUpdaterResult {
+export interface UseUpdaterResult extends UpdateView {
   state: UpdateStatePayload | null;
   controller: UpdateController;
   check: () => Promise<CheckResult>;
@@ -28,19 +26,6 @@ export interface UseUpdaterResult {
   retryPrepare: () => Promise<PrepareResult | null>;
   /** Restart only when an update is prepared; resolves `null` otherwise. */
   retryRestart: () => Promise<RestartResult | null>;
-  /** Derived flags so callers do not hand-compare state strings. */
-  isChecking: boolean;
-  isDownloading: boolean;
-  isReady: boolean;
-  isCommitted: boolean;
-  isRolledBack: boolean;
-  isFailed: boolean;
-  isBusy: boolean;
-  /** The running version is below the publisher's `min_supported_version`. */
-  isUpdateRequired: boolean;
-  canPrepare: boolean;
-  canRestart: boolean;
-  error: UpdateStatePayload['error'];
 }
 
 /**
@@ -82,19 +67,6 @@ export function useUpdater(shared?: UpdateController): UseUpdaterResult {
       if (state === null || !isPrepared(state)) return null;
       return controller.restart();
     },
-    isChecking: state?.state === 'Checking',
-    isDownloading: state?.state === 'Downloading' || state?.state === 'Preparing',
-    isReady: state !== null && isPrepared(state),
-    isCommitted: isCommitted(state),
-    isRolledBack: isRolledBack(state),
-    isFailed: isFailed(state),
-    isBusy: isBusy(state),
-    isUpdateRequired: isUpdateRequired(state),
-    canPrepare:
-      state?.state === 'Idle' ||
-      state?.state === 'UpdateRequired' ||
-      isFailed(state),
-    canRestart: state !== null && isPrepared(state),
-    error: state?.error ?? null,
+    ...describeUpdate(state),
   };
 }
