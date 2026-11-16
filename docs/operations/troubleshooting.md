@@ -68,7 +68,7 @@ fn main() {
 
 `staging/` 存放 prepare 阶段物化的变化文件；未变化文件不复制，prepare 时在安装目录原地校验。`journal/` 存放提交日志、状态文件与跨进程锁。**这些文件/目录的存在与内容，是判断更新处于哪个阶段的最直接物理证据**。
 
-`worker.log` 的行格式：worker 成功时 `apply commit <id> ok in <ms> (version <v>, retries <n>)` / `recovery ok in <ms> (retries <n>)`，失败时 `apply commit <id> failed after <ms> (retries <n>): ...` / `recovery failed after <ms> (retries <n>): ...`；启动时还会先写 `apply started commit=<id> ...` / `recovery started ...`。`prepare` 阶段每个补丁回退也会追加 `patch fallback: <path>: <code>`。`retries` 是该进程本次提交/恢复中文件占用重试的次数，**成功与失败都会记录**，因此验收时用 `retries ≥ 1` 判断“重试确实发生过”，用 `retries = 0` 判断“没有重试”。
+`worker.log` 的行格式：worker 成功时 `apply commit <id> ok in <ms> (version <v>, retries <n>)` / `recovery ok in <ms> (retries <n>)`，失败时 `apply commit <id> failed after <ms> (retries <n>): ...` / `recovery failed after <ms> (retries <n>): ...`；启动时还会先写 `apply started commit=<id> journal=<path> exe=<path> form=<per-machine|per-user|portable>` / `recovery started ...`。`form` 是从可执行文件位置推断的安装形态，只用于诊断：per-machine 失败通常意味着提权路径有问题。`prepare` 阶段每个补丁回退也会追加 `patch fallback: <path>: <code>`。`retries` 是该进程本次提交/恢复中文件占用重试的次数，**成功与失败都会记录**，因此验收时用 `retries ≥ 1` 判断“重试确实发生过”，用 `retries = 0` 判断“没有重试”。
 
 **用 `inspect --bundle` 读取**：把诊断包和远端清单一起传给它，会输出“文件 × manifest 策略 × journal 操作 × 回退证据”的对照表，不需要手工 grep：
 

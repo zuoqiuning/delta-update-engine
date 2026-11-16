@@ -37,6 +37,53 @@ pub fn resolve_install_root(
     Ok(exe_parent.to_path_buf())
 }
 
+/// Installation form inferred from where the executable lives, for diagnostics.
+///
+/// Only used in logs: a wrong answer changes no behavior, while knowing whether
+/// a failed update ran from `%ProgramFiles%` (per-machine, needs elevation) or
+/// `%LocalAppData%\Programs` (per-user) is what makes a support bundle readable.
+pub fn install_form(exe: &Path) -> &'static str {
+    let bases: Vec<String> = ["ProgramFiles", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .collect();
+    let local_programs = std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|base| format!("{base}\\Programs"));
+    classify_install_form(
+        exe.parent().unwrap_or(exe),
+        &bases,
+        local_programs.as_deref(),
+    )
+}
+
+fn classify_install_form(
+    directory: &Path,
+    program_files: &[String],
+    local_programs: Option<&str>,
+) -> &'static str {
+    let directory = normalize(directory);
+    let under = |base: &str| {
+        let base = normalize(Path::new(base));
+        directory == base || directory.starts_with(&format!("{base}\\"))
+    };
+    if program_files.iter().any(|base| under(base)) {
+        "per-machine"
+    } else if local_programs.is_some_and(under) {
+        "per-user"
+    } else {
+        "portable"
+    }
+}
+
+fn normalize(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .trim_end_matches('\\')
+        .to_string()
+}
+
 /// Canonical form of `path` even when it does not exist yet: resolve the
 /// nearest existing ancestor and rejoin the missing tail.
 ///
@@ -83,6 +130,36 @@ mod tests {
     fn has_parent_component_sees_unresolved_segments() {
         assert!(has_parent_component(Path::new(r"C:\app\sub\..\bin")));
         assert!(!has_parent_component(Path::new(r"C:\app\bin")));
+    }
+
+    #[test]
+    fn install_form_follows_the_containing_base() {
+        let program_files = vec![r"C:\Program Files".to_string()];
+        assert_eq!(
+            classify_install_form(Path::new(r"c:\program files\MyApp"), &program_files, None),
+            "per-machine"
+        );
+        assert_eq!(
+            classify_install_form(
+                Path::new(r"C:\Users\u\AppData\Local\Programs\MyApp"),
+                &program_files,
+                Some(r"C:\Users\u\AppData\Local\Programs")
+            ),
+            "per-user"
+        );
+        // A sibling that merely shares the prefix is not inside Program Files.
+        assert_eq!(
+            classify_install_form(
+                Path::new(r"C:\Program Files Extra\MyApp"),
+                &program_files,
+                None
+            ),
+            "portable"
+        );
+        assert_eq!(
+            classify_install_form(Path::new(r"D:\Tools\MyApp"), &program_files, None),
+            "portable"
+        );
     }
 
     #[test]

@@ -130,9 +130,10 @@ pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
         crate::worker_log::append(
             Path::new(&journal_root),
             &format!(
-                "recovery started journal={} exe={}",
+                "recovery started journal={} exe={} form={}",
                 journal_root.display(),
-                current_exe_display()
+                current_exe_display(),
+                current_install_form()
             ),
         );
         let started = Instant::now();
@@ -195,9 +196,10 @@ pub fn run_applier_from_args_with_keys(keys: &[String]) -> Option<i32> {
     crate::worker_log::append(
         journal_path,
         &format!(
-            "apply started commit={commit_id} journal={} exe={}",
+            "apply started commit={commit_id} journal={} exe={} form={}",
             journal_root.display(),
-            current_exe_display()
+            current_exe_display(),
+            current_install_form()
         ),
     );
     let started = Instant::now();
@@ -243,6 +245,15 @@ fn current_exe_display() -> String {
     std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "unknown".into())
+}
+
+/// Logged only: knowing whether this worker runs from Program Files or a
+/// per-user location is what makes a support bundle actionable.
+fn current_install_form() -> &'static str {
+    match std::env::current_exe() {
+        Ok(exe) => crate::path::install_form(&exe),
+        Err(_) => "unknown",
+    }
 }
 
 /// A worker must never write outside the installation that contains it. This

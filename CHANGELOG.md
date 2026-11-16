@@ -35,6 +35,7 @@
 - **扫描与补丁共享 `--jobs`**：哈希扫描改为在固定大小线程池里并行（walk 仍串行以保持大小写冲突错误的确定性），`--jobs` 同时控制扫描与补丁生成，避免两个阶段各自按核数开池。
 - **`inspect --bundle` 交叉检查**：新增 `journal_only`，列出“journal 触碰过但签名清单没有”的路径（排除被删除的文件）；正常 bundle 为空，非空说明 bundle 混了版本或 journal 被篡改。未变化文件“清单有、journal 无”不列为异常。
 - **bench 分级门禁**：`bench-check` 按操作类型使用阈值——`scan_tree` / `patch_header` / `hash_tree` 为 5%，其余 I/O 类保持 10%；`bench.yml` 显式传入两个阈值，输出也按实际阈值报告。
+- **worker 启动记录安装形态**：`apply started` / `recovery started` 行新增 `form=per-machine|per-user|portable`，由可执行文件位置推断；只用于诊断，不改变任何行为。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

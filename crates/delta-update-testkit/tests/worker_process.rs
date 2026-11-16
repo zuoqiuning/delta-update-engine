@@ -290,6 +290,10 @@ async fn worker_killed_mid_commit_recovers_on_next_start() {
         "worker.log must record the killed start: {log}"
     );
     assert!(
+        log.contains("form="),
+        "the start line must record the install form: {log}"
+    );
+    assert!(
         !fixture.journal.join("commit.status").exists(),
         "a killed worker cannot write a status"
     );
