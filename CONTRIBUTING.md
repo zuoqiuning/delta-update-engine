@@ -27,6 +27,7 @@ pnpm typecheck
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc -p delta-update-engine -p tauri-plugin-delta-update --no-deps
 cargo test --workspace
 cargo run -p delta-update-e2e
 cargo xtask docs-check

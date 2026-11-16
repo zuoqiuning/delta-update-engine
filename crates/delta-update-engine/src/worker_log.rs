@@ -64,7 +64,7 @@ impl Event {
     }
 }
 
-/// Parse a line written by [`event`].
+/// Parse a structured line written by the worker.
 ///
 /// Returns `None` for prose lines, including the pre-`event=` format, so a log
 /// that spans versions keeps working for whoever only knows one of the two.

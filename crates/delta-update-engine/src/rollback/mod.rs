@@ -12,8 +12,8 @@ pub mod inverse;
 
 /// Roll back a completed commit by generating and replaying an inverse journal.
 ///
-/// Acquires `update.lock`. Recovery paths already hold it and must call
-/// [`rollback_locked`] instead of nesting a second acquisition.
+/// Acquires `update.lock`. Recovery paths already hold it and must call the
+/// crate-internal locked variant instead of nesting a second acquisition.
 pub fn rollback(config: &ApplyConfig, commit: &Journal) -> Result<(), EngineError> {
     let _lock = UpdateLock::acquire(&config.journal_root.join(UPDATE_LOCK))?;
     rollback_locked(config, commit)

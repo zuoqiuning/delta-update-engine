@@ -16,6 +16,20 @@ pub fn run() -> Result<(), String> {
         ],
         &[("CARGO_INCREMENTAL", "0")],
     )?;
+    // Intra-doc links break silently for readers on docs.rs; the two published
+    // crates are the ones users open, so their docs are part of the gate.
+    run_command_with_env(
+        "cargo",
+        &[
+            "doc",
+            "-p",
+            "delta-update-engine",
+            "-p",
+            "tauri-plugin-delta-update",
+            "--no-deps",
+        ],
+        &[("RUSTDOCFLAGS", "-D warnings")],
+    )?;
     run_command("cargo", &["test", "--workspace"])?;
     // `real-test` is excluded from the workspace; check the quickstart demo
     // explicitly so it cannot drift behind Engine API changes. Sharing the
