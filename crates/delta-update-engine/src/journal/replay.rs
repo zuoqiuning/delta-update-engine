@@ -66,6 +66,7 @@ pub(crate) fn replay_with_fs(
                 })
             }
         }
+        crate::fault::crash_point("apply_before_op");
         if let Err(reason) = execute(context, op, fs) {
             return Ok(JournalOutcome::ReplayFailed {
                 op_index: index,
@@ -73,6 +74,7 @@ pub(crate) fn replay_with_fs(
             });
         }
         completed += 1;
+        crate::fault::crash_point("apply_after_op");
     }
     Ok(JournalOutcome::Replayed {
         ops_completed: completed,

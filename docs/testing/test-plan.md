@@ -450,26 +450,30 @@ pub struct FaultyFs {
 
 ### 10.2 子进程崩溃测试
 
-对于 `abort()` 注入，测试以子进程方式运行被测代码：
+对于 `abort()` 注入，测试以子进程方式运行真实 worker：
 
 ```rust
-#[test]
-fn journal_crash_after_flush_before_first_op() {
-    let dir = setup_test_tree();
-    let child = Command::new(env!("CARGO_BIN_EXE_crash_harness"))
-        .env("CRASH_AT", "after_flush")
-        .env("TEST_DIR", dir.path())
-        .spawn().unwrap();
-    let status = child.wait().unwrap();
-    assert!(!status.success());  // 确认崩溃发生
+#[tokio::test]
+async fn a_worker_killed_between_operations_recovers_on_the_next_run() {
+    for crash_at in ["apply_before_op", "apply_after_op"] {
+        let fixture = prepare_fixture().await;
+        let crashed = Command::new(&fixture.harness)
+            .arg("--delta-update-apply")
+            .arg(&fixture.journal)
+            .arg(&fixture.commit_id)
+            .env("DELTA_UPDATE_CRASH_AT", crash_at)
+            .output()
+            .unwrap();
+        assert!(!crashed.status.success());  // 确认崩溃发生
 
-    // 父进程检查状态并触发恢复
-    let outcome = CommitJournal::recover(&dir.path().join("root")).unwrap();
-    assert_consistent(&dir.path().join("root"), &OLD, &NEW);
+        // 下一次启动必须重放到同一棵树。
+        assert!(run_worker(&fixture).status.success());
+        assert_consistent(&fixture);
+    }
 }
 ```
 
-`crash_harness` 是一个极小的测试二进制，在指定注入点调用 `abort()`。
+注入点由引擎内的 `fault::crash_point` 提供，只在 `fault-injection` feature 下编译（testkit 启用），生产二进制不可达。当前矩阵覆盖“应用某个 op 之前/之后”；journal 写入阶段的崩溃由 §10.1 的截断/损坏用例覆盖。`crash_harness` 仍保留为最小的“立即 abort”探针。
 
 ### 10.3 CI 流水线
 

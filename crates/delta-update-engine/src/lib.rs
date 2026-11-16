@@ -11,6 +11,7 @@ pub mod crypto;
 pub mod diagnostics;
 pub mod engine;
 pub mod error;
+mod fault;
 pub mod fetch;
 pub mod fs;
 pub mod history;

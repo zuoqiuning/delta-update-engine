@@ -213,6 +213,61 @@ fn run_recovery(fixture: &Fixture, public_key: &str) -> std::process::Output {
         .unwrap()
 }
 
+fn run_worker_crashing(
+    fixture: &Fixture,
+    public_key: &str,
+    crash_at: &str,
+) -> std::process::Output {
+    Command::new(&fixture.harness)
+        .arg("--delta-update-apply")
+        .arg(&fixture.journal)
+        .arg(&fixture.commit_id)
+        .env("WORKER_HARNESS_KEYS", public_key)
+        .env("DELTA_UPDATE_CRASH_AT", crash_at)
+        .output()
+        .unwrap()
+}
+
+/// A worker killed between operations must leave a journal that the next start
+/// replays to the same tree, with no partial file left behind.
+#[tokio::test]
+async fn a_worker_killed_between_operations_recovers_on_the_next_run() {
+    for crash_at in ["apply_before_op", "apply_after_op"] {
+        let fixture = prepare_fixture().await;
+        let crashed = run_worker_crashing(&fixture, fixture.keys.public_key(), crash_at);
+        assert!(
+            !crashed.status.success(),
+            "{crash_at} should abort the worker, got {}",
+            crashed.status
+        );
+
+        let recovered = run_worker(&fixture, fixture.keys.public_key());
+        assert!(
+            recovered.status.success(),
+            "{crash_at}: recovery failed: {}",
+            String::from_utf8_lossy(&recovered.stderr)
+        );
+        assert_eq!(
+            std::fs::read(fixture.install.join("App.exe")).unwrap(),
+            fixture.new_app,
+            "{crash_at}: App.exe must be the new version"
+        );
+        assert_eq!(
+            std::fs::read(fixture.install.join("added.txt")).unwrap(),
+            ADDED,
+            "{crash_at}: added.txt must be present"
+        );
+        assert!(
+            !fixture.install.join("old.txt").exists(),
+            "{crash_at}: removed file must stay removed"
+        );
+        assert!(
+            fixture.journal.join("commit.status").exists(),
+            "{crash_at}: recovery must record a status"
+        );
+    }
+}
+
 #[tokio::test]
 async fn worker_applies_a_verified_commit_in_a_separate_process() {
     let fixture = prepare_fixture().await;

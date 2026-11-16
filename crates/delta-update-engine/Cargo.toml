@@ -19,6 +19,9 @@ bench = false
 
 [features]
 default = []
+# Enables `fault::crash_point` so tests can abort a worker at a named stage.
+# Enabled by delta-update-testkit; never by the plugin or CLI.
+fault-injection = []
 
 [dependencies]
 serde.workspace = true
