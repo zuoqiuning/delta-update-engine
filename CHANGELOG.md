@@ -37,6 +37,7 @@
 - **bench 分级门禁**：`bench-check` 按操作类型使用阈值——`scan_tree` / `patch_header` / `hash_tree` 为 5%，其余 I/O 类保持 10%；`bench.yml` 显式传入两个阈值，输出也按实际阈值报告。
 - **worker 启动记录安装形态**：`apply started` / `recovery started` 行新增 `form=per-machine|per-user|portable`，由可执行文件位置推断；只用于诊断，不改变任何行为。
 - **子进程崩溃矩阵**：引擎新增 `fault-injection` feature（仅 testkit 启用），worker 在“应用某个 op 之前/之后”按 `DELTA_UPDATE_CRASH_AT` abort；测试对两个阶段各跑一次，断言下一次启动重放到同一棵树、无残留文件。生产二进制不含该钩子。
+- **journal 重放属性测试**：随机内容 + 任意中断点（`0..=ops`）下，先重放前缀再重放完整 journal 的最终树与直接完整重放一致，且第二次重放不改变任何文件哈希；覆盖 `Backup` / `Place` / `Trash` / `RemoveTrash` 的组合，而不只是固定用例。
 
 ## [1.0.0-rc.4] - 2026-11-15
 
