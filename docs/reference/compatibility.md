@@ -203,8 +203,8 @@ if config.config_version < CURRENT_CONFIG_VERSION {
 从官方 updater 迁移的建议顺序：
 
 1. 移除 `tauri-plugin-updater` 的插件注册、权限与前端调用；
-2. 运行 `delta-update init --dir . --write --endpoint <HTTPS 清单地址> --public-key <minisign 公钥>`；如果项目里已有 `plugins.updater.pubkey`，`init` 会尝试复用它，但 **Tauri 公钥不是 minisign 公钥**，校验失败时会要求显式提供 `--public-key`（建议重新生成一对 minisign 密钥）；
-3. 在 `main` 开头接入 `run_applier_from_context(&context)`，并合并 `plugins.delta-update` 配置；
+2. 运行 `delta-update init --dir . --write --endpoint <HTTPS 清单地址> --signing-key <私钥路径>`；如果项目里已有 `plugins.updater.pubkey`，`init` 会尝试复用它，但 **Tauri 公钥不是 minisign 公钥**，校验失败时会要求显式提供（建议重新生成一对 minisign 密钥）；
+3. 把 `.run(context)` 换成 `.run_with_delta_update(context)`（或自行在 builder 前调用 `run_applier_from_context`），并合并 `plugins.delta-update` 配置；
 4. 用 `delta-update release` 生成并发布第一份清单；首次更新会把本地未在清单中的文件视为 `Untracked`，不会删除用户数据。
 
 `endpoint` 指向的 JSON 格式完全不同，不能把官方 updater 的 `latest.json` 直接交给本引擎，也没有自动转换器。

@@ -30,7 +30,10 @@ fn main() {
     if let Some(code) = tauri_plugin_delta_update::run_applier_from_context(&context) {
         std::process::exit(code);
     }
-    // ... tauri::Builder::default().run(context)
+    tauri::Builder::default()
+        .plugin(tauri_plugin_delta_update::init())
+        .run_with_delta_update(context)
+        .expect("run the app");
 }
 ```
 
