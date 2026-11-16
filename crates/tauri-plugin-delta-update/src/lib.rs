@@ -8,6 +8,38 @@
 //! In scope: per-user installs (`%LocalAppData%`), per-machine installs
 //! (`%ProgramFiles%`, with UAC for the replacement worker) and portable layouts
 //! that set `install_dir`.
+//!
+//! # Quickstart
+//!
+//! 1. Fill `plugins.delta-update.{endpoint, signing_public_keys}` in
+//!    `tauri.conf.json` and grant the `delta-update` permission set in
+//!    `src-tauri/capabilities/delta-update.json`.
+//! 2. Replace `.run(context)` with
+//!    [`.run_with_delta_update(context)`](BuilderExt::run_with_delta_update):
+//!
+//! ```ignore
+//! tauri::Builder::default()
+//!     .plugin(tauri_plugin_delta_update::init())
+//!     .run_with_delta_update(tauri::generate_context!())
+//! ```
+//!
+//! 3. From the frontend: `check` → `prepare` → `restart_to_apply` (or
+//!    `confirm_healthy` when the app controls the restart). State changes are
+//!    pushed on [`STATE_EVENT`].
+//!
+//! The wrapper handles the replacement/recovery worker before any window is
+//! created. A host that keeps `.run(context)` gets a debug panic and a disabled
+//! feature in release builds, because the restarted process would land in a
+//! worker mode this binary never handles.
+//!
+//! # Pinned keys
+//!
+//! Enabling the `pinned-keys` feature and setting
+//! `DELTA_UPDATE_PINNED_PUBLIC_KEYS` (comma-separated, build environment) makes
+//! the client trust only the intersection of the embedded keys and that build
+//! allowlist; an empty intersection refuses to start. It defends against a
+//! build-time config injection, not runtime tampering: the trust root is always
+//! the embedded config, so editing `tauri.conf.json` requires a rebuild.
 
 // One unsafe call site is allowed in `applier` for ShellExecuteW("runas");
 // everything else stays safe Rust.
