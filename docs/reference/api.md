@@ -918,7 +918,7 @@ migrate:
 
 `migrate --write` 只创建两个新文件（capability 与 `delta-update-migration.md`），**不修改** `tauri.conf.json`、`Cargo.toml` 或 `main.rs`；已存在的文件一律跳过，因此不需要备份或冲突合并。迁移指南包含五节：配置替换、capability、Cargo 依赖、`main.rs` diff，以及官方前端 API（`check()` / `downloadAndInstall` / `relaunch` / `onUpdaterEvent`）到 `check()` / `prepare()` / `restartToApply()` / `listen(STATE_EVENT)` 的对照表与一段可直接粘贴的 `createUpdateController()` 片段。
 
-`inspect --journal-dir` 离线读取 journal 目录，输出待处理提交、PREPARED、回滚与损坏状态；退出码 `1` 表示未完成 Journal（可重启恢复），`2` 表示状态损坏（需人工介入）。
+`inspect --journal-dir` 离线读取 journal 目录，输出待处理提交、PREPARED、回滚与损坏状态，并在末尾打印 `worker.log` 里最新一条结构化事件（`event=` 与其 `msg`）；退出码 `1` 表示未完成 Journal（可重启恢复），`2` 表示状态损坏（需人工介入）。
 
 `inspect --from-release` 是发布后审计：下载并验签版本化清单，逐文件输出与 `release --verbose` 同构的表格（`FILE / STRATEGY / FULL / DELTA / RATIO`），对每个 `delta_key`/`full_key` 做 `HEAD` 大小校验（不下载对象），最后汇总增量覆盖率。它与 `release --verbose` 的差异就是“构建意图”与“远端实际”的差异，可直接 diff：
 

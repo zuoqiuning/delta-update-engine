@@ -778,7 +778,7 @@ confirm_healthy(): attempts = 0
 | `verified_manifest.json` / `.minisig` | 最近一次验签通过的原始清单与 detached 签名；worker 用内嵌公钥重新验签 |
 | `installed_manifest.json` / `.minisig` | 已确认健康版本的签名清单；回滚 `Restore` 用它校验旧哈希 |
 | `old_hashes.json`  | 提交前对被替换/删除文件的哈希快照；回滚用它校验备份，而不是信任备份文件当前字节 |
-| `worker.log`       | 替换/恢复 worker 失败时的追加日志（worker stdio 被重定向到 null） |
+| `worker.log`       | 替换/恢复 worker 与 `prepare` 的追加日志（worker stdio 被重定向到 null）：每行一条 `event=<name> ts=<unix> key=value ...`，成功与失败都记录；超过 1 MiB 裁到最新 256 KiB |
 | `commit.status`    | `{"state":"completed","version":…,"commit_id":…}` 或 `{"state":"failed","op_index":…,"message":…}` |
 | `commit.journal`   | 当前提交日志；成功完成后保留到 `confirm_healthy`             |
 | `rollback.journal` | 回滚进行中的逆日志；成功后删除                               |

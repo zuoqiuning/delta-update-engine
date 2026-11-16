@@ -185,7 +185,7 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
 
 /// Newest structured event, so a support engineer sees the outcome without
 /// reading the raw log. Legacy prose lines are not events.
-fn last_event(log: &str) -> Option<delta_update_engine::worker_log::Event> {
+pub(crate) fn last_event(log: &str) -> Option<delta_update_engine::worker_log::Event> {
     log.lines()
         .filter_map(delta_update_engine::worker_log::parse)
         .next_back()

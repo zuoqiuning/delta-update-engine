@@ -131,5 +131,22 @@ fn print_human(report: &DiagnosticReport) {
     for warning in &report.warnings {
         println!("警告: {warning}");
     }
+    if let Some(event) = std::fs::read_to_string(
+        report
+            .journal_dir
+            .join(delta_update_engine::worker_log::FILE),
+    )
+    .ok()
+    .and_then(|log| crate::pipeline::bundle::last_event(&log))
+    {
+        println!(
+            "最近 worker 事件: {}{}",
+            event.name,
+            event
+                .get("msg")
+                .map(|msg| format!(" — {msg}"))
+                .unwrap_or_default()
+        );
+    }
     println!("诊断: {}", report.diagnosis);
 }

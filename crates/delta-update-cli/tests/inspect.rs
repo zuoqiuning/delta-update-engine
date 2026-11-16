@@ -96,6 +96,31 @@ fn accepts_a_clean_journal_directory() {
 }
 
 #[test]
+fn journal_dir_reports_the_last_worker_event() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("worker.log"),
+        "event=apply_started ts=1763000000 commit=x\n\
+         event=apply_failed ts=1763000042 commit=x retries=0 msg=\"access denied\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("最近 worker 事件: apply_failed — access denied"),
+        "{text}"
+    );
+}
+
+#[test]
 fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_path = dir.path().join("bundle.json");
