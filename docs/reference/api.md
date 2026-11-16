@@ -928,7 +928,14 @@ init:
 migrate:
 --dir <DIR>             项目根目录，默认 .
 --write                 生成 src-tauri/capabilities/delta-update.json 与 delta-update-migration.md
+
+serve:
+--dir <DIR>             `release --bucket <DIR>` 写出的目录
+--port <PORT>           默认 8123；0 由系统分配
+--host <HOST>           默认 127.0.0.1；非回环地址时客户端不接受明文 HTTP
 ```
+
+`serve` 启动后直接打印可粘贴进 `plugins.delta-update.endpoint` 的 URL，并提示本地联调需要 `allow_insecure_http: true`；它是无 TLS 的诊断/演示服务器，不是生产 CDN。
 
 `verify` 从对象存储重新下载清单、验签、抽样下载补丁、应用补丁、校验目标哈希。`doctor` 额外校验：所有备用端点的版本一致性、清单字段合法性、对象可访问性与字节数；`doctor --check-config` 不访问网络，直接使用引擎的配置 schema 校验 `plugins.delta-update`，因此 CI 无需安装应用。`doctor --watch <SECONDS>` 按 `--interval` 反复执行同一套检查，适合发布后 5–10 分钟的 CDN 传播观察窗口；任何一轮失败都会让整个命令失败。
 

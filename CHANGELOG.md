@@ -48,6 +48,7 @@
 - **补齐 CLI 参数参考与前端守卫测试**：`docs/reference/api.md` 补上 `release --additional-signing-key` / `--notes-file` / `--mandatory` / `--min-supported`、`doctor --simulate-failure` / `--reason`、`init` 与 `report --json`，并把 `--jobs` 默认值改为实际的 `min(max(核数/2, 1), 4)`；`packages/plugin-api` 新增 `types.test.ts`，覆盖 `isCommitted` / `isRolledBack` / `isFailed` / `isUpdateRequired` / `isBusy` 五个此前只有类型检查的状态守卫。
 - **`init --signing-key` 免去手工复制公钥**：传入私钥路径即可派生公钥并写入 `signing_public_keys`，可重复以一次写入轮换用的多把；`init` 的缺失公钥提示同步改为这条一步路径。
 - **私钥加载报错可读**：`--key` / `--signing-key` 读不到密钥时不再只说 “Wrong password”，而是提示设置 `MINISIGN_PASSWORD`，并说明 `minisign -W` 生成的无密码密钥无法被读取、需用 `minisign -G` 重新生成。密钥文件缺失则报 “read …”，不再被密码错误掩盖。
+- **`serve` 直接打印可用 endpoint**：启动时输出 `http://<host>:<port>/manifests/latest.json` 与 `allow_insecure_http: true` 提示；绑定 `0.0.0.0` 时改印回环地址并警告明文 HTTP 只对回环生效，省去手工拼 URL 与踩“从别的机器连不上”的坑。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

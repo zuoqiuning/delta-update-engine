@@ -24,7 +24,23 @@ pub fn run(args: &ServeArgs) -> anyhow::Result<()> {
     let listener = TcpListener::bind((args.host.as_str(), args.port))
         .with_context(|| format!("bind {}:{}", args.host, args.port))?;
     let address = listener.local_addr()?;
+    // A wildcard bind is not a usable URL; loopback is what the client accepts
+    // for plain HTTP anyway, so that is what gets printed.
+    let host = match args.host.as_str() {
+        "0.0.0.0" | "[::]" | "::" => "127.0.0.1",
+        other => other,
+    };
     println!("serving {} at http://{address}", root.display());
+    println!(
+        "endpoint: http://{host}:{}/manifests/latest.json",
+        address.port()
+    );
+    println!("客户端本地联调需要 allow_insecure_http: true（只放行回环地址）。");
+    if host != args.host {
+        crate::output::warn(
+            "this server has no TLS; clients only accept plain HTTP on loopback, so use it from this machine or put a TLS proxy in front",
+        );
+    }
     serve_on(listener, root);
     Ok(())
 }
