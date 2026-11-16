@@ -118,6 +118,19 @@ fn journal_dir_reports_the_last_worker_event() {
         text.contains("最近 worker 事件: apply_failed — access denied"),
         "{text}"
     );
+
+    // The machine-readable form must carry the same fact, not just the table.
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(dir.path())
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["worker_event"]["name"], "apply_failed");
+    assert_eq!(report["worker_event"]["ts"], "1763000042");
 }
 
 #[test]

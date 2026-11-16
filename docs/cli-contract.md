@@ -93,11 +93,12 @@ fi
   "crash_loop_threshold": 3,
   "skipped_version": null,
   "warnings": [],
-  "diagnosis": "…"
+  "diagnosis": "…",
+  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null }
 }
 ```
 
-`attempts > crash_loop_threshold` 时下一次启动会回滚；`crash_loop_threshold` 在机器首次启动后才有值。
+`attempts > crash_loop_threshold` 时下一次启动会回滚；`crash_loop_threshold` 在机器首次启动后才有值。`worker_event` 是 `worker.log` 里最新一条结构化事件，只在存在时出现；日志是旧版纯文本时该字段缺失。
 
 ### 2.3 `inspect --from-release --json`
 

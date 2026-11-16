@@ -25,15 +25,19 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
         );
     }
     let report = diagnostics::collect(journal_dir, args.verbose)?;
+    let worker_event = last_worker_event(&report.journal_dir);
     if args.json {
         let mut value = serde_json::to_value(&report)?;
         if let Some(map) = value.as_object_mut() {
             map.insert("v".into(), 1.into());
             map.insert("tool".into(), TOOL.into());
+            if let Some(event) = &worker_event {
+                map.insert("worker_event".into(), event_json(event));
+            }
         }
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        print_human(&report);
+        print_human(&report, worker_event.as_ref());
     }
     if let Some(path) = &args.export {
         diagnostics::write_bundle(journal_dir, args.verbose, TOOL, path, None, args.redact)?;
@@ -53,7 +57,10 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_human(report: &DiagnosticReport) {
+fn print_human(
+    report: &DiagnosticReport,
+    worker_event: Option<&delta_update_engine::worker_log::Event>,
+) {
     println!("日志目录: {}", report.journal_dir.display());
     match &report.apply {
         Some(apply) => println!(
@@ -131,14 +138,7 @@ fn print_human(report: &DiagnosticReport) {
     for warning in &report.warnings {
         println!("警告: {warning}");
     }
-    if let Some(event) = std::fs::read_to_string(
-        report
-            .journal_dir
-            .join(delta_update_engine::worker_log::FILE),
-    )
-    .ok()
-    .and_then(|log| crate::pipeline::bundle::last_event(&log))
-    {
+    if let Some(event) = worker_event {
         println!(
             "最近 worker 事件: {}{}",
             event.name,
@@ -149,4 +149,20 @@ fn print_human(report: &DiagnosticReport) {
         );
     }
     println!("诊断: {}", report.diagnosis);
+}
+
+/// Newest structured `worker.log` event, shared by the human and `--json`
+/// outputs so both report the same outcome.
+fn last_worker_event(dir: &std::path::Path) -> Option<delta_update_engine::worker_log::Event> {
+    std::fs::read_to_string(dir.join(delta_update_engine::worker_log::FILE))
+        .ok()
+        .and_then(|log| crate::pipeline::bundle::last_event(&log))
+}
+
+fn event_json(event: &delta_update_engine::worker_log::Event) -> serde_json::Value {
+    serde_json::json!({
+        "name": &event.name,
+        "ts": event.get("ts"),
+        "msg": event.get("msg"),
+    })
 }

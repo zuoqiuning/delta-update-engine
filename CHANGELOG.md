@@ -50,6 +50,7 @@
 - **私钥加载报错可读**：`--key` / `--signing-key` 读不到密钥时不再只说 “Wrong password”，而是提示设置 `MINISIGN_PASSWORD`，并说明 `minisign -W` 生成的无密码密钥无法被读取、需用 `minisign -G` 重新生成。密钥文件缺失则报 “read …”，不再被密码错误掩盖。
 - **`serve` 直接打印可用 endpoint**：启动时输出 `http://<host>:<port>/manifests/latest.json` 与 `allow_insecure_http: true` 提示；绑定 `0.0.0.0` 时改印回环地址并警告明文 HTTP 只对回环生效，省去手工拼 URL 与踩“从别的机器连不上”的坑。
 - **前端新增 `describeUpdate(state)`**：把 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `isUpdateRequired` / `error` 等 UI 判断收敛成一份实现，React hook 与 Vue/Svelte/原生 JS 共用同一套语义，不再各自比较状态字符串；`UpdateView` 一并导出。
+- **`inspect --journal-dir --json` 补齐 `worker_event`**：人类输出早已打印最新 worker 事件，JSON 现在也带同一个字段（`name`/`ts`/`msg`），CI 与工单系统拿到的信息与人看到的一致。
 
 ## [1.0.0-rc.4] - 2026-11-15
 
