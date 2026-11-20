@@ -54,7 +54,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rayon = "1"
 minisign = "0.7"
-hmac = "0.12"
+hmac = "0.13"
 sha1 = "0.10"
 chrono = "0.4"
 
