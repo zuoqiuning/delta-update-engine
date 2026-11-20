@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use url::Url;
 
@@ -13,6 +14,11 @@ pub const SIGNED_URL_TTL_SECONDS: u64 = 900;
 
 /// Refresh a signed URL this long before it actually expires.
 pub const REFRESH_MARGIN: Duration = Duration::from_secs(60);
+
+/// A signing response only contains a small key→URL map. Anything larger is a
+/// broken or hostile service, not a real release, so the body is capped before
+/// JSON parsing.
+pub const MAX_SIGNING_RESPONSE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedUrl {
@@ -38,6 +44,9 @@ pub struct HttpSigningService {
     client: reqwest::Client,
     endpoint: Url,
     allow_insecure_http: bool,
+    /// Sent only to the signing service, never to object hosts. Enterprise
+    /// deployments often put this service behind their own auth proxy.
+    headers: HeaderMap,
 }
 
 impl HttpSigningService {
@@ -46,6 +55,15 @@ impl HttpSigningService {
         endpoint: Url,
         allow_insecure_http: bool,
     ) -> Result<Self, EngineError> {
+        Self::new_with_headers(client, endpoint, allow_insecure_http, HeaderMap::new())
+    }
+
+    pub fn new_with_headers(
+        client: reqwest::Client,
+        endpoint: Url,
+        allow_insecure_http: bool,
+        headers: HeaderMap,
+    ) -> Result<Self, EngineError> {
         if !is_allowed_endpoint(&endpoint, allow_insecure_http) {
             return Err(EngineError::EndpointInsecure(endpoint.to_string()));
         }
@@ -53,6 +71,7 @@ impl HttpSigningService {
             client,
             endpoint,
             allow_insecure_http,
+            headers,
         })
     }
 }
@@ -64,10 +83,11 @@ impl SignedUrlProvider for HttpSigningService {
             "keys": [key],
             "ttl_seconds": ttl_seconds.min(SIGNED_URL_TTL_SECONDS),
         });
-        let response = self
-            .client
-            .post(self.endpoint.clone())
-            .json(&body)
+        let mut request = self.client.post(self.endpoint.clone()).json(&body);
+        for (name, value) in &self.headers {
+            request = request.header(name.clone(), value.clone());
+        }
+        let response = request
             .send()
             .await
             .map_err(|err| signing_service(err.to_string()))?;
@@ -77,9 +97,24 @@ impl SignedUrlProvider for HttpSigningService {
                 response.status()
             )));
         }
-        let payload: SigningResponse = response
-            .json()
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_SIGNING_RESPONSE_BYTES)
+        {
+            return Err(signing_service(format!(
+                "signing response exceeds the {MAX_SIGNING_RESPONSE_BYTES} byte limit"
+            )));
+        }
+        let bytes = response
+            .bytes()
             .await
+            .map_err(|err| signing_service(format!("read signing response: {err}")))?;
+        if bytes.len() as u64 > MAX_SIGNING_RESPONSE_BYTES {
+            return Err(signing_service(format!(
+                "signing response exceeds the {MAX_SIGNING_RESPONSE_BYTES} byte limit"
+            )));
+        }
+        let payload: SigningResponse = serde_json::from_slice(&bytes)
             .map_err(|err| signing_service(format!("invalid signing response: {err}")))?;
         let raw = payload
             .urls

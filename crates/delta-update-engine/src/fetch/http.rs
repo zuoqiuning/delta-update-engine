@@ -1,24 +1,33 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RANGE};
+use reqwest::header::{HeaderMap, ETAG, IF_NONE_MATCH, RANGE};
 use url::Url;
 
 use crate::config::is_allowed_endpoint;
 use crate::error::{EngineError, NetworkError, PatchError, SignatureError};
 
 use super::resume::resume_offset;
-use super::signing::{
-    HttpSigningService, ResolvedUrl, SignedUrlProvider, REFRESH_MARGIN, SIGNED_URL_TTL_SECONDS,
-};
+use super::signing::{HttpSigningService, ResolvedUrl, SignedUrlProvider, SIGNED_URL_TTL_SECONDS};
 use super::{DownloadReceipt, Fetcher};
 
 const MAX_RETRIES: u32 = 3;
 const MAX_REFRESHES: u32 = 3;
 const RETRY_BASE_DELAY_MS: u64 = 200;
+
+mod ranged;
+mod support;
+
+use ranged::remove_chunks;
+use support::{
+    build_headers, has_expired, is_expired_status, lock, needs_refresh, network_error, rate_limited,
+};
+
+/// Live byte progress for one object. `Some` only when the caller asked for it.
+type ProgressSink<'a> = Option<&'a (dyn Fn(u64) + Send + Sync)>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FetchLimits {
@@ -29,6 +38,10 @@ pub struct FetchLimits {
     pub range_chunk_threshold: u64,
     pub range_chunk_size: u64,
     pub range_concurrency: usize,
+    /// Upper bound on concurrent HTTP requests in this fetcher (file-level and
+    /// Range-level downloads combined). Keeps a large update from opening
+    /// `files × ranges` sockets at once.
+    pub request_concurrency: usize,
 }
 
 impl Default for FetchLimits {
@@ -40,6 +53,7 @@ impl Default for FetchLimits {
             range_chunk_threshold: 8 * 1024 * 1024,
             range_chunk_size: 8 * 1024 * 1024,
             range_concurrency: 4,
+            request_concurrency: 8,
         }
     }
 }
@@ -50,17 +64,29 @@ struct CachedUrl {
     expires_at: SystemTime,
 }
 
+/// Last manifest body and its `ETag`, so a `check` against an unchanged
+/// channel pointer costs one 304 instead of the whole document.
+#[derive(Debug, Clone)]
+struct CachedBody {
+    etag: String,
+    body: Vec<u8>,
+}
+
 pub struct HttpFetcher {
     client: reqwest::Client,
     endpoint: Url,
     manifest_key: String,
     signing: Option<Arc<dyn SignedUrlProvider>>,
+    signing_endpoint: Option<Url>,
     cache: Mutex<HashMap<String, CachedUrl>>,
     limits: FetchLimits,
     allowed_hosts: Option<Vec<String>>,
     allow_insecure_http: bool,
     /// Applied only to manifest/signature requests, never to object downloads.
     headers: HeaderMap,
+    /// Bounds concurrent requests; see [`FetchLimits::request_concurrency`].
+    permits: Arc<tokio::sync::Semaphore>,
+    manifest_cache: Mutex<Option<CachedBody>>,
 }
 
 impl HttpFetcher {
@@ -204,6 +230,7 @@ impl HttpFetcher {
             return Err(EngineError::EndpointInsecure(endpoint.to_string()));
         }
         let manifest_key = endpoint.path().trim_start_matches('/').to_string();
+        let signing_endpoint_url = signing_endpoint.clone();
         let signing = match signing_endpoint {
             Some(url) => {
                 if manifest_key.is_empty() {
@@ -229,12 +256,41 @@ impl HttpFetcher {
             endpoint,
             manifest_key,
             signing,
+            signing_endpoint: signing_endpoint_url,
             cache: Mutex::new(HashMap::new()),
+            // `Copy` limits are captured by value; the semaphore is the only
+            // shared resource.
+            permits: Arc::new(tokio::sync::Semaphore::new(
+                limits.request_concurrency.max(1),
+            )),
+            manifest_cache: Mutex::new(None),
             limits,
             allowed_hosts,
             allow_insecure_http,
             headers,
         })
+    }
+
+    /// Send extra headers with signed-URL requests only.
+    ///
+    /// Manifest/signature headers are deliberately not reused here: the signing
+    /// service can live on a different host, and forwarding an Authorization
+    /// header meant for the object store would leak it. A deployment that puts
+    /// its signing service behind an auth proxy configures `signing_headers`.
+    pub fn with_signing_headers(
+        mut self,
+        headers: Vec<(String, String)>,
+    ) -> Result<Self, EngineError> {
+        let headers = build_headers(headers)?;
+        if let Some(endpoint) = self.signing_endpoint.clone() {
+            self.signing = Some(Arc::new(HttpSigningService::new_with_headers(
+                self.client.clone(),
+                endpoint,
+                self.allow_insecure_http,
+                headers,
+            )?));
+        }
+        Ok(self)
     }
 
     /// Resolve an object key to a download URL, refreshing signed URLs before
@@ -325,13 +381,28 @@ impl HttpFetcher {
         key: &str,
         max_bytes: u64,
         kind: LimitedKind,
+        cache: Option<&Mutex<Option<CachedBody>>>,
     ) -> Result<Vec<u8>, EngineError> {
         let mut attempt = 0;
         let mut refreshes = 0;
         loop {
             let url = self.resolve(key).await?;
-            match self.try_get_limited(url, max_bytes, kind).await {
-                Ok(bytes) => return Ok(bytes),
+            let cached = cache.and_then(|slot| lock(slot).clone());
+            match self
+                .try_get_limited(url, max_bytes, kind, cached.as_ref())
+                .await
+            {
+                Ok((bytes, etag)) => {
+                    // Only a body with an entity tag can be revalidated; a
+                    // server without ETag support simply keeps no cache.
+                    if let (Some(slot), Some(etag)) = (cache, etag) {
+                        *lock(slot) = Some(CachedBody {
+                            etag,
+                            body: bytes.clone(),
+                        });
+                    }
+                    return Ok(bytes);
+                }
                 Err(error) if self.signing.is_some() && is_expired_status(&error) => {
                     if refreshes == MAX_REFRESHES {
                         return Err(NetworkError::PresignExpired.into());
@@ -356,16 +427,36 @@ impl HttpFetcher {
         url: Url,
         max_bytes: u64,
         kind: LimitedKind,
-    ) -> Result<Vec<u8>, EngineError> {
+        cached: Option<&CachedBody>,
+    ) -> Result<(Vec<u8>, Option<String>), EngineError> {
+        let _permit = self.permit().await?;
         let mut request = self.client.get(url);
         for (name, value) in &self.headers {
             request = request.header(name.clone(), value.clone());
+        }
+        if let Some(cached) = cached {
+            request = request.header(IF_NONE_MATCH, &cached.etag);
         }
         let response = request
             .send()
             .await
             .map_err(|err| EngineError::from(network_error(&err)))?;
         self.check_host(response.url())?;
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            return match cached {
+                Some(cached) => Ok((cached.body.clone(), Some(cached.etag.clone()))),
+                None => Err(NetworkError::Http4xx {
+                    status: 304,
+                    detail: "server answered 304 without a cached copy".into(),
+                }
+                .into()),
+            };
+        }
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         if let Some(error) = rate_limited(&response) {
             return Err(error);
         }
@@ -386,216 +477,25 @@ impl HttpFetcher {
         if bytes.len() as u64 > max_bytes {
             return Err(kind.too_large(bytes.len() as u64, max_bytes));
         }
-        Ok(bytes.to_vec())
+        Ok((bytes.to_vec(), etag))
     }
 
-    /// Download a large object as parallel Range chunks, then concatenate.
-    ///
-    /// Returns `Ok(None)` when the server does not honor ranges or the data
-    /// does not match the expected size, so the caller can fall back to the
-    /// regular single-stream download. All partial chunks are cleaned up.
-    async fn try_download_ranged(
-        &self,
-        url: &Url,
-        dest: &Path,
-        total: u64,
-    ) -> Result<Option<DownloadReceipt>, EngineError> {
-        use futures_util::StreamExt;
-
-        if total < self.limits.range_chunk_threshold || self.limits.range_chunk_size == 0 {
-            return Ok(None);
-        }
-        // One chunk has no parallelism and only adds directory/merge work.
-        if total.div_ceil(self.limits.range_chunk_size) < 2 {
-            return Ok(None);
-        }
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-        }
-        remove_chunks(dest).await;
-        let chunk_dir = chunk_dir(dest);
-        tokio::fs::create_dir_all(&chunk_dir)
+    async fn permit(&self) -> Result<tokio::sync::SemaphorePermit<'_>, EngineError> {
+        self.permits
+            .acquire()
             .await
-            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-
-        let chunk_count = total.div_ceil(self.limits.range_chunk_size) as usize;
-        let outcomes: Vec<Result<ChunkOutcome, EngineError>> =
-            futures_util::stream::iter(0..chunk_count)
-                .map(|index| self.download_chunk(url, dest, index, total))
-                .buffer_unordered(self.limits.range_concurrency.max(1))
-                .collect()
-                .await;
-
-        let mut unsupported = false;
-        for outcome in outcomes {
-            match outcome {
-                Ok(ChunkOutcome::Written) => {}
-                Ok(ChunkOutcome::Unsupported) => unsupported = true,
-                Err(error) => {
-                    remove_chunks(dest).await;
-                    return Err(error);
-                }
-            }
-        }
-        if unsupported {
-            remove_chunks(dest).await;
-            return Ok(None);
-        }
-
-        let merged = self.merge_chunks(dest, chunk_count, total).await;
-        remove_chunks(dest).await;
-        match merged {
-            Ok(Some(written)) => Ok(Some(DownloadReceipt {
-                bytes_written: written,
-                resumed: false,
-            })),
-            Ok(None) => Ok(None),
-            Err(error) => Err(error),
-        }
+            .map_err(|_| EngineError::Internal("request semaphore is closed".into()))
     }
 
-    /// Concatenate chunk files into a temporary sibling and atomically rename
-    /// it into place, so a crash never leaves a half-written destination.
-    async fn merge_chunks(
-        &self,
-        dest: &Path,
-        chunk_count: usize,
-        total: u64,
-    ) -> Result<Option<u64>, EngineError> {
-        let merge_path = merge_path(dest);
-        let mut output = tokio::fs::File::create(&merge_path)
-            .await
-            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-        let mut written = 0_u64;
-        for index in 0..chunk_count {
-            let path = chunk_path(dest, index);
-            let mut part = match tokio::fs::File::open(&path).await {
-                Ok(part) => part,
-                Err(error) => {
-                    let _ = tokio::fs::remove_file(&merge_path).await;
-                    return Err(EngineError::PermissionDenied(error.to_string()));
-                }
-            };
-            match tokio::io::copy(&mut part, &mut output).await {
-                Ok(bytes) => written += bytes,
-                Err(error) => {
-                    let _ = tokio::fs::remove_file(&merge_path).await;
-                    return Err(EngineError::PermissionDenied(error.to_string()));
-                }
-            }
-            let _ = tokio::fs::remove_file(&path).await;
-        }
-        if let Err(error) = output.sync_all().await {
-            let _ = tokio::fs::remove_file(&merge_path).await;
-            return Err(EngineError::PermissionDenied(error.to_string()));
-        }
-        drop(output);
-        if written != total {
-            let _ = tokio::fs::remove_file(&merge_path).await;
-            return Ok(None);
-        }
-        // Windows rename does not replace an existing file.
-        let _ = tokio::fs::remove_file(dest).await;
-        if let Err(error) = tokio::fs::rename(&merge_path, dest).await {
-            let _ = tokio::fs::remove_file(&merge_path).await;
-            return Err(EngineError::PermissionDenied(error.to_string()));
-        }
-        Ok(Some(written))
-    }
-
-    /// Download one chunk with retries. A transient failure must not throw
-    /// away the chunks that already succeeded.
-    async fn download_chunk(
-        &self,
-        url: &Url,
-        dest: &Path,
-        index: usize,
-        total: u64,
-    ) -> Result<ChunkOutcome, EngineError> {
-        let mut attempt = 0;
-        loop {
-            match self.download_chunk_once(url, dest, index, total).await {
-                Ok(outcome) => return Ok(outcome),
-                Err(error) if error.retryable() && attempt < MAX_RETRIES => {
-                    attempt += 1;
-                    let delay = error.retry_after().unwrap_or_else(|| {
-                        Duration::from_millis(RETRY_BASE_DELAY_MS << (attempt - 1))
-                    });
-                    tokio::time::sleep(delay).await;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn download_chunk_once(
-        &self,
-        url: &Url,
-        dest: &Path,
-        index: usize,
-        total: u64,
-    ) -> Result<ChunkOutcome, EngineError> {
-        use futures_util::StreamExt;
-        use tokio::io::AsyncWriteExt;
-
-        let start = self.limits.range_chunk_size.saturating_mul(index as u64);
-        if start >= total {
-            return Ok(ChunkOutcome::Unsupported);
-        }
-        let end = (start + self.limits.range_chunk_size).min(total) - 1;
-        let response = self
-            .client
-            .get(url.clone())
-            .header(RANGE, format!("bytes={start}-{end}"))
-            .send()
-            .await
-            .map_err(|err| EngineError::from(network_error(&err)))?;
-        self.check_host(response.url())?;
-        if let Some(error) = rate_limited(&response) {
-            return Err(error);
-        }
-        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Ok(ChunkOutcome::Unsupported);
-        }
-
-        let expected = end - start + 1;
-        let path = chunk_path(dest, index);
-        let mut file = tokio::fs::File::create(&path)
-            .await
-            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-        let mut written = 0_u64;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|err| EngineError::from(network_error(&err)))?;
-            written += chunk.len() as u64;
-            if written > expected {
-                drop(file);
-                let _ = tokio::fs::remove_file(&path).await;
-                return Ok(ChunkOutcome::Unsupported);
-            }
-            file.write_all(&chunk)
-                .await
-                .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-        }
-        file.sync_all()
-            .await
-            .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
-        if written != expected {
-            drop(file);
-            let _ = tokio::fs::remove_file(&path).await;
-            return Ok(ChunkOutcome::Unsupported);
-        }
-        Ok(ChunkOutcome::Written)
-    }
-
+    /// Single-stream download with resume support (fallback when Range chunks
+    /// are unsupported or the object is too small to benefit).
     async fn try_download(
         &self,
         url: Url,
         dest: &Path,
         resume_from: u64,
         max_bytes: u64,
+        progress: ProgressSink<'_>,
     ) -> Result<DownloadReceipt, EngineError> {
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
@@ -615,6 +515,7 @@ impl HttpFetcher {
             request = request.header(RANGE, format!("bytes={resume_from}-"));
         }
 
+        let _permit = self.permit().await?;
         let response = request
             .send()
             .await
@@ -665,6 +566,9 @@ impl HttpFetcher {
             file.write_all(&chunk)
                 .await
                 .map_err(|err| EngineError::PermissionDenied(err.to_string()))?;
+            if let Some(sink) = progress {
+                sink(total);
+            }
         }
         file.flush()
             .await
@@ -696,138 +600,17 @@ impl LimitedKind {
     }
 }
 
-enum ChunkOutcome {
-    Written,
-    Unsupported,
-}
-
-fn chunk_dir(dest: &Path) -> PathBuf {
-    let name = dest
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("object");
-    dest.with_file_name(format!(".{name}.chunks"))
-}
-
-fn chunk_path(dest: &Path, index: usize) -> PathBuf {
-    chunk_dir(dest).join(format!("chunk-{index}"))
-}
-
-fn merge_path(dest: &Path) -> PathBuf {
-    let name = dest
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("object");
-    dest.with_file_name(format!(".{name}.merging"))
-}
-
-async fn remove_chunks(dest: &Path) {
-    let _ = tokio::fs::remove_dir_all(chunk_dir(dest)).await;
-    let _ = tokio::fs::remove_file(merge_path(dest)).await;
-}
-
-fn rate_limited(response: &reqwest::Response) -> Option<EngineError> {
-    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return None;
-    }
-    let retry_after_secs = response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok());
-    Some(NetworkError::RateLimited { retry_after_secs }.into())
-}
-
-fn network_error(err: &reqwest::Error) -> NetworkError {
-    if err.is_timeout() {
-        return NetworkError::Timeout(err.to_string());
-    }
-    if let Some(status) = err.status() {
-        let code = status.as_u16();
-        return if status.is_server_error() {
-            NetworkError::Http5xx {
-                status: code,
-                detail: err.to_string(),
-            }
-        } else {
-            NetworkError::Http4xx {
-                status: code,
-                detail: err.to_string(),
-            }
-        };
-    }
-    NetworkError::Connect(describe_connect_failure(err))
-}
-
-/// `reqwest` collapses DNS, TLS, proxy and connection-refused failures into one
-/// type. Keep the stable `E_NETWORK_CONNECT` code, but prefix the message with
-/// the layer that failed so support can tell them apart.
-fn describe_connect_failure(err: &reqwest::Error) -> String {
-    let mut chain = vec![err.to_string()];
-    let mut source = std::error::Error::source(err);
-    while let Some(cause) = source {
-        chain.push(cause.to_string());
-        source = cause.source();
-    }
-    let text = chain.join(" ");
-    let lower = text.to_lowercase();
-    if lower.contains("dns")
-        || lower.contains("name or service")
-        || lower.contains("failed to lookup address")
-    {
-        format!("DNS resolution failed: {text}")
-    } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake")
-    {
-        format!("TLS handshake failed: {text}")
-    } else if lower.contains("proxy") {
-        format!("proxy connection failed: {text}")
-    } else {
-        text
-    }
-}
-
-fn is_expired_status(error: &EngineError) -> bool {
-    matches!(
-        error,
-        EngineError::Network(NetworkError::Http4xx { status: 403, .. })
-    )
-}
-
-fn needs_refresh(cached: &CachedUrl) -> bool {
-    match cached.expires_at.duration_since(SystemTime::now()) {
-        Ok(remaining) => remaining <= REFRESH_MARGIN,
-        Err(_) => true,
-    }
-}
-
-fn has_expired(cached: &CachedUrl) -> bool {
-    SystemTime::now() >= cached.expires_at
-}
-
-fn build_headers(headers: Vec<(String, String)>) -> Result<HeaderMap, EngineError> {
-    let mut map = HeaderMap::new();
-    for (name, value) in headers {
-        let name = HeaderName::from_bytes(name.trim().as_bytes())
-            .map_err(|err| EngineError::ConfigInvalid(format!("invalid header name: {err}")))?;
-        let value = HeaderValue::from_str(&value)
-            .map_err(|err| EngineError::ConfigInvalid(format!("invalid header value: {err}")))?;
-        map.insert(name, value);
-    }
-    Ok(map)
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[async_trait]
 impl Fetcher for HttpFetcher {
     async fn fetch_manifest(&self) -> Result<Vec<u8>, EngineError> {
         let key = self.manifest_key.clone();
-        self.get_limited(&key, self.limits.manifest_max_bytes, LimitedKind::Manifest)
-            .await
+        self.get_limited(
+            &key,
+            self.limits.manifest_max_bytes,
+            LimitedKind::Manifest,
+            Some(&self.manifest_cache),
+        )
+        .await
     }
 
     async fn fetch_signature(&self) -> Result<Vec<u8>, EngineError> {
@@ -836,6 +619,7 @@ impl Fetcher for HttpFetcher {
             &key,
             self.limits.signature_max_bytes,
             LimitedKind::Signature,
+            None,
         )
         .await
         .map_err(|error| match error {
@@ -856,6 +640,7 @@ impl Fetcher for HttpFetcher {
                 &key,
                 self.limits.signature_max_bytes,
                 LimitedKind::Signature,
+                None,
             )
             .await
         {
@@ -882,7 +667,12 @@ impl Fetcher for HttpFetcher {
             return Ok(None);
         };
         match self
-            .get_limited(&key, self.limits.manifest_max_bytes, LimitedKind::Manifest)
+            .get_limited(
+                &key,
+                self.limits.manifest_max_bytes,
+                LimitedKind::Manifest,
+                None,
+            )
             .await
         {
             Ok(bytes) => Ok(Some(bytes)),
@@ -899,6 +689,32 @@ impl Fetcher for HttpFetcher {
         resume_from: u64,
         max_bytes: u64,
     ) -> Result<DownloadReceipt, EngineError> {
+        self.download_inner(key, dest, resume_from, max_bytes, None)
+            .await
+    }
+
+    async fn download_with_progress(
+        &self,
+        key: &str,
+        dest: &Path,
+        resume_from: u64,
+        max_bytes: u64,
+        on_progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<DownloadReceipt, EngineError> {
+        self.download_inner(key, dest, resume_from, max_bytes, Some(on_progress))
+            .await
+    }
+}
+
+impl HttpFetcher {
+    async fn download_inner(
+        &self,
+        key: &str,
+        dest: &Path,
+        resume_from: u64,
+        max_bytes: u64,
+        progress: ProgressSink<'_>,
+    ) -> Result<DownloadReceipt, EngineError> {
         let max_bytes = max_bytes.min(self.limits.object_max_bytes);
         // A crash during a ranged download can leave a stale chunk directory or
         // merge temp file behind. Clear them before any download strategy runs.
@@ -908,7 +724,10 @@ impl Fetcher for HttpFetcher {
         loop {
             let url = self.resolve(key).await?;
             if resume == 0 {
-                match self.try_download_ranged(&url, dest, max_bytes).await {
+                match self
+                    .try_download_ranged(&url, dest, max_bytes, progress)
+                    .await
+                {
                     Ok(Some(receipt)) => return Ok(receipt),
                     Ok(None) => {}
                     Err(error) if error.retryable() => {
@@ -921,7 +740,10 @@ impl Fetcher for HttpFetcher {
                     Err(error) => return Err(error),
                 }
             }
-            match self.try_download(url, dest, resume, max_bytes).await {
+            match self
+                .try_download(url, dest, resume, max_bytes, progress)
+                .await
+            {
                 Ok(receipt) => return Ok(receipt),
                 Err(error) if self.signing.is_some() && is_expired_status(&error) => {
                     if refreshes == MAX_REFRESHES {
@@ -941,21 +763,6 @@ impl Fetcher for HttpFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn stale_chunk_artifacts_are_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("App.exe");
-        let chunks = chunk_dir(&dest);
-        std::fs::create_dir_all(&chunks).unwrap();
-        std::fs::write(chunks.join("chunk-0"), b"stale").unwrap();
-        std::fs::write(merge_path(&dest), b"stale").unwrap();
-
-        remove_chunks(&dest).await;
-
-        assert!(!chunks.exists());
-        assert!(!merge_path(&dest).exists());
-    }
 
     #[test]
     fn custom_headers_are_validated_and_stored() {

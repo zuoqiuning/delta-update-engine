@@ -2,7 +2,7 @@
 
 面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> **`1.0.0-rc.4` is out** — 公共 API 已冻结。试用后在 [rc 反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml) 里告诉我们：接入卡在哪一步、`init`/`migrate` 的输出是否清楚、`worker.log` 有没有看不懂的错误。
+> **`1.1.0` 发布准备就绪** — 公共 API 保持兼容。本版新增：`init` 默认的 `manage-confirm` 权限集、Rust 侧健康确认、多签名与单对象信封、`skip_version`、诊断包更新史、并行下载与校验。接入反馈请用 [反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml)。
 
 | 支持矩阵 | |
 | --- | --- |
@@ -13,15 +13,40 @@
 
 > 核心 crate 为 `delta-update-engine`，Tauri 接入层为 `tauri-plugin-delta-update`，发布侧为 `delta-update-cli`。
 
-## 安装（rc 期间）
+## 安装
 
 ```bash
-cargo add delta-update-engine@1.0.0-rc.4
-cargo add tauri-plugin-delta-update@1.0.0-rc.4
-pnpm add tauri-plugin-delta-update-api@next   # 或 @1.0.0-rc.4
+cargo add delta-update-engine@1.1.0
+cargo add tauri-plugin-delta-update@1.1.0
+pnpm add tauri-plugin-delta-update-api
 ```
 
-候选版本要写完整版本号（SemVer 的 `^1.0` 不匹配 `1.0.0-rc.4`）。npm 侧首次发布时 `latest` 也会指向候选版，所以脚本显式写 `@next`；`1.0.0` 发布后可以恢复裸包名。
+npm 包的 `latest` 指向当前稳定版；需要锁定次要版本时写 `tauri-plugin-delta-update = "1.1"`。
+
+## 快速接入（零前端代码）
+
+```powershell
+# 写入 capability，并把 plugins.delta-update 合并进 tauri.conf.json（保留 .bak）
+delta-update init --auto --merge-config --signing-key release.key
+delta-update doctor --check-config --dir .
+```
+
+```toml
+# src-tauri/Cargo.toml
+tauri-plugin-delta-update = "1.1.0"
+```
+
+```rust
+fn main() {
+    let context = tauri::generate_context!();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_delta_update::init())
+        .run_with_delta_update(context)
+        .expect("failed to run the app");
+}
+```
+
+`--auto` 打开 `auto_check/auto_apply/auto_confirm`：启动检查并准备、退出后由独立进程替换、下次启动自动确认。需要进度条、“稍后提醒”或自定义 UI 时再接入前端 SDK。完整说明见[开发者接入](docs/guides/getting-started.md)。
 
 ## 何时使用
 

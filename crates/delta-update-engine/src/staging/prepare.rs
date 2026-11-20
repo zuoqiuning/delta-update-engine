@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt};
 use tokio_util::sync::CancellationToken;
@@ -16,8 +17,19 @@ use crate::patch::apply::apply_patch;
 use crate::patch::container::{PatchHeader, PATCH_HEADER_LEN};
 
 use super::plan::{PreparedPlan, StagedFile};
+use super::verify::VerifiedInventory;
 
 const MAX_RETRIES: u32 = 2;
+
+mod download;
+mod progress;
+
+use download::{download_verified, verify_staged};
+use progress::{report_download, FileProgress};
+
+/// Minimum gap between live byte events for one file. The plugin emits at the
+/// same interval, so a smaller value would only allocate and drop events.
+const LIVE_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 /// A patch container this client can apply.
 ///
@@ -115,8 +127,12 @@ struct StageContext<'a> {
 
 /// Download and materialize changed files, then verify the whole target set.
 ///
-/// Unchanged files are verified in place and never copied into staging.
-pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, EngineError> {
+/// Unchanged files are verified in place and never copied into staging. The
+/// returned inventory records the staged files this call hashed, so the
+/// caller can verify the same plan again without reading them twice.
+pub(crate) async fn prepare(
+    input: &PrepareInput<'_>,
+) -> Result<(PreparedPlan, VerifiedInventory), EngineError> {
     let target_root = input.staging_root.join(input.version);
     let files_root = target_root.join("files");
     let patches_root = target_root.join("patches");
@@ -225,7 +241,13 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
     all_files.sort();
     staged.sort_by(|left, right| left.path.cmp(&right.path));
 
-    Ok(PreparedPlan {
+    // Every staged file was hashed by `verify_staged` or `download_verified`.
+    let inventory = VerifiedInventory::default();
+    for file in &staged {
+        inventory.record(&file.staging_path);
+    }
+
+    let plan = PreparedPlan {
         schema: crate::staging::plan::PREPARED_SCHEMA,
         version: input.version.to_string(),
         manifest_hash: input.manifest_hash.to_string(),
@@ -233,7 +255,8 @@ pub(crate) async fn prepare(input: &PrepareInput<'_>) -> Result<PreparedPlan, En
         files: staged,
         removed: input.diff.removed.clone(),
         all_files,
-    })
+    };
+    Ok((plan, inventory))
 }
 
 fn preflight(
@@ -461,6 +484,12 @@ async fn stage_patch(
     // A cancelled prepare keeps the downloaded patch. Reuse it when the size
     // matches; the target hash check after applying still rejects bad bytes.
     let patch_ready = std::fs::metadata(&patch_path).is_ok_and(|meta| meta.len() == delta_size);
+    let download = FileProgress::for_file(
+        context.progress,
+        context.downloaded,
+        context.total_download,
+        path,
+    );
     if !patch_ready {
         download_verified(
             context.fetcher,
@@ -469,10 +498,11 @@ async fn stage_patch(
             delta_size,
             None,
             context.cancel,
+            &|written| download.report(written),
         )
         .await?;
     }
-    report_download(context, path, delta_size);
+    download.finish(delta_size);
 
     // Read only the fixed-size header; the payload is parsed by `apply_patch`.
     // Loading the whole patch here would double peak memory for large files.
@@ -540,25 +570,6 @@ fn validate_header(entry: &FileEntry, header: &PatchHeader, path: &str) -> Resul
     Ok(())
 }
 
-/// Report cumulative download bytes. The total is the planned download size;
-/// a patch fallback may push the counter past it, so the value is clamped.
-fn report_download(context: &StageContext<'_>, file: &str, bytes: u64) {
-    // Hold the lock across the callback so concurrent downloads cannot emit
-    // progress out of order (the UI would otherwise jump backwards).
-    let mut completed = context
-        .downloaded
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *completed = (*completed)
-        .saturating_add(bytes)
-        .min(context.total_download);
-    (context.progress)(Progress::Downloading {
-        file: file.to_string(),
-        total: context.total_download,
-        completed: *completed,
-    });
-}
-
 async fn stage_full(
     path: &str,
     entry: &FileEntry,
@@ -585,6 +596,12 @@ async fn stage_full(
         .full_key
         .as_deref()
         .ok_or_else(|| PatchError::UnknownStrategy(format!("{path}: no full_key")))?;
+    let download = FileProgress::for_file(
+        context.progress,
+        context.downloaded,
+        context.total_download,
+        path,
+    );
     download_verified(
         context.fetcher,
         key,
@@ -592,9 +609,10 @@ async fn stage_full(
         entry.size,
         Some(&entry.sha256),
         context.cancel,
+        &|written| download.report(written),
     )
     .await?;
-    report_download(context, path, entry.size);
+    download.finish(entry.size);
     (context.progress)(Progress::Verifying {
         file: path.to_string(),
     });
@@ -604,92 +622,6 @@ async fn stage_full(
         sha256: entry.sha256.clone(),
         size: entry.size,
     })
-}
-
-async fn download_verified(
-    fetcher: &dyn Fetcher,
-    key: &str,
-    dest: &Path,
-    expected_size: u64,
-    expected_sha256: Option<&str>,
-    cancel: &CancellationToken,
-) -> Result<(), EngineError> {
-    if let Some(expected) = expected_sha256 {
-        if tokio::fs::metadata(dest)
-            .await
-            .is_ok_and(|meta| meta.len() == expected_size)
-        {
-            let actual = hash_file(dest).await.map_err(|err| io_error(err, key))?;
-            if actual == expected {
-                return Ok(());
-            }
-        }
-        // A same-size but corrupt object must not be resumed from EOF: most
-        // object stores answer `Range: bytes=<size>-` with 416, which is not
-        // retryable. Drop it and start a clean download.
-        let _ = std::fs::remove_file(dest);
-    }
-
-    for attempt in 0..=MAX_RETRIES {
-        download_with_retry(fetcher, key, dest, expected_size, cancel).await?;
-        let metadata = tokio::fs::metadata(dest)
-            .await
-            .map_err(|err| io_error(err, key))?;
-        if metadata.len() == expected_size {
-            if let Some(expected) = expected_sha256 {
-                let actual = hash_file(dest).await.map_err(|err| io_error(err, key))?;
-                if actual == expected {
-                    return Ok(());
-                }
-            } else {
-                return Ok(());
-            }
-        }
-        let _ = std::fs::remove_file(dest);
-        if attempt == MAX_RETRIES {
-            return Err(PatchError::TargetHashMismatch(format!(
-                "{key}: downloaded object does not match the manifest"
-            ))
-            .into());
-        }
-    }
-    unreachable!("retry loop always returns")
-}
-
-async fn download_with_retry(
-    fetcher: &dyn Fetcher,
-    key: &str,
-    dest: &Path,
-    max_bytes: u64,
-    cancel: &CancellationToken,
-) -> Result<(), EngineError> {
-    let mut attempt = 0;
-    loop {
-        let mut resume = tokio::fs::metadata(dest)
-            .await
-            .map(|meta| meta.len())
-            .unwrap_or(0);
-        if max_bytes > 0 && resume >= max_bytes {
-            // A stale or oversized partial file cannot be resumed.
-            let _ = std::fs::remove_file(dest);
-            resume = 0;
-        }
-        let result = tokio::select! {
-            _ = cancel.cancelled() => return Err(EngineError::Cancelled),
-            result = fetcher.download(key, dest, resume, max_bytes) => result,
-        };
-        match result {
-            Ok(_) => return Ok(()),
-            Err(error) if error.retryable() && attempt < MAX_RETRIES => {
-                attempt += 1;
-                let delay = error
-                    .retry_after()
-                    .unwrap_or_else(|| std::time::Duration::from_millis(200_u64 << (attempt - 1)));
-                tokio::time::sleep(delay).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 fn should_try_patch(entry: &FileEntry, limits: &Limits) -> bool {
@@ -706,34 +638,6 @@ fn fallback_allowed(error: &EngineError) -> bool {
         error.category(),
         ErrorCategory::Patch | ErrorCategory::Network
     )
-}
-
-/// Hash a downloaded or staged file on the blocking pool.
-async fn hash_file(path: &Path) -> std::io::Result<String> {
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || sha256_file(&path))
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-async fn verify_staged(path: &str, dest: &Path, entry: &FileEntry) -> Result<(), EngineError> {
-    let metadata = std::fs::metadata(dest).map_err(|err| io_error(err, path))?;
-    if metadata.len() != entry.size {
-        return Err(PatchError::TargetHashMismatch(format!(
-            "{path}: staged size {} does not match {}",
-            metadata.len(),
-            entry.size
-        ))
-        .into());
-    }
-    let actual = hash_file(dest).await.map_err(|err| io_error(err, path))?;
-    if actual != entry.sha256 {
-        return Err(PatchError::TargetHashMismatch(format!(
-            "{path}: staged hash does not match the manifest"
-        ))
-        .into());
-    }
-    Ok(())
 }
 
 fn check_cancel(cancel: &CancellationToken) -> Result<(), EngineError> {

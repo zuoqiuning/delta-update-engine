@@ -9,6 +9,20 @@
 
 插件本身**不创建日志文件**。它通过 `tracing` 发出事件，target 为 `delta_update_engine`、`tauri_plugin_delta_update` 等；是否输出、写到哪里，由宿主应用安装的 subscriber 决定。
 
+**最快方式**：给插件启用 `logging` feature。`init()` 与 `run_applier_from_context()` 会在进程没有 subscriber 时自动装一个 stderr subscriber，级别由 `DELTA_UPDATE_LOG` 控制（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）：
+
+```toml
+tauri-plugin-delta-update = { version = "1.1.0", features = ["logging"] }
+```
+
+```powershell
+$env:DELTA_UPDATE_LOG = "debug"
+```
+
+启用后每次启动会先输出一行 `delta update configured`：`origin`（只含 scheme + host + port，预签名参数与路径前缀不会进日志）、`channel`、`current_version`、`install_root`、`journal_root` 与 `auto_check/auto_apply/auto_confirm`。先核对这一行，能区分“配置没生效”和“检查确实失败了”。
+
+需要自定义格式或 env-filter 时仍按下面的方式自己初始化；已经通过 `tracing-subscriber` 安装的 subscriber 不会被插件覆盖。宿主用 `tauri-plugin-log`（`log` crate）时，插件日志会走 stderr，应用日志文件不受影响；要把 `tracing` 事件写进那个文件，仍需要下面的 `log` 桥接。
+
 排查时在 `main` 最前面初始化一个 subscriber（`tracing-subscriber`）：
 
 ```toml
@@ -64,6 +78,7 @@ fn main() {
     ├── verified_manifest.json(.minisig)  # 最近验签通过的清单
     ├── installed_manifest.json(.minisig) # 已确认健康版本的清单
     ├── worker.log                 # 替换/恢复 worker 的执行记录（成功与失败都追加）
+    ├── update_history.jsonl       # 最近若干次更新终态（completed / rolled_back / failed）
     ├── commit.status              # 替换进程执行结果
     ├── commit.journal             # 提交日志（内部含 commit_id）
     └── rollback.journal           # 回滚逆日志
@@ -73,7 +88,7 @@ fn main() {
 
 `worker.log` 每行是一个 `event=` 事件加若干 `key=value` 字段，第二个字段固定为 `ts=<unix 秒>`（用于和 Windows 事件日志、杀毒软件隔离记录对齐），值含空格或引号时才加双引号：成功 `event=apply_ok ts=<n> commit=<id> ms=<n> version=<v> retries=<n>` / `event=recovery_ok ts=<n> ms=<n> retries=<n>`，失败 `event=apply_failed ts=<n> commit=<id> ms=<n> retries=<n> msg=...` / `event=recovery_failed ...`，启动时先写 `event=apply_started ts=<n> commit=<id> journal=<path> exe=<path> form=<per-machine|per-user|portable>` / `event=recovery_started ...`。`form` 是从可执行文件位置推断的安装形态，只用于诊断：per-machine 失败通常意味着提权路径有问题。`prepare` 阶段每个补丁回退追加 `event=patch_fallback ts=<n> path=<path> code=<code>`。`retries` 是该进程本次提交/恢复中文件占用重试的次数，**成功与失败都会记录**，因此验收时用 `retries ≥ 1` 判断“重试确实发生过”，用 `retries = 0` 判断“没有重试”。旧版本写的纯文本行（`apply commit <id> ok in ...`、`patch fallback: <path>: <code>`）仍然可读，`inspect --bundle` 两种都解析；`inspect --journal-dir` 与 `--bundle` 都会把最新一条结构化事件单列出来，不需要自己去翻文件。
 
-**用 `inspect --bundle` 读取**：把诊断包和远端清单一起传给它，会输出“文件 × manifest 策略 × journal 操作 × 回退证据”的对照表，不需要手工 grep：
+**用 `inspect --bundle` 读取**：把诊断包和远端清单一起传给它，会输出“文件 × manifest 策略 × journal 操作 × 回退证据”的对照表，不需要手工 grep；末尾的 `recent updates` 行直接列出包内最近 3 次更新终态（`--json` 的 `history` 为新→旧 5 条），不必再打开 JSON 找历史：
 
 ```bash
 delta-update inspect --bundle delta-update-diagnostics-<ts>.json \
@@ -106,9 +121,9 @@ delta-update inspect --journal-dir ... --json > update-report.json
 delta-update inspect --journal-dir ... --export support-bundle.json
 ```
 
-输出包括：`apply.json` 配置、`commit.status`、`commit.journal` / `rollback.journal` 的版本与操作统计、`prepared.json`、启动尝试次数、跳过版本，以及一句结论（未完成提交 / 等待健康确认 / 失败重试 / 已准备 / 已回滚）。`--verbose` 会逐条列出 `FileOp` 及其当前状态（`landed` / `pending` / `backed_up`）。损坏的状态文件会列为警告而不是让命令崩溃；上报时附上该输出与目录文件列表即可。
+输出包括：`apply.json` 配置、`commit.status`、`commit.journal` / `rollback.journal` 的版本与操作统计、`prepared.json`、启动尝试次数、跳过版本、最近 3 次更新终态（`completed` / `rolled_back` / `failed` 及原因），以及一句结论（未完成提交 / 等待健康确认 / 失败重试 / 已准备 / 已回滚）。`--verbose` 会逐条列出 `FileOp` 及其当前状态（`landed` / `pending` / `backed_up`）。损坏的状态文件会列为警告而不是让命令崩溃；上报时附上该输出与目录文件列表即可。`--export` 写出的诊断包额外带 `history`（最近 20 条更新终态），工单里可以直接回答“以前几次更新是否成功”，不必再让用户执行第二条命令。
 
-`--export <PATH>` 额外写一个**单文件诊断包**（JSON）：上面的报告、`worker.log` 最后 64 KiB、journal 目录的文件名与大小、系统信息（Windows 版本、安装形态）与 CLI 版本。它不包含文件内容，可直接附到工单；单文件比目录更容易让用户上传。加 `--redact` 会把 `install_root`、`staging_root`、`journal_root` 与用户主目录前缀替换为 `<install_root>` 等占位符，并在 `redacted` 字段标记为 `true`。
+`--export <PATH>` 额外写一个**单文件诊断包**（JSON）：上面的报告、`worker.log` 最后 64 KiB、journal 目录的文件名与大小、最近 20 条更新终态（`history`）、系统信息（Windows 版本、安装形态）与 CLI 版本。它不包含文件内容，可直接附到工单；单文件比目录更容易让用户上传。加 `--redact` 会把 `install_root`、`staging_root`、`journal_root` 与用户主目录前缀替换为 `<install_root>` 等占位符，并在 `redacted` 字段标记为 `true`。
 
 **用户自助导出**：应用可以调用 `plugin:delta-update|export_diagnostics`（前端封装为 `exportDiagnostics()`），把同样的诊断包写到应用日志目录并返回路径。这不需要用户找到 journal 目录，也不需要安装 CLI；适合做成“导出诊断”按钮。该命令**始终脱敏**。
 
@@ -170,7 +185,7 @@ delta-update inspect --journal-dir ... --export support-bundle.json
 
 签名类错误**不可自动重试**，因为它们不因时间或网络变化而消失。支持人员应优先核对密钥配对和签名流程。
 
-**轮换期间的 `E_SIGNATURE_NO_TRUSTED_KEY` 是预期的**：桥接版本尚未覆盖到的旧客户端只信任旧公钥，自然会拒绝新公钥签名的清单。它不是攻击信号——确认发布端按 [密钥轮换 runbook](release.md#134-密钥轮换的当前边界) 操作，等待客户端更新即可；不要因此回退签名密钥。
+**轮换期间的 `E_SIGNATURE_NO_TRUSTED_KEY` 是预期的**：桥接版本尚未覆盖到的旧客户端只信任旧公钥，自然会拒绝新公钥签名的清单。它不是攻击信号——确认发布端按 [密钥轮换 runbook](release-packaging.md#134-密钥轮换的当前边界) 操作，等待客户端更新即可；不要因此回退签名密钥。
 
 **`fetch_signature` 返回 `E_NETWORK_HTTP_4XX`**：说明客户端无法读取 `.minisig` 对象。按顺序检查 (a) bucket policy / 对象 ACL 是否允许读取 `latest.json.minisig`，(b) 使用预签名地址时 `signing_endpoint` 是否配置正确且未被改写，(c) 对象键是否与 `release --prefix` 一致。配置了 signing service 时 403 会自动刷新重试，通常不会以该错误暴露给用户。
 

@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
@@ -75,9 +75,19 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
     let Some(request) = read_request(&mut stream)? else {
         return Ok(());
     };
-    let (status, response) = respond(&request, root);
+    let (status, head, body) = respond(&request, root);
     println!("{} {} -> {status}", request.method, request.path);
-    stream.write_all(&response)?;
+    stream.write_all(&head)?;
+    if request.method != "HEAD" {
+        match body {
+            ResponseBody::Bytes(bytes) => stream.write_all(&bytes)?,
+            ResponseBody::File { path, offset, len } => {
+                let mut file = std::fs::File::open(&path)?;
+                file.seek(SeekFrom::Start(offset))?;
+                std::io::copy(&mut file.take(len), &mut stream)?;
+            }
+        }
+    }
     stream.flush()?;
     let _ = stream.shutdown(Shutdown::Both);
     Ok(())
@@ -123,55 +133,74 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
     }))
 }
 
-fn respond(request: &Request, root: &Path) -> (u16, Vec<u8>) {
-    let head_only = request.method == "HEAD";
-    if request.method != "GET" && !head_only {
-        return simple(405, "Method Not Allowed", b"method not allowed", false);
+/// A response body. Error pages are tiny and live in memory; artifacts stream
+/// straight from disk so a multi-hundred-MB object never has to be read into
+/// the heap (and a `Range` request only touches the requested bytes).
+enum ResponseBody {
+    Bytes(Vec<u8>),
+    File {
+        path: PathBuf,
+        offset: u64,
+        len: u64,
+    },
+}
+
+fn respond(request: &Request, root: &Path) -> (u16, Vec<u8>, ResponseBody) {
+    if request.method != "GET" && request.method != "HEAD" {
+        return error_response(405, "Method Not Allowed", "method not allowed");
     }
     let Some(path) = resolve(root, &request.path) else {
-        return simple(404, "Not Found", b"not found", head_only);
+        return error_response(404, "Not Found", "not found");
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return simple(404, "Not Found", b"not found", head_only);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return error_response(404, "Not Found", "not found");
     };
-    match parse_range(request.range.as_deref(), bytes.len() as u64) {
-        RangeSpec::Full => full(200, "OK", &path, &bytes, head_only),
+    let length = metadata.len();
+    match parse_range(request.range.as_deref(), length) {
+        RangeSpec::Full => {
+            let head = terminated(header(200, "OK", content_type(&path), length));
+            (
+                200,
+                head,
+                ResponseBody::File {
+                    path,
+                    offset: 0,
+                    len: length,
+                },
+            )
+        }
         RangeSpec::Partial(start, end) => {
-            let slice = &bytes[start as usize..=end as usize];
-            let mut response = header(
+            let mut head = header(206, "Partial Content", content_type(&path), end - start + 1);
+            head.extend_from_slice(
+                format!("Content-Range: bytes {start}-{end}/{length}\r\n").as_bytes(),
+            );
+            (
                 206,
-                "Partial Content",
-                content_type(&path),
-                slice.len() as u64,
-            );
-            response.extend_from_slice(
-                format!("Content-Range: bytes {start}-{end}/{}\r\n", bytes.len()).as_bytes(),
-            );
-            (206, finish(response, slice, head_only))
+                terminated(head),
+                ResponseBody::File {
+                    path,
+                    offset: start,
+                    len: end - start + 1,
+                },
+            )
         }
         RangeSpec::Unsatisfiable => {
-            let mut response = header(416, "Range Not Satisfiable", "text/plain", 0);
-            response.extend_from_slice(
-                format!("Content-Range: bytes */{}\r\n", bytes.len()).as_bytes(),
-            );
-            (416, finish(response, b"", true))
+            let mut head = header(416, "Range Not Satisfiable", "text/plain", 0);
+            head.extend_from_slice(format!("Content-Range: bytes */{length}\r\n").as_bytes());
+            (416, terminated(head), ResponseBody::Bytes(Vec::new()))
         }
     }
 }
 
-fn full(status: u16, reason: &str, path: &Path, body: &[u8], head_only: bool) -> (u16, Vec<u8>) {
-    let response = header(status, reason, content_type(path), body.len() as u64);
-    (status, finish(response, body, head_only))
-}
-
-fn simple(status: u16, reason: &str, body: &[u8], head_only: bool) -> (u16, Vec<u8>) {
-    let response = header(
+fn error_response(status: u16, reason: &str, message: &str) -> (u16, Vec<u8>, ResponseBody) {
+    let body = message.as_bytes().to_vec();
+    let head = terminated(header(
         status,
         reason,
         "text/plain; charset=utf-8",
         body.len() as u64,
-    );
-    (status, finish(response, body, head_only))
+    ));
+    (status, head, ResponseBody::Bytes(body))
 }
 
 fn header(status: u16, reason: &str, content_type: &str, content_length: u64) -> Vec<u8> {
@@ -185,12 +214,10 @@ fn header(status: u16, reason: &str, content_type: &str, content_length: u64) ->
     .into_bytes()
 }
 
-fn finish(mut response: Vec<u8>, body: &[u8], head_only: bool) -> Vec<u8> {
-    response.extend_from_slice(b"\r\n");
-    if !head_only {
-        response.extend_from_slice(body);
-    }
-    response
+/// End the header block. The body is written separately so it can stream.
+fn terminated(mut header: Vec<u8>) -> Vec<u8> {
+    header.extend_from_slice(b"\r\n");
+    header
 }
 
 /// Resolve a URL path under `root`, rejecting traversal and absolute paths.

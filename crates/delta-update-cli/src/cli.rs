@@ -193,6 +193,9 @@ pub struct VerifyKeyArgs {
     /// Comma-separated base64 public keys or a public key file's contents.
     #[arg(long)]
     pub public: String,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -200,6 +203,9 @@ pub struct KeyInfoArgs {
     /// minisign secret key file.
     #[arg(long)]
     pub key: PathBuf,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Client-visible failure to reproduce with `doctor --simulate-failure`.
@@ -251,7 +257,7 @@ impl PatchReason {
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
     /// Manifest endpoint; repeat for multiple mirrors.
-    #[arg(long, required_unless_present_any = ["check_config", "simulate_failure"])]
+    #[arg(long, required_unless_present_any = ["check_config", "simulate_failure", "journal_dir"])]
     pub endpoint: Vec<String>,
     /// Trusted public key file; omitted means structural checks only.
     #[arg(long)]
@@ -259,6 +265,16 @@ pub struct DoctorArgs {
     /// Validate plugins.delta-update in <dir>/src-tauri/tauri.conf.json offline.
     #[arg(long)]
     pub check_config: bool,
+    /// Verify an install tree against the last manifest in <journal-dir>.
+    #[arg(
+        long,
+        value_name = "DIR",
+        conflicts_with_all = ["endpoint", "check_config", "simulate_failure", "watch"]
+    )]
+    pub journal_dir: Option<PathBuf>,
+    /// Install root to verify; required with --journal-dir.
+    #[arg(long, value_name = "DIR", requires = "journal_dir")]
+    pub install_root: Option<PathBuf>,
     /// Print the payload a real failure produces, without changing anything.
     #[arg(long, value_name = "MODE", conflicts_with_all = ["check_config", "watch"])]
     pub simulate_failure: Option<SimulateMode>,
@@ -338,11 +354,21 @@ pub struct InitArgs {
     /// Write src-tauri/capabilities/delta-update.json (never edits tauri.conf.json).
     #[arg(long)]
     pub write: bool,
-    /// Capability set: manage (default, no confirm_healthy), monitor (read-only), default (all commands).
+    /// Merge plugins.delta-update into src-tauri/tauri.conf.json and write the
+    /// capability file. An existing section is never overwritten; the original
+    /// config is kept as tauri.conf.json.bak.
+    #[arg(long)]
+    pub merge_config: bool,
+    /// Hands-off mode: write auto_check/auto_apply/auto_confirm = true so the
+    /// app updates on exit and confirms health without frontend code.
+    #[arg(long)]
+    pub auto: bool,
+    /// Capability set: manage-confirm (default), manage (no confirm_healthy),
+    /// monitor (read-only), default (all commands, legacy).
     #[arg(
         long,
-        default_value = "manage",
-        value_parser = ["default", "manage", "monitor"]
+        default_value = "manage-confirm",
+        value_parser = ["default", "manage", "manage-confirm", "monitor"]
     )]
     pub permission_set: String,
 }

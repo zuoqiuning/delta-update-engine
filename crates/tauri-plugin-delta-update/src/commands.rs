@@ -40,6 +40,10 @@ pub struct CheckResult {
     /// from older plugin versions deserializable.
     #[serde(default)]
     pub cloud_placeholders_skipped: u32,
+    /// Set when the manifest was suppressed because the user skipped this
+    /// exact version. `available` stays false; UIs can offer "run it anyway".
+    #[serde(default)]
+    pub skipped_version: Option<String>,
 }
 
 impl From<CheckOutcome> for CheckResult {
@@ -57,6 +61,7 @@ impl From<CheckOutcome> for CheckResult {
             update_required: outcome.update_required,
             min_supported_version: outcome.min_supported_version,
             cloud_placeholders_skipped: outcome.cloud_placeholders_skipped,
+            skipped_version: outcome.skipped_version,
         }
     }
 }
@@ -93,7 +98,12 @@ pub struct ClearSkipResult {
     pub cleared: bool,
 }
 
-fn publish<R: Runtime>(app: &AppHandle<R>, state: &PluginState, next: EngineState) {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkipResult {
+    pub skipped: String,
+}
+
+pub(crate) fn publish<R: Runtime>(app: &AppHandle<R>, state: &PluginState, next: EngineState) {
     state.set_state(next.clone());
     emit_state(app, state.payload(&next));
 }
@@ -432,12 +442,46 @@ pub async fn clear_skipped_version(
     state: State<'_, Arc<PluginState>>,
 ) -> Result<ClearSkipResult, ErrorPayload> {
     let engine = state.engine().map_err(|error| error.to_payload())?;
-    let cleared =
-        delta_update_engine::journal::state::read_skipped_version(state.journal_root()).is_some();
+    let cleared = engine.skipped_version().is_some();
     engine
         .clear_skipped_version()
         .map_err(|error| error.to_payload())?;
     Ok(ClearSkipResult { cleared })
+}
+
+/// Stop offering the release found by the last check ("later").
+///
+/// The marker survives restarts; a newer release or `clear_skipped_version`
+/// resets it. A mandatory update cannot be skipped, and a prepared update must
+/// be cancelled first so the UI never shows "skipped" and "ready" at once.
+#[tauri::command]
+pub async fn skip_version<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<PluginState>>,
+) -> Result<SkipResult, ErrorPayload> {
+    let state = Arc::clone(state.inner());
+    let engine = state.engine().map_err(|error| error.to_payload())?;
+    let Some(version) = state.target_version() else {
+        return Err(EngineError::NotPrepared.to_payload());
+    };
+    let refused = state.min_supported_version().is_some() || state.prepared().is_some();
+    if refused {
+        return Err(EngineError::InvalidTransition {
+            from: if state.min_supported_version().is_some() {
+                "UpdateRequired".into()
+            } else {
+                "Prepared".into()
+            },
+            to: "Idle".into(),
+        }
+        .to_payload());
+    }
+    engine
+        .skip_version(&version)
+        .map_err(|error| error.to_payload())?;
+    state.set_target_version(None);
+    publish(&app, &state, EngineState::Idle);
+    Ok(SkipResult { skipped: version })
 }
 
 /// Write a support bundle next to the app logs and return its path.
@@ -511,12 +555,12 @@ pub async fn open_diagnostics_folder<R: Runtime>(app: AppHandle<R>) -> Result<()
         })
 }
 
-#[tauri::command]
-pub async fn confirm_healthy<R: Runtime>(
-    app: AppHandle<R>,
-    state: State<'_, Arc<PluginState>>,
-) -> Result<ConfirmResult, ErrorPayload> {
-    let state = Arc::clone(state.inner());
+/// Shared by the `confirm_healthy` command and the Rust facade: acknowledge the
+/// running version, then leave `Committed` so the crash-loop guard disarms.
+pub(crate) fn acknowledge_health<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &PluginState,
+) -> Result<(), ErrorPayload> {
     // Intentionally not gated: a long prepare must not block (or fail) the
     // health acknowledgement, otherwise repeated slow downloads look like a
     // crash loop and trigger a rollback.
@@ -526,8 +570,18 @@ pub async fn confirm_healthy<R: Runtime>(
         .map_err(|error| error.to_payload())?;
     state.mark_awaiting_confirm(false);
     if matches!(state.snapshot(), EngineState::Committed { .. }) {
-        publish(&app, &state, EngineState::Idle);
+        publish(app, state, EngineState::Idle);
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn confirm_healthy<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, Arc<PluginState>>,
+) -> Result<ConfirmResult, ErrorPayload> {
+    let state = Arc::clone(state.inner());
+    acknowledge_health(&app, &state)?;
     Ok(ConfirmResult { acknowledged: true })
 }
 

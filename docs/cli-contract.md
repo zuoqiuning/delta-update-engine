@@ -71,12 +71,35 @@ fi
   "channel": "stable",
   "config_version": 1,
   "install_mode": "currentUser",
+  "confirm_health_granted": true,
   "errors": [],
   "warnings": []
 }
 ```
 
-`install_mode` 取自 `bundle.windows.nsis.installMode`（缺失时为 `null`）。`warnings` 非空不改变退出码，但会指出安装形态与更新策略的冲突：`perMachine` / `both` 搭配 `auto_apply: true` 会在用户未预期时触发 UAC。
+`install_mode` 取自 `bundle.windows.nsis.installMode`（缺失时为 `null`）。`confirm_health_granted` 表示 `src-tauri/capabilities/*.json` 里是否有集合（或直接权限）授予 `confirm_healthy`；它与 `auto_confirm` 都为 `false` 时，`warnings` 会指出回滚保护实际关闭，并建议改用 `delta-update:manage-confirm`、设置 `auto_confirm: true` 或运行 `init --auto`。`src-tauri/capabilities` 下无法解析的 JSON 文件会写进 `errors` 并使 `ok` 为 `false`（退出码非零），因为 Tauri 会在启动时因它失败。
+
+`warnings` 非空不改变退出码，但会指出安装形态与更新策略的冲突：`perMachine` / `both` 搭配 `auto_apply: true` 会在用户未预期时触发 UAC。
+
+`doctor --journal-dir <DIR> --install-root <DIR> --json` 离线校验安装树，同样复用该信封：
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "mode": "verify-files",
+  "ok": false,
+  "manifest": "installed",
+  "version": "2.0.0",
+  "checked": 42,
+  "missing": ["assets/icon.png"],
+  "mismatched": [
+    { "path": "App.exe", "expected": "…", "actual": "…" }
+  ]
+}
+```
+
+`manifest` 为 `installed`（确认健康后的清单）或 `verified`（尚未确认时的更新前快照）；`ok` 为 `false` 时退出码非零，便于 CI 与支持脚本直接判断。
 
 ### 2.2 `inspect --journal-dir --json`
 
@@ -94,11 +117,14 @@ fi
   "skipped_version": null,
   "warnings": [],
   "diagnosis": "…",
-  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null }
+  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null },
+  "history": [
+    { "v": 1, "version": "2.0.0", "finished_at_unix": 1763000042, "result": "completed" }
+  ]
 }
 ```
 
-`attempts > crash_loop_threshold` 时下一次启动会回滚；`crash_loop_threshold` 在机器首次启动后才有值。`worker_event` 是 `worker.log` 里最新一条结构化事件，只在存在时出现；日志是旧版纯文本时该字段缺失。
+`attempts > crash_loop_threshold` 时下一次启动会回滚；`crash_loop_threshold` 在机器首次启动后才有值。`worker_event` 是 `worker.log` 里最新一条结构化事件，只在存在时出现；日志是旧版纯文本时该字段缺失。`history` 是 `update_history.jsonl` 里最新的 10 条终态（`completed` / `rolled_back` / `failed`），没有历史记录时为空数组。
 
 ### 2.3 `inspect --from-release --json`
 
@@ -193,11 +219,14 @@ fi
   "full_by_design": 2,
   "removed": 1,
   "journal_only": [],
-  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null }
+  "worker_event": { "name": "apply_ok", "ts": "1763000042", "msg": null },
+  "history": [
+    { "v": 1, "version": "2.1.0", "finished_at_unix": 1763000142, "result": "rolled_back", "reason": "crash loop" }
+  ]
 }
 ```
 
-`strategy`/`size`/`delta_size` 仅在同时提供 `--from-release` 时存在。
+`strategy`/`size`/`delta_size` 仅在同时提供 `--from-release` 时存在。`history` 是诊断包里最新 5 条更新终态（新→旧）；旧版插件导出的包没有该字段，此时为 `[]`。
 
 `journal_only` 列出“journal 触碰过、但签名清单没有”的路径（排除被删除的文件）。正常 bundle 应为空——worker 会对每个 `Place` 对照签名清单校验；非空说明 bundle 混了版本或 journal 被篡改。反过来“清单有、journal 无”不列为异常：未变化的文件本来就不会出现在 journal 里。
 
@@ -296,6 +325,21 @@ delta-update doctor --simulate-failure lock --json | jq -e '.simulated_error.cod
 ### 2.8 `serve` 的边界
 
 `serve` 没有 JSON 输出，也不属于发布契约。它只绑定 loopback，用于本地开发与演示：**loopback 不是信任边界，它不防御同机恶意进程**；不要用 `socat` / `netsh portproxy` 转发到公网。没有 TLS、鉴权、目录列表或缓存，不是 CDN。
+
+### 2.9 `key-info` / `verify-key` 的 `--json`
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "public_key": "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3",
+  "key_id": "1F2E3D4C5B6A7988"
+}
+```
+
+`key_id` 为大写十六进制。输出只含公钥信息，脚本可以直接用它填充 `signing_public_keys` 或 `init --public-key`，不必解析人类输出。
+
+`verify-key --json` 输出 `{ "v": 1, "tool": "delta-update-cli", "matches": true, "public_key": "…" }`；不匹配时仍打印该 JSON，并以退出码 `1` 结束，脚本可以同时依赖 `matches` 与退出码。
 
 ## 3. 门禁
 

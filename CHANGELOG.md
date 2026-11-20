@@ -2,8 +2,40 @@
 
 本项目遵循 [SemVer](https://semver.org/)。发布前必须同步更新本文件。
 
-## [未发布]
+## [1.1.0] - 2026-11-20
 
+本次是候选版之后的第一个稳定版。升级前请阅读：
+
+- **向后兼容**：清单 schema 不变；`check` 新增的 `skipped_version`、诊断包新增的 `history` 都是可选字段，旧客户端与旧 payload 不受影响。
+- **权限**：`init` 默认写入 `delta-update:manage-confirm`（`manage` + `confirm_healthy`）；已有接入可继续使用 `default` / `manage`，无需改动。
+- **建议顺序**：先升级宿主（插件 + 前端 SDK），再启用多签名/信封；多签名由发布端 `--additional-signing-key` 开启，旧客户端仍读主签名。
+- **npm**：`tauri-plugin-delta-update-api@1.1.0` 是稳定版，`latest` 指向它；预发布版本仍走 `next`。
+- **版本号统一为 1.1.0**：workspace crate、npm 包、path 依赖与文档示例同步升级；发布工作流的版本校验与 `cargo xtask version-sync` 覆盖同一来源。
+- **`migrate --write` 的依赖行不再硬编码版本**：生成的迁移指南从 crate 版本取值，并有测试锁定；此前会一直提示 `1.0.0-rc.4`，发布 1.1.0 后会把用户带到旧版本。
+- **按目录规范拆分超标文件**：`pipeline/mod.rs` 2680→27 行（命令实现回到 `commands/*`，阶段与共享 helper 进 `pipeline/{audit,keys,sbom,self_test}.rs`）；`engine.rs` 1216→726（`engine/{scan,commit}.rs`）；`fetch/http.rs` 1158→796（`http/{ranged,support}.rs`）；`staging/prepare.rs` 923→661（`prepare/{download,progress}.rs`）。对外路径通过 `pipeline` 的 re-export 保持不变，`cargo xtask ci` 全绿。
+- **文档按 600 行规则拆为索引 + 分册**：`api.md`（引擎/错误/插件/CLI）、`protocol.md`（数据/运行时/配置）、`release.md`（流程/检查/打包）、`getting-started.md`（接入/后续/参考）各自保留原路径作为索引，现有链接与 `docs/README.md` 已同步；`docs/reviews/` 明确为只追加、不拆分的历史快照。
+- **目录规范对齐真实布局**：`directory-structure.md` 补上 `diagnostics.rs`/`history.rs`/`worker_log.rs`、`engine/*`、`http/*`、`prepare/*`、`commands/doctor/*`、`publisher/s3*`、插件权限集与全部测试文件；明确 `tests/` 与生成权限目录不受 12 文件上限约束，`error.rs` 这类穷尽映射表可超过 800 行。
+- **根目录清理**：删除 `ci3.log` 与 `publish-dryrun.log`；`导出源码.bat` / `项目完整源码.md` 标记为已被 `.gitignore` 忽略的本地工具产物，不进入仓库。
+- **`doctor --check-config` 抓出权限标识拼写错误**：解析 `src-tauri/capabilities/*.json` 时，除坏 JSON 外，任何未知的 `delta-update:*` 标识（如 `manage-confrim`）都会让检查失败。Tauri 运行时本来就会拒绝这类标识，但表现为启动失败；现在在 CI/本地就能定位到具体文件与字符串。合法的集合、`allow-<command>`、`deny-<command>` 与 `*` 均被接受（有正反用例），并有一条测试直接枚举插件的 `permissions/` 目录，新增命令时不会让 doctor 误报。
+- **`key-info` / `verify-key` 支持 `--json`**：分别输出 `{v,tool,public_key,key_id}` 与 `{v,tool,matches,public_key}`，脚本/Agent 不必再解析 `public key:` / `key id:` / `key pair matches` 这类人类文案；`verify-key` 不匹配时仍打印 JSON 并以退出码 `1` 结束。`key_id` 固定大写十六进制。cli-contract 新增 §2.9 说明。
+- **迁移与示例文档的事实修正**：`migrating-from-updater` 的 npm 包名从不存在 `@delta-update/plugin-api` 改为真实的 `tauri-plugin-delta-update-api`，并补上 `skipVersion`/`clearSkippedVersion`/`getUpdateHistory` 的定位；`minimal-tauri-app` 的本地联调改用 `delta-update serve`，不再要求安装 Python。
+- **启动时打印一行“解析后的配置”**：`build_engine` 成功后输出 `delta update configured`，含 `origin`（仅 scheme + host + port）、`channel`、`current_version`、`install_root`、`journal_root` 与三个 `auto_*` 开关。排查“为什么没更新”先看这一行，即可区分配置未生效与检查失败；预签名参数、查询串与路径前缀不会进日志（有单测锁定脱敏规则）。
+- **`inspect --bundle` 也能看到更新史**：直接消费诊断包里的 `history`，人类输出多一行 `recent updates: v2.1.0 rolled_back (crash loop), v2.0.0 ok`，`--json` 给出新→旧 5 条。旧版插件导出的包没有该字段时保持空数组，其余输出不变——支持同学拿到用户上传的单个 JSON 就能同时看到文件对照与更新结果。
+- **`inspect --journal-dir` 直接回答“上次更新成功了吗”**：人类输出新增「最近更新」三行（版本、结果、原因、相对时间），`--json` 增加 `history`（最近 10 条终态）。此前只有 `--export` 诊断包带历史，排查现场还得再跑一条命令；现在同一条命令的状态、worker 事件、更新史放在一起。`types_contract` 同步校验 `UpdateRecord` 的字段与 `completed`/`rolled_back`/`failed` 字面量，历史记录的手写 TS 类型不会再悄悄漂移。
+- **诊断包自带更新史**：`inspect --export` 与 `export_diagnostics` 写出的单文件 JSON 新增 `history`（最近 20 条终态：completed / rolled_back / failed 及原因、错误码），附到工单即可回答“之前几次更新是否成功”，不必让用户再执行 `get_update_history`。troubleshooting 的 journal 目录清单也补上了一直遗漏的 `update_history.jsonl`。
+- **权限文档与默认集合对齐**：`getting-started` §3.3 的 capability 示例、`architecture`/`security`/`protocol`/`test-plan` 与迁移示例统一写实际的默认集合 `delta-update:manage-confirm`；同时修正 `manage` 的命令清单（漏了 `get_update_history`）和 `security.md` 的“10 个命令”计数。此前读者会以为 `init` 写入的是 `default`，或以为 `manage` 少一个命令。
+- **`describeUpdate` 增加 `canCancel`**：只有 `Downloading` / `Preparing` 为 `true`，与 `cancel_prepare` 真正能停止的阶段一致。此前 UI 用 `isBusy` 控制“取消”按钮时，会在 `Checking`/`Committing`/`RollingBack` 显示一个点了也没效果的按钮；现在所有框架共享同一条规则。
+- **SDK 的“稍后提醒”闭环**：`UpdateController` 与 `useUpdater()` 新增 `clearSkip`（对应 `clear_skipped_version`），配合 `check()` 新返回的 `skipped_version`，示例里可以用 `available` / `skipped_version` 两个分支决定“现在更新 / 仍然更新”，不必在业务代码里自己记录跳过状态。npm 包 README 补上这段流程。
+- **`check` 结果暴露被跳过的版本**：`CheckOutcome`/`CheckResult`/TS `CheckResult` 新增 `skipped_version`（旧 payload 缺失时为 `null`）。用户调用 `skip_version` 后，`check` 仍返回 `available: false`，但同时给出被跳过的版本号，UI 可以显示“已跳过 2.0.0 · 仍要更新”并调用 `clearSkippedVersion()`，不必把“已是最新”和“用户跳过”混为一谈。`types_contract` 新增 `CheckResult` 字段集合校验，手写的两份定义不会静默分叉。
+- **健康确认只有一份实现**：命令 `confirm_healthy` 与 Rust facade 共用 `commands::acknowledge_health`，避免两条路径在重置计数、清理 Journal、回到 `Idle` 的细节上分叉。
+- **发布包内容检查覆盖 `manage-confirm`**：`release.yml` 在 publish 前用 `cargo package --list` 断言插件包包含 `permissions/manage-confirm.toml`，默认权限集不会因漏打包在用户侧退化。
+- **文档版本号门禁扩展**：`xtask contract-check` 现在同时校验根 `README.md` 的 `cargo add tauri-plugin-delta-update@{version}` 与 `troubleshooting.md` 的 `version = "{version}"`，三处接入示例不会再各自漂移。
+- **接入文档事实纠偏**：`getting-started` 与 `migrate` 生成指南中的 crate 版本改为真实的 `1.0.0-rc.4`（此前为无效的 `0.1`）；架构/模块/协议/API 文档统一为 10 个命令、默认阈值 3（第四次启动回滚）、`blobs/<sha256>` 全量键；删除 `CommitJournal` 幻影结构，改为真实的 `Journal` + `journal::plan::build`；`xtask contract-check` 新增“文档版本号必须等于 workspace 版本”的断言。
+- **默认权限与健康确认的闭环说明**：`init` 与接入指南明确二选一——前端调用 `confirm_healthy` 用默认的 `manage-confirm` 权限集；保持 `manage` 则设置 `auto_confirm: true` 或改用 Rust facade。示例不再用固定 3 秒延时确认，改为“应用初始化完成后调用”的 `confirmWhenReady()`。
+- **预签名服务加固**：`HttpSigningService` 对响应体施加 64 KiB 上限并在 JSON 解析前检查；新增 `signing_headers` 配置（只发给预签名服务，不会把清单鉴权头泄露给第三方主机），`doctor --check-config` 同步校验 header 名称与值。
+- **路径链接防护**：journal 重放对目标路径的每个已存在段检查符号链接/junction/reparse point，拒绝经链接逃逸出安装根；新增 Windows junction 拒绝用例。`security.md` 与 `permission-model.md` 同步为已实现的防线。
+- **健康确认计数竞态**：`confirm_healthy` 在存在 `commit.journal` 时持有更新锁再重置计数，避免与 worker 的启动计数互相覆盖；无待处理提交时仍保持无锁，长 prepare 不会阻塞确认。
+- **`check` 扫描并行哈希**：`scan_local` 仍串行遍历目录（保持错误确定性），但把文件哈希放到有界 rayon 池（`min(CPU, 8)`），并严格复用 `size + mtime` 缓存；大安装的首次 `check` 随核心数加速，缓存命中时行为不变。
 - **`prepare` 并行校验未变化文件**：`verify_unchanged_files` 改为 rayon 并行哈希（线程数取 `min(CPU, 8)`），每文件仍独立计算与比对，不引入任何缓存或信任假设；大安装的 `prepare` 前置校验随核心数线性加速，`Progress::Scanning` 的频率不变（每 50 个一次）。
 - **`..` 诊断精确化**：`journal/verify.rs` 的 `install_root` 比较与 `apply/applier.rs` 的 `journal_root` 比较遇到未解析的 `..` 时，直接报 `install_root/journal_root contains '..'`，不再退化成"不一致"的模糊提示；判断下沉为 `path::has_parent_component`，与 `validate_scope` 共用。
 - **跨卷回退确定性 e2e**：新增 `cross_volume_forced`。用 `FaultyFs` 对放置 `App.exe` 的那次 rename 注入一次 `CrossesDevices`，验证 copy + fsync + 原子 rename 回退；`FaultyFs::fired()` 让用例能断言故障确实命中，避免在单卷机器上"看似通过但什么都没测"。为此新增 `apply_commit_verified_with_fs`，e2e 走的仍是生产验签序列。
@@ -52,6 +84,37 @@
 - **前端新增 `describeUpdate(state)`**：把 `isReady` / `canPrepare` / `canRestart` / `isBusy` / `isUpdateRequired` / `error` 等 UI 判断收敛成一份实现，React hook 与 Vue/Svelte/原生 JS 共用同一套语义，不再各自比较状态字符串；`UpdateView` 一并导出。
 - **`inspect --journal-dir --json` 补齐 `worker_event`**：人类输出早已打印最新 worker 事件，JSON 现在也带同一个字段（`name`/`ts`/`msg`），CI 与工单系统拿到的信息与人看到的一致。
 - **`--jobs 0` 不再让估计与实际并行度分叉**：此前扫描按 1 个线程、补丁池按 rayon 默认线程运行，而内存峰值估计按 1 个槽位计算，可能低估真实峰值；现在统一收敛到 `max(jobs, 1)`，扫描、补丁与内存估算使用同一个数。默认并行度的计算也只剩 `scan::default_jobs()` 一处。
+- **暂存文件不再重复全量哈希**：`prepare` 写入并校验每个暂存文件时记录 `(size, mtime)` 到进程内 `VerifiedInventory`，`prepare` 末尾的 `verify_plan` 与 `begin_commit` 只在 size/mtime 仍匹配时复用该记录，跨进程恢复（`resume_prepared`、崩溃恢复）仍按原样全量重哈希。大更新少读 2 遍暂存区；重放阶段对 staged 源与目标的校验不变，暂存区被替换仍会在重放被拒绝。
+- **旧文件哈希复用 `check` 扫描**：`check` 把将被替换/删除的旧文件 `(size, mtime, sha256)` 留在会话内，`begin_commit` 只在 size/mtime 仍匹配时复用，文件在 check 之后被改动则重新哈希；回滚仍使用提交前快照。这样一次更新不再为了 rollback 快照把旧文件重读一遍，跨进程恢复保持全量校验。
+- **下载文件内实时进度**：`Fetcher::download_with_progress`（默认实现转调 `download`，外部 fetcher 无需改动）让 `HttpFetcher` 在写入每个 chunk 时报告字节数；`Progress::Downloading.completed` 因此按 100ms 节流连续增长，单个数百 MB 的对象不再“完成后一次跳到 100%”。计划量与实际回调不一致时由 `finish` 补齐，累计值仍严格等于 `check` 报告的下载量。
+- **清单 `ETag`/304 重新验证**：`check` 对 `latest.json` 发送 `If-None-Match`，清单未变化时只传输一个 304；签名对象仍每次重新获取。测试用的 `MockServer` 同步支持 ETag 与 `304`，并新增 `not_modified()` 计数断言。
+- **下载总并发上限**：`FetchLimits` 新增 `request_concurrency`（默认 8），`HttpFetcher` 用信号量限制文件级与 Range 级请求的合计连接数；`max_concurrent_downloads × range_concurrency` 不再等于真实连接峰值。
+- **发布端并行上传**：`upload_objects` 用有界线程（4 路）并行 PUT，任一失败即停止后续上传并返回首个错误；全部成功后才做原有的大小 HEAD 校验，发布顺序与清单写入时机不变。
+- **`serve` 流式响应**：演示服务器不再把对象整读进内存，`Range` 请求只从磁盘读取请求区间；几百 MB 的安装包也能用本机 `serve` 联调。HEAD / 206 / 416 行为不变，`tests/serve.rs` 的 7 个用例全部覆盖。
+- **状态迁移表与协议文档对齐**：`EngineState::can_transition_to` 补齐 `Checking → Idle/Prepared/Committed/RolledBack`、`Prepared/Committed → Checking`、`Downloading → Cancelled`，与 `protocol.md` §6.2 的 mermaid 和“检查后回到原稳定状态”的说明一致；新增用例逐条断言每条文档化迁移，`protocol.md` 同步补上回流边。
+- **确认健康后丢弃过期 check 快照**：`confirm_healthy` 完成清理后清空会话里的 `verified`/diff 与扫描哈希，下一次 `prepare` 重新 `check`，不会用更新前那棵树去 staging（此前只是多下载一次，现在语义也正确）。
+- **统一“本进程已验证文件”模型**：`check` 的旧文件哈希与 `prepare` 的暂存文件哈希共用 `VerifiedInventory`，删掉重复的 `ScanStamp`；两者仍是 size+mtime 命中才复用，跨进程全量校验。
+- **可选 `logging` feature**：启用后 `init()` 与 `run_applier_from_context()` 会在宿主没有 subscriber 时自动安装一个 stderr subscriber，级别由 `DELTA_UPDATE_LOG` 控制（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）；已安装的 `tauri-plugin-log` 等不会被覆盖。`xtask ci` 增加该 feature 的编译检查，文档（README、troubleshooting、getting-started）同步说明。
+- **文档标明已验证的 Tauri 版本**：`getting-started` §11 明确“已验证版本 = `Cargo.lock` 中解析出的版本（rc.4 为 `tauri 2.12.5`）”，并给出升级 Tauri 时需要重跑的验证清单，避免宽版本 `tauri = "2"` 与文档记录漂移。
+- **结构化 `ErrorPayload.detail`**：`detail` 不再恒为空，对带结构化字段的错误输出 `key=value; key=value`（`http_status`、`required_bytes`/`available_bytes`、`limit_bytes`、`file_size`/`budget`、schema 版本、迁移起止版本等），只含数值与枚举、不含路径或服务器原文；UI 与工单不必再解析本地化文案。
+- **`skip_version` 命令（第 11 个）**：把最近一次 `check` 找到的版本写入 `skipped_version`，`check` 在下个更高版本前返回 `available: false`。版本由插件从 check 结果取，前端不能指定；强制更新（`min_supported_version`）与已 `Prepared` 的更新会拒绝并返回 `E_INVALID_TRANSITION`。权限集、TS SDK（`skipVersion` / controller `skip`）与文档同步。
+- **状态迁移校验接入**：`PluginState::set_state` 现在用 `EngineState::can_transition_to` 校验并告警未文档化迁移（不阻断 UI）；迁移表补齐命令层直接进入 `Downloading`/`Prepared` 的边、`Prepared → Failed` 与启动 `Idle → Failed`，插件单测与引擎单测共同锁定这些边。
+- **Rust ↔ TS 契约测试**：新增 `types_contract`，直接读取 `packages/plugin-api/src/types.ts` 并断言状态名顺序、事件名、`UpdateError`/`UpdateStatePayload`/`UpdateProgress` 字段与 Rust 序列化一致，`ErrorAction`/category 的 wire 形式稳定。类型仍是手写两份，但漂移现在会直接让测试失败。
+- **`doctor` 离线校验安装树**：`doctor --journal-dir <DIR> --install-root <DIR>` 用 journal 里的 `installed_manifest.json`（缺失时回退 `verified_manifest.json`）逐个校验文件，列出缺失/哈希不符并输出 JSON（`mode: "verify-files"`），退出码非零。解决“远程版本没变、`check` 返回已是最新，但本地文件已被杀软/用户破坏”时无从发现的问题。
+- **覆盖率可见性**：CI 新增 `coverage (engine)` job，用 `cargo-llvm-cov` 生成 lcov 并上传 artifact；阈值门禁等基线稳定后再加。
+- **默认权限集改为 `manage-confirm`**：`init` 与 `migrate` 默认写入 `manage-confirm`（`manage` + `confirm_healthy`），前端按文档调用 `confirm_healthy()` 不再被 ACL 拒绝；`default` 降为兼容集，`manage` 仍保留给“前端不能确认健康”的严格划分。示例应用同步改用该集合。
+- **`init --auto` 零前端代码**：写入 `auto_check/auto_apply/auto_confirm = true`，应用启动后自动检查并准备、退出时替换、下次启动自动确认，无需任何前端代码；需要进度或“稍后提醒”时再接入 SDK。
+- **接入路径前置**：`getting-started` 新增 §1.1「最快接入：零前端代码」，两条命令 + 一个 `main.rs`；`init` 输出补齐 Cargo 依赖行（含 `logging` feature）与前端 SDK 安装命令。
+- **`doctor --check-config` 检测回滚保护关闭**：当 `auto_confirm=false` 且 `src-tauri/capabilities` 未授予 `confirm_healthy` 时给出可执行警告；JSON 新增 `confirm_health_granted` 字段，CI 可直接断言。
+- **`init --merge-config` 一条命令完成接入**：把生成的 `plugins.delta-update` 合并进 `src-tauri/tauri.conf.json` 并写入 capability；已有该段时只报告不覆盖，首次改写保留 `tauri.conf.json.bak`。文档最快路径缩为 `init --auto --merge-config` + 一个 `main.rs`。
+- **`init` 输出的依赖版本改为取自 crate 版本**：不再硬编码 `1.0.0-rc.4`，发版时不会与 `init` 提示漂移。
+- **`--merge-config` 健壮性打磨**：改 `tauri.conf.json` 走临时文件 + 原子替换（不会留下截断文件）；检测到 `tauri.conf.json5` 时给出明确提示而不是“找不到配置文件”；第二次运行时只报告“未修改”，不再同时打印“请合并”的说明。
+- **根 README 增加“快速接入（零前端代码）”**：安装命令之后直接给出 `init --auto --merge-config` + `main.rs`，GitHub 首屏即可看到最短路径。
+- **`doctor --check-config` 校验 capability 文件本身**：`src-tauri/capabilities/*.json` 改为解析而非子串匹配，无法解析的文件写入 `errors` 并使 `ok=false`（退出码非零）——Tauri 启动时会因坏 capability 失败，现在 CI 能提前发现。
+- **`init --merge-config` 失败不留半成品**：先合并 `tauri.conf.json`，成功后才写 capability；项目结构不对时直接失败且不产生任何文件（有测试锁定）。
+- **Rust 侧确认健康**：新增 `tauri_plugin_delta_update::confirm_healthy(app.handle())`，语义与命令一致（重置启动计数、清理 Journal/PREPARED、回到 `Idle`），供无 WebView/托盘应用或原生启动流程使用，不再被迫开启 `auto_confirm` 或依赖前端。
+- **前端错误类型收紧**：`UpdateError.category` 从 `string` 改为 13 值联合类型（`action` 维持 12 值联合）；`types_contract` 同时校验 Rust 枚举的 wire 值与 `types.ts` 字面量逐项一致，UI 可以直接 `switch` 而不必猜字符串。
+- **MSRV 门禁**：CI 新增 `msrv (1.90)` job，只用 `rust-version = "1.90"` 检查三个发布 crate（dev-dependency 允许更新）；依赖升级若悄悄抬高 MSRV 会直接失败。
 
 ## [1.0.0-rc.4] - 2026-11-15
 

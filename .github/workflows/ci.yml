@@ -45,6 +45,40 @@ jobs:
           cargo test -p tauri-plugin-delta-update --features pinned-keys
           --test pinned_keys_contract --test runtime_trust
 
+  msrv:
+    name: msrv (1.90)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      # A dependency bump can silently raise the supported toolchain while
+      # stable CI stays green. Only the shipped crates are checked: dev-only
+      # dependencies are allowed to need a newer compiler.
+      - run: >-
+          cargo +1.90.0 check
+          -p delta-update-engine
+          -p tauri-plugin-delta-update
+          -p delta-update-cli
+
+  coverage:
+    name: coverage (engine)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Report-only for now: the threshold is deferred until a baseline exists,
+      # but the artifact makes line/branch drift visible per pull request.
+      - run: cargo llvm-cov -p delta-update-engine --lib --lcov --output-path engine-lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-coverage
+          path: engine-lcov.info
+
   e2e:
     name: e2e (${{ matrix.os }})
     strategy:

@@ -28,6 +28,7 @@ struct MockState {
     max_active: AtomicUsize,
     delay_ms: AtomicU64,
     faults: AtomicU64,
+    not_modified: AtomicU64,
 }
 
 /// In-process HTTP fixture for check/prepare tests.
@@ -155,6 +156,11 @@ impl MockServer {
     pub fn faults_served(&self) -> u64 {
         self.state.faults.load(Ordering::SeqCst)
     }
+
+    /// How many `304 Not Modified` responses were served.
+    pub fn not_modified(&self) -> u64 {
+        self.state.not_modified.load(Ordering::SeqCst)
+    }
 }
 
 struct ActiveGuard<'a>(&'a MockState);
@@ -228,6 +234,24 @@ async fn serve(State(state): State<Arc<MockState>>, request: Request) -> Respons
         return response(StatusCode::NOT_FOUND, Vec::new(), None);
     };
 
+    // Entity tags let the client revalidate a cached manifest with one
+    // `If-None-Match` request, which is what `HttpFetcher` does for
+    // `latest.json`.
+    let etag = etag_for(&body);
+    if request
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        == Some(etag.as_str())
+    {
+        state.not_modified.fetch_add(1, Ordering::SeqCst);
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, &etag)
+            .body(Body::empty())
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
+
     // Announce the full length but close the body early once, so the client
     // sees a retryable transport error and resumes with a Range request.
     if let Some(at) = take_cut(&state.cut_at, &path) {
@@ -252,7 +276,7 @@ async fn serve(State(state): State<Arc<MockState>>, request: Request) -> Respons
             body[start..=end].to_vec(),
             Some(format!("bytes {start}-{end}/{}", body.len())),
         ),
-        None => response(StatusCode::OK, body, None),
+        None => response_with_etag(StatusCode::OK, body, &etag),
     }
 }
 
@@ -325,6 +349,26 @@ fn response(status: StatusCode, body: Vec<u8>, content_range: Option<String>) ->
     builder
         .body(Body::from(body))
         .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+fn response_with_etag(status: StatusCode, body: Vec<u8>, etag: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_LENGTH, body.len() as u64)
+        .header(header::ETAG, etag)
+        .body(Body::from(body))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+/// Stable entity tag for a fixed body. FNV-1a is enough: the fixture never
+/// needs collision resistance, only a value that changes with the content.
+fn etag_for(body: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in body {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("\"{hash:016x}\"")
 }
 
 /// Parse `bytes=<start>-` and return an inclusive range clamped to the body.

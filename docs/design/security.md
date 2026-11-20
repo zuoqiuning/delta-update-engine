@@ -90,7 +90,7 @@
 **防御**：
 
 - 协议层（§1.3）严格禁止 `..`、`.`、空段、绝对路径、盘符、UNC。
-- 客户端在拼接 `根目录 + 相对路径` 后，**再次验证规范化结果仍在根目录之下**。违反返回 `E_PATH_ESCAPE`，不写入任何文件。
+- 客户端做两层检查：清单解析阶段拒绝穿越段与 Windows 非法路径；journal 重放时对路径上的每一段检查符号链接 / junction / reparse point，拒绝把写入经由链接重定向到根目录之外。违反返回 `E_PATH_ESCAPE`/`E_JOURNAL_CORRUPT`，不写入任何文件。
 - 路径字段在 Journal 中同样受此约束，重放时不信任 Journal 中的路径。
 
 #### 向量 D：WebView 被攻破后的命令滥用
@@ -101,9 +101,9 @@
 
 | 层                                  | 机制                                                         | 独立有效性                                         |
 | ----------------------------------- | ------------------------------------------------------------ | -------------------------------------------------- |
-| 命令面收窄                          | 只暴露 `check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`。**没有指定文件的 commit 命令**。 | WebView 完全沦陷也无法写入 R                       |
+| 命令面收窄                          | 只暴露 `check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply` 与诊断/历史/跳过命令（`export_diagnostics`、`open_diagnostics_folder`、`get_update_history`、`clear_skipped_version`、`skip_version`）。**没有指定文件的 commit 命令**。 | WebView 完全沦陷也无法写入 R                       |
 | 路径不经过前端                      | 命令不接收任何文件路径参数。路径由引擎内部从当前 exe 位置解析。 | 消除路径注入                                       |
-| 默认权限包最小化                    | `delta-update:default` 只包含六个无路径参数命令的 `allow`。  | 即使 capability 文件被误配，可授予的集合本身是小的 |
+| 默认权限包最小化                    | `init` 默认写入 `manage-confirm`（11 个无路径参数命令的 `allow`，与兼容集 `default` 当前等价）；生产可用 `monitor` 进一步收窄。 | 即使 capability 文件被误配，可授予的集合本身是小的 |
 | Isolation Pattern（建议开发者启用） | AES-GCM 保护的 iframe 拦截并改写 IPC payload。               | 增加 WebView 到 Core 的额外屏障                    |
 | CSP 收紧                            | 禁止 `unsafe-inline`、限制 `connect-src`。                   | 降低 XSS 可达性                                    |
 
@@ -229,7 +229,7 @@
 | **补丁**    | 解压输出严格受 `size` 约束            | B、E2         | 防解压炸弹                       |
 | **路径**    | 协议规范 + 运行时逃逸检查             | C、E          | **双重检查**                     |
 | **命令面**  | 只读状态 + 触发检查/准备/重启，无任意文件命令 | D      | **结构性收窄**                   |
-| **权限**    | 默认权限包只含六个无路径参数的命令    | D             | 最小暴露面                       |
+| **权限**    | 默认权限包含 10 个无路径参数的命令    | D             | 最小暴露面                       |
 | **Journal** | 目标哈希绑定 + 尾部 checksum + 幂等重放 | E           | 原子性+完整性                    |
 | **并发**    | 跨进程 `update.lock`                  | E             | 防并发提交/重放                  |
 | **资源**    | 清单/签名/补丁/全量大小上限           | A、B、E2      | 防内存与磁盘耗尽                 |

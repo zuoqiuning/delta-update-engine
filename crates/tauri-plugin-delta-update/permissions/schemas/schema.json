@@ -403,6 +403,18 @@
           "markdownDescription": "Denies the restart_to_apply command without any pre-configured scope."
         },
         {
+          "description": "Enables the skip_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-skip-version",
+          "markdownDescription": "Enables the skip_version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the skip_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-skip-version",
+          "markdownDescription": "Denies the skip_version command without any pre-configured scope."
+        },
+        {
           "description": "Enables the status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-status",
@@ -415,16 +427,22 @@
           "markdownDescription": "Denies the status command without any pre-configured scope."
         },
         {
-          "description": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`",
+          "description": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`"
+          "markdownDescription": "Legacy compatibility set with every command, including confirm_healthy. New deployments should use `manage` (no health confirmation) or `monitor` (read-only).\n#### This default permission set includes:\n\n- `allow-check`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-status`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`"
         },
         {
-          "description": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`",
+          "description": "Full update management plus health confirmation.\n\nThe default set written by `init`. It is `manage` with `confirm_healthy`, so the\ndocumented frontend flow (call `confirm_healthy()` once the app is ready) works\nwithout switching to the compatibility `default` set.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`",
+          "type": "string",
+          "const": "manage-confirm",
+          "markdownDescription": "Full update management plus health confirmation.\n\nThe default set written by `init`. It is `manage` with `confirm_healthy`, so the\ndocumented frontend flow (call `confirm_healthy()` once the app is ready) works\nwithout switching to the compatibility `default` set.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-confirm-healthy`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`"
+        },
+        {
+          "description": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`",
           "type": "string",
           "const": "manage",
-          "markdownDescription": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`"
+          "markdownDescription": "Full update management without the health acknowledgement shortcut.\n\nAllows check, status, prepare, cancel and restart. `confirm_healthy` is\nintentionally excluded: health confirmation should be wired to a code path\nthat knows the application actually initialized successfully.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-prepare`\n- `allow-cancel-prepare`\n- `allow-restart-to-apply`\n- `allow-export-diagnostics`\n- `allow-open-diagnostics-folder`\n- `allow-get-update-history`\n- `allow-clear-skipped-version`\n- `allow-skip-version`"
         },
         {
           "description": "Read-only update monitoring.\n\nOnly allows `check`, `status` and `get_update_history`; the frontend can\ndisplay update availability, progress and past outcomes but cannot prepare or\ninstall anything.\n\n#### This permission set includes:\n\n- `allow-check`\n- `allow-status`\n- `allow-get-update-history`",

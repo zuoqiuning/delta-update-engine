@@ -14,6 +14,7 @@ Legacy compatibility set with every command, including confirm_healthy. New depl
 - `allow-open-diagnostics-folder`
 - `allow-get-update-history`
 - `allow-clear-skipped-version`
+- `allow-skip-version`
 
 ## Permission Table
 
@@ -261,6 +262,32 @@ Denies the restart_to_apply command without any pre-configured scope.
 <tr>
 <td>
 
+`delta-update:allow-skip-version`
+
+</td>
+<td>
+
+Enables the skip_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:deny-skip-version`
+
+</td>
+<td>
+
+Denies the skip_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `delta-update:allow-status`
 
 </td>
@@ -280,6 +307,24 @@ Enables the status command without any pre-configured scope.
 <td>
 
 Denies the status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`delta-update:manage-confirm`
+
+</td>
+<td>
+
+Full update management plus health confirmation.
+
+The default set written by `init`. It is `manage` with `confirm_healthy`, so the
+documented frontend flow (call `confirm_healthy()` once the app is ready) works
+without switching to the compatibility `default` set.
+
 
 </td>
 </tr>

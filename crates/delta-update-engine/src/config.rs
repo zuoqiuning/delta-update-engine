@@ -142,6 +142,10 @@ pub struct PluginConfig {
     /// Custom headers for manifest/signature requests only. They are never sent
     /// to object downloads, which may be hosted by a third party.
     pub headers: Option<BTreeMap<String, String>>,
+    /// Custom headers for the signed-URL service only. Kept separate from
+    /// `headers` so an Authorization token meant for the object store is never
+    /// forwarded to a signing service on another host.
+    pub signing_headers: Option<BTreeMap<String, String>>,
     /// Unknown keys, collected so `validate` can warn about typos instead of
     /// silently ignoring them.
     #[serde(flatten)]
@@ -176,6 +180,7 @@ impl Default for PluginConfig {
             allow_insecure_http: false,
             proxy: None,
             headers: None,
+            signing_headers: None,
             extra: BTreeMap::new(),
         }
     }
@@ -311,6 +316,24 @@ impl PluginConfig {
         {
             return Err(EngineError::ConfigInvalid("proxy must not be empty".into()));
         }
+        for (field, map) in [
+            ("headers", &self.headers),
+            ("signing_headers", &self.signing_headers),
+        ] {
+            let Some(map) = map else { continue };
+            for (name, value) in map {
+                if reqwest::header::HeaderName::from_bytes(name.trim().as_bytes()).is_err() {
+                    return Err(EngineError::ConfigInvalid(format!(
+                        "{field} contains an invalid header name: {name}"
+                    )));
+                }
+                if reqwest::header::HeaderValue::from_str(value).is_err() {
+                    return Err(EngineError::ConfigInvalid(format!(
+                        "{field} contains an invalid value for header {name}"
+                    )));
+                }
+            }
+        }
         for (name, value) in [
             ("staging_size_limit", self.staging_size_limit),
             ("max_patch_file_size", self.max_patch_file_size),
@@ -392,5 +415,38 @@ impl std::fmt::Debug for EngineConfig {
             .field("allow_insecure_http", &self.allow_insecure_http)
             .field("crash_loop_threshold", &self.crash_loop_threshold)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_plugin_config() -> PluginConfig {
+        PluginConfig {
+            endpoint: "https://example.com/manifests/latest.json".into(),
+            signing_public_keys: vec![
+                "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3".into()
+            ],
+            ..PluginConfig::default()
+        }
+    }
+
+    #[test]
+    fn signing_headers_are_validated_offline() {
+        let mut config = valid_plugin_config();
+        config.signing_headers = Some(BTreeMap::from([(
+            "authorization".to_string(),
+            "Bearer token".to_string(),
+        )]));
+        assert!(config.validate_offline().is_ok());
+
+        config.signing_headers = Some(BTreeMap::from([(
+            "bad header".to_string(),
+            "x".to_string(),
+        )]));
+        let error = config.validate_offline().unwrap_err();
+        assert_eq!(error.code(), "E_CONFIG_INVALID");
+        assert!(error.to_string().contains("signing_headers"));
     }
 }

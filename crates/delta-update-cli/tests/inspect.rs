@@ -134,6 +134,49 @@ fn journal_dir_reports_the_last_worker_event() {
 }
 
 #[test]
+fn journal_dir_reports_recent_update_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        root.join("update_history.jsonl"),
+        format!(
+            "{{\"v\":1,\"version\":\"2.0.0\",\"finished_at_unix\":{},\"result\":\"rolled_back\",\"reason\":\"crash loop\"}}\n",
+            now.saturating_sub(7_200)
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("v2.0.0 已回滚 (crash loop) · 2 小时前"),
+        "{text}"
+    );
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--journal-dir"])
+        .arg(root)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["history"][0]["version"], "2.0.0");
+    assert_eq!(report["history"][0]["result"], "rolled_back");
+}
+
+#[test]
 fn bundle_cross_checks_journal_ops_and_patch_fallbacks() {
     let dir = tempfile::tempdir().unwrap();
     let bundle_path = dir.path().join("bundle.json");
@@ -218,9 +261,51 @@ fn write_bundle(path: &std::path::Path, worker_log: &str) {
             "warnings": [],
             "diagnosis": "ok"
         },
-        "worker_log": worker_log
+        "worker_log": worker_log,
+        "history": [
+            { "v": 1, "version": "2.0.0", "finished_at_unix": 1763000042, "result": "completed" },
+            {
+                "v": 1,
+                "version": "2.1.0",
+                "finished_at_unix": 1763000142,
+                "result": "rolled_back",
+                "reason": "crash loop"
+            }
+        ]
     });
     std::fs::write(path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+}
+
+#[test]
+fn bundle_reports_history_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_path = dir.path().join("bundle.json");
+    write_bundle(&bundle_path, "event=apply_ok ts=1763000142 commit=x\n");
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--bundle"])
+        .arg(&bundle_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("recent updates: v2.1.0 rolled_back (crash loop), v2.0.0 ok"),
+        "{output:?}"
+    );
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["inspect", "--bundle"])
+        .arg(&bundle_path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["history"][0]["version"], "2.1.0");
+    assert_eq!(report["history"][1]["version"], "2.0.0");
 }
 
 #[test]
@@ -269,6 +354,11 @@ fn export_writes_a_support_bundle_with_the_worker_log_tail() {
     let root = dir.path();
     std::fs::write(root.join("worker.log"), "apply commit x failed: locked\n").unwrap();
     std::fs::write(root.join("attempts"), "1").unwrap();
+    std::fs::write(
+        root.join("update_history.jsonl"),
+        "{\"v\":1,\"version\":\"2.0.0\",\"finished_at_unix\":1,\"result\":\"rolled_back\",\"reason\":\"crash loop\"}\n",
+    )
+    .unwrap();
     let bundle_path = root.join("out/bundle.json");
 
     let output = Command::cargo_bin("delta-update")
@@ -301,4 +391,6 @@ fn export_writes_a_support_bundle_with_the_worker_log_tail() {
         .collect();
     assert!(names.contains(&"worker.log"));
     assert!(names.contains(&"attempts"));
+    assert_eq!(bundle["history"][0]["version"], "2.0.0");
+    assert_eq!(bundle["history"][0]["result"], "rolled_back");
 }

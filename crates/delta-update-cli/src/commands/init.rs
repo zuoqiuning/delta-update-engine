@@ -98,7 +98,11 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
         }
     }
 
-    println!("下一步（4 项）：");
+    println!("下一步（5 项）：");
+    println!(
+        "依赖：`tauri-plugin-delta-update = \"{}\"`（需要控制台日志时加 features = [\"logging\"]）；前端 SDK：`pnpm add tauri-plugin-delta-update-api`。",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("1. 生成密钥：minisign -G -p release.pub -s release.key；再执行 `delta-update init --signing-key release.key` 自动派生公钥，私钥离线保管。");
     println!("2. 用 `BuilderExt` 接入：`.plugin(tauri_plugin_delta_update::init()).run_with_delta_update(context)`；它会先处理 worker 模式，避免顺序漏接。");
     println!("   fn main() {{");
@@ -109,9 +113,8 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
     println!("           .expect(\"failed to run the app\");");
     println!("   }}");
     println!("3. endpoint 必须是 HTTPS；只有本地调试才用 allow_insecure_http（仅放行 loopback）。");
-    println!(
-        "4. 合并下面的配置后运行 `delta-update doctor --check-config --dir .`，确认插件配置能被引擎接受。\n"
-    );
+    println!("4. 运行 `delta-update doctor --check-config --dir .`，确认插件配置能被引擎接受。");
+    println!("5. 不想写任何前端代码：加 `--auto` 重新生成（auto_apply/auto_confirm = true），启动检查、退出替换、下次启动自动确认全部由插件完成。\n");
 
     let config = serde_json::json!({
         "plugins": {
@@ -121,8 +124,8 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
                 "signing_public_keys": keys,
                 "channel": args.channel.clone(),
                 "auto_check": true,
-                "auto_apply": false,
-                "auto_confirm": false
+                "auto_apply": args.auto,
+                "auto_confirm": args.auto
             }
         }
     });
@@ -134,31 +137,58 @@ pub fn run(args: &InitArgs) -> anyhow::Result<()> {
             format!("delta-update:{}", args.permission_set)
         ]
     });
-    if args.write {
+    // Merge first: if the project structure is wrong, fail before writing any
+    // capability file, so a failed run leaves nothing behind.
+    if args.merge_config {
+        crate::scaffold::merge_plugin_config(&args.dir, &config)?;
+    } else {
+        println!(
+            "将以下 `plugins.delta-update` 子对象合并到 src-tauri/tauri.conf.json 的顶层 `plugins`（下次可用 `--merge-config` 自动完成）：\n"
+        );
+        println!("{}\n", serde_json::to_string_pretty(&config)?);
+    }
+    let write = args.write || args.merge_config;
+    if write {
         crate::scaffold::write_capability(&args.dir, &capabilities)?;
         report_capability_coverage(&args.dir, &args.permission_set);
     }
-
-    println!(
-        "将以下 `plugins.delta-update` 子对象合并到 src-tauri/tauri.conf.json 的顶层 `plugins`：\n"
-    );
-    println!("{}\n", serde_json::to_string_pretty(&config)?);
-    println!("将以下权限项追加到 src-tauri/capabilities/default.json 的 `permissions` 数组：\n");
-    println!("{}\n", serde_json::to_string_pretty(&capabilities)?);
-    if args.permission_set == "default" {
+    if write {
         println!(
-            "注：default 是兼容集，含 confirm_healthy 等全部命令；生产环境建议改用 manage 或 monitor。\n"
+            "已写入 src-tauri/capabilities/delta-update.json（identifier=delta-update，权限 delta-update:{}）。\n",
+            args.permission_set
+        );
+    } else {
+        println!("把下面一行加入 src-tauri/capabilities/default.json 的 `permissions` 数组：\n");
+        println!("\"delta-update:{}\"\n", args.permission_set);
+    }
+    if args.auto {
+        println!(
+            "注：已写入 auto_apply / auto_confirm = true。应用无需前端代码：启动后自动检查并准备，退出时替换，下次启动自动确认健康（仍需保留回滚保护）。\n"
+        );
+    } else if args.permission_set == "default" {
+        println!(
+            "注：default 是兼容集，含 confirm_healthy 等全部命令；新接入建议使用 manage-confirm 或 monitor。\n"
         );
     } else if args.permission_set == "manage" {
         println!(
-            "注：manage 不含 confirm_healthy；若前端需要调用 confirm_healthy，请显式使用 --permission-set default，或在关键初始化完成后由 Rust 调用。\n"
+            "注：manage 不含 confirm_healthy。二选一：前端需要调用 confirm_healthy 时改用 --permission-set manage-confirm（默认）；保持 manage 时请设置 auto_confirm: true 由插件兜底。\n"
+        );
+    } else if args.permission_set == "manage-confirm" {
+        println!(
+            "注：manage-confirm = manage + confirm_healthy，前端可以直接调用 confirm_healthy()；这是默认集。\n"
         );
     }
     println!("其余：");
-    println!("- 前端安装 tauri-plugin-delta-update-api，并订阅 delta-update://state。");
+    if args.auto {
+        println!("- 无需前端代码即可完成更新；需要展示进度或“稍后提醒”时再接入 tauri-plugin-delta-update-api。");
+    } else {
+        println!("- 前端安装 tauri-plugin-delta-update-api，并订阅 delta-update://state。");
+    }
     println!("- 用 delta-update release 发布清单、签名与对象。");
     println!("- 当前插件仅支持 Windows 桌面；其他平台请使用官方安装器/包管理器。");
-    println!("- auto_confirm 默认关闭；复杂应用应在关键初始化完成后调用 confirm_healthy()。");
+    if !args.auto {
+        println!("- auto_confirm 默认关闭；复杂应用应在关键初始化完成后调用 confirm_healthy()。");
+    }
     if endpoint_is_placeholder {
         println!("\n提示：endpoint 仍是占位值，请用 --endpoint 重新生成。");
     }

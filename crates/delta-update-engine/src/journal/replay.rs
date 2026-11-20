@@ -101,12 +101,11 @@ fn is_done(context: &ReplayContext<'_>, op: &FileOp) -> Result<bool, String> {
             hash_matches(&dest, sha256, *size)
         }
         // Same reasoning as Backup: a later op may have repopulated src.
-        FileOp::Trash { src, trash_dst } => {
-            Ok(trash_root(context).join(validate(trash_dst)?).exists()
-                || !resolve_install(context.install_root, src)?.exists())
-        }
+        FileOp::Trash { src, trash_dst } => Ok(trash_target(context, &validate(trash_dst)?)?
+            .exists()
+            || !resolve_install(context.install_root, src)?.exists()),
         FileOp::RemoveTrash { trash_path } => {
-            Ok(!trash_root(context).join(validate(trash_path)?).exists())
+            Ok(!trash_target(context, &validate(trash_path)?)?.exists())
         }
     }
 }
@@ -155,7 +154,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
         }
         FileOp::Trash { src, trash_dst } => {
             let source = resolve_install(context.install_root, src)?;
-            let dest = trash_root(context).join(validate(trash_dst)?);
+            let dest = trash_target(context, &validate(trash_dst)?)?;
             if !source.exists() {
                 return Err(format!("trash source is missing: {src}"));
             }
@@ -183,7 +182,7 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
             Ok(())
         }
         FileOp::RemoveTrash { trash_path } => {
-            let path = trash_root(context).join(validate(trash_path)?);
+            let path = trash_target(context, &validate(trash_path)?)?;
             if path.exists() {
                 fs.remove(&path)
                     .map_err(|err| format!("remove {}: {err}", path.display()))?;
@@ -195,30 +194,81 @@ fn execute(context: &ReplayContext<'_>, op: &FileOp, fs: &dyn FileSystem) -> Res
 
 fn backup_source(context: &ReplayContext<'_>, value: &str) -> Result<PathBuf, String> {
     if let Some(rest) = value.strip_prefix("old/") {
-        let rest = validate_install(rest)?;
-        return Ok(context
-            .install_root
-            .join(".old")
-            .join(context.commit_id)
-            .join(rest));
+        return backup_target(context, &validate_install(rest)?);
     }
     if let Some(rest) = value.strip_prefix("trash/") {
-        let rest = validate_install(rest)?;
-        return Ok(trash_root(context).join(rest));
+        return trash_target(context, &validate_install(rest)?);
     }
     Err(format!("invalid backup source prefix: {value}"))
 }
 
-fn trash_root(context: &ReplayContext<'_>) -> PathBuf {
-    context.install_root.join(".trash").join(context.commit_id)
+fn backup_target(context: &ReplayContext<'_>, rel: &Path) -> Result<PathBuf, String> {
+    safe_join(
+        context.install_root,
+        &Path::new(".old").join(context.commit_id).join(rel),
+    )
+}
+
+fn trash_target(context: &ReplayContext<'_>, rel: &Path) -> Result<PathBuf, String> {
+    safe_join(
+        context.install_root,
+        &Path::new(".trash").join(context.commit_id).join(rel),
+    )
 }
 
 fn resolve(root: &Path, value: &str) -> Result<PathBuf, String> {
-    Ok(root.join(validate(value)?))
+    safe_join(root, &validate(value)?)
 }
 
 fn resolve_install(root: &Path, value: &str) -> Result<PathBuf, String> {
-    Ok(root.join(validate_install(value)?))
+    safe_join(root, &validate_install(value)?)
+}
+
+/// Join a validated relative path and refuse any component that is a symbolic
+/// link, junction or other reparse point.
+///
+/// Lexical validation already rejects `..` and absolute paths. Links are the
+/// remaining way to redirect a write outside the root, so every existing
+/// component below the root is checked before the path is used. Missing
+/// components are fine: they will be created as real directories.
+fn safe_join(root: &Path, rel: &Path) -> Result<PathBuf, String> {
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(format!("invalid relative path: {}", rel.display()));
+        };
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if is_link_like(&metadata) => {
+                return Err(format!(
+                    "path component is a symbolic link or reparse point and is refused: {}",
+                    current.display()
+                ))
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("{}: {err}", current.display())),
+        }
+    }
+    Ok(current)
+}
+
+fn is_link_like(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // FILE_ATTRIBUTE_REPARSE_POINT. Junctions are reparse points but are not
+        // reported by `is_symlink()`, so the attribute is checked explicitly.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn validate(value: &str) -> Result<PathBuf, String> {
@@ -358,6 +408,39 @@ mod tests {
         fn sync_dir(&self, path: &Path) -> io::Result<()> {
             self.inner.sync_dir(path)
         }
+    }
+
+    #[test]
+    fn safe_join_accepts_components_that_do_not_exist_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = resolve_install(&root, "a/b/c.txt").unwrap();
+        assert_eq!(path, root.join("a").join("b").join("c.txt"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_inside_the_install_root_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let install = dir.path().join("install");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = install.join("linked");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .status()
+            .expect("run mklink");
+        assert!(status.success(), "mklink /J should create a junction");
+
+        let error = resolve_install(&install, "linked/evil.txt").unwrap_err();
+        assert!(
+            error.contains("symbolic link or reparse point"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

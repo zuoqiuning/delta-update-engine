@@ -173,21 +173,23 @@ pub trait Fetcher {
 
 **设计参考**：数据库 WAL 与文件事务实现的通用语义是**“flush 即提交点”**与**“恢复向前幂等重放”**。本引擎采用相同语义，但操作粒度是文件级的 rename/backup/trash，而非任意文件写入。
 
-**接口形态**：
-```rust
-pub struct CommitJournal { /* ... */ }
+**接口形态**（实际类型，见 `journal` 模块）：
 
-impl CommitJournal {
-    pub fn begin(
-        root: &Path,
-        version: &str,
-        commit_id: Uuid,
-        ops: Vec<FileOp>,
-        fs: &dyn FileSystem,
-    ) -> Result<Self>;                       // flush = commit point
-    pub fn mark_completed(self, fs: &dyn FileSystem) -> Result<()>;
-    pub fn recover(root: &Path, fs: &dyn FileSystem) -> Result<JournalOutcome>;
+```rust
+pub struct Journal { /* format, commit_id, version, from_version, ops */ }
+
+impl Journal {
+    pub fn encode(&self) -> Result<Vec<u8>, EngineError>;
+    pub fn decode(bytes: &[u8]) -> Result<Self, EngineError>;
+    /// 原子写入；写入并 fsync 成功即提交点。
+    pub fn write_atomic(&self, path: &Path) -> Result<(), EngineError>;
 }
+
+// 由已验证的 PREPARED 计划生成前向操作列表。
+journal::plan::build(&plan, &commit_id, &from_version, &install_root)?;
+// 幂等重放 / 逆日志。
+journal::replay(&context, &journal)?;
+rollback::inverse::inverse(&install_root, &commit, &old_hashes)?;
 ```
 
 
@@ -201,7 +203,7 @@ impl CommitJournal {
 | ------------------------------- | ------------------------------------------------------------ |
 | **提交由替换进程执行**          | 主进程在应用退出前 spawn 同一已签名二进制的受限模式（`--delta-update-apply <journal_dir> <commit_id> [--relaunch]`），随后退出。替换进程不加载 WebView/Tauri，只读取 Journal 执行文件操作。主进程退出后才开始替换，保证运行中的 exe/dll 不阻塞 rename。 |
 | **rename-then-replace 主路径**  | 对每个差异文件：旧文件先 rename 到 `R/.old/<commit_id>/<relpath>`（备份），暂存新文件 move 到目标相对路径。运行中的 exe/dll 已被进程映射，**rename 不破坏其内存映像**；下次启动加载新文件。 |
-| **跨卷原子替换**                | 暂存区与安装目录不在同一卷时，move 退化为复制+删除。替换进程统一采用“在目标目录写临时文件 → 校验哈希 → 原子 rename 覆盖”，保证目标路径任何时刻要么是旧文件、要么是完整新文件。 |
+| **跨卷替换**                    | 暂存区与安装目录不在同一卷时，move 退化为“复制到目标目录临时文件 → fsync → rename → 删除来源”。目标在替换前若已存在会先删除，因此存在极短的“目标缺失”窗口；崩溃后由 journal 幂等重放恢复，最终状态可判定。 |
 | **软删除（Trash）而非物理删除** | 远程清单中不存在的旧官方文件，**不直接 `remove`**，移入 `R/.trash/<commit_id>/`。物理清理延迟到 `confirm_healthy()` 之后。这为回滚保留物理素材。 |
 | **备份目录按 commit_id 隔离**   | 每次提交使用唯一 `commit_id` 子目录（`.old/<commit_id>/`、`.trash/<commit_id>/`），不会与上次残留或用户自建同名文件冲突，无需时间戳后缀。清理时按整个 `commit_id` 目录删除。 |
 | **部分提交的防护**              | Commit 过程中任何一步返回错误，**不在内存中 unwind**（因为文件可能已被 rename）。错误被记录，控制权交给 `recover()` 或 `Rollback` 模块，由 journal 决定最终状态。**不会停留在“部分提交但无人知晓”的状态**。 |
@@ -329,10 +331,10 @@ Idle
 | **退出时应用更新**                          | `auto_apply: true` 时，插件监听 `RunEvent::Exit`，在退出前 spawn 替换进程；替换进程在应用完全退出后执行 Journal。`restart_to_apply` 命令走同一路径并额外拉起新版本。 |
 | **自动健康确认**                            | `auto_confirm: true` 时，主窗口页面加载成功后延迟 `confirm_delay_ms` 调用一次 `confirm_healthy`，作为未写前端代码时的兜底。显式调用总是覆盖自动调用。 |
 | **事件桥**                                  | 引擎状态机变更 → 单一 Tauri event `delta-update://state`。前端按 `state` 分支处理 `Prepared` / `RolledBack` / `Failed` 等。**事件只读，前端不参与决策**。 |
-| **命令面（刻意窄）**                        | 暴露六个命令：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`。**没有任何命令接收文件路径**，也没有“替换任意文件”的命令；`restart_to_apply` 只能消费已通过完整校验的 `Prepared` 状态。 |
-| **默认权限包**                              | `permissions/default.toml` 包含六个命令的 `allow`。使用 `build.rs` 的 `tauri_plugin::Builder` 自动生成 `allow-<command>` 权限标识。**scope 不需要复杂定义**，因为这些命令不接收文件路径参数——路径由引擎内部从当前 exe 位置解析，前端无法传入任意路径。这从设计上消除了 scope 逃逸风险。 |
-| **Extension Trait（可选）**                 | 为 `AppHandle` 提供 `.delta_updater()` 方法，返回可克隆的引擎状态句柄，供 Rust 侧其他插件查询状态。 |
-| **平台显式拒绝**                            | 非桌面平台（含移动端）在注册期返回 `Error::UnsupportedPlatform`；macOS 签名 `.app` 包与 Linux `deb`/`rpm` 安装返回 `Error::UnsupportedFormat`。**在编译期或注册期明确拒绝**，而不是下载完才发现无法替换。 |
+| **命令面（刻意窄）**                        | 暴露 11 个命令：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`get_update_history`、`clear_skipped_version`、`skip_version`。**没有任何命令接收文件路径**，也没有“替换任意文件”的命令；`restart_to_apply` 只能消费已通过完整校验的 `Prepared` 状态。 |
+| **默认权限包**                              | `permissions/default.toml` 包含 11 个命令的 `allow`。使用 `build.rs` 的 `tauri_plugin::Builder` 自动生成 `allow-<command>` 权限标识。**scope 不需要复杂定义**，因为这些命令不接收文件路径参数——路径由引擎内部从当前 exe 位置解析，前端无法传入任意路径。这从设计上消除了 scope 逃逸风险。 |
+| **Rust 侧入口**                             | 当前版本**没有** `DeltaUpdaterExt` 之类的公开 facade；稳定接口是命令 + `delta-update://state` 事件（见 `docs/reference/api.md` §3.4）。宿主不应依赖 `PluginState` 的内部字段。 |
+| **平台显式拒绝**                            | 非 Windows 目标在**编译期**直接 `compile_error!`；运行期 `ensure_supported()` 再返回 `E_UNSUPPORTED_PLATFORM` 作为纵深。不会出现“先下载、后失败”的静默降级。 |
 
 **权限设计的核心判断**：Tauri 2 的权限系统要求显式授予。本插件将暴露面收窄到**只读状态 + 触发检查/准备/取消 + 健康确认 + 重启已就绪的更新**。Commit 由替换进程在应用退出后执行，**没有“替换指定文件”的前端命令**。这意味着即使 WebView 被完全攻破，攻击者能做的上限是“反复触发 prepare、取消、或重启一个已通过全部校验的更新”，无法强制替换任意文件、无法读取根目录内容、无法绕过签名。
 

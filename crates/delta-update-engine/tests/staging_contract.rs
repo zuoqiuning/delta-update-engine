@@ -6,9 +6,13 @@ use async_trait::async_trait;
 use delta_update_engine::crypto::sha256_bytes;
 use delta_update_engine::error::NetworkError;
 use delta_update_engine::fetch::{DownloadReceipt, FetchLimits, Fetcher, HttpFetcher};
+use delta_update_engine::journal::state;
 use delta_update_engine::patch::container::{Codec, PatchHeader};
 use delta_update_engine::staging::PreparedPlan;
-use delta_update_engine::{Engine, EngineConfig, EngineError, Limits, Progress, StartupOutcome};
+use delta_update_engine::{
+    DirectWriter, Engine, EngineConfig, EngineError, Limits, PrivilegedWriter, Progress,
+    StartupOutcome,
+};
 use delta_update_testkit::{MockServer, TestKeyPair};
 use serde_json::{json, Value};
 use url::Url;
@@ -553,6 +557,99 @@ async fn tampered_staging_file_blocks_commit() {
     let error = engine.begin_commit(&prepared).unwrap_err();
     assert_eq!(error.code(), "E_PATCH_TARGET_HASH_MISMATCH");
     assert!(!engine.config().journal_root.join("commit.journal").exists());
+}
+
+/// S-09: `begin_commit` copies the old-file hashes from the last `check` while
+/// size and mtime still match, and re-hashes a file edited after that check.
+#[tokio::test]
+async fn old_hashes_reuse_the_check_scan_and_follow_later_edits() {
+    let keys = TestKeyPair::generate();
+    let new_app = b"new";
+    let old_app = b"old";
+    let manifest = manifest_with(json!({
+        "App.exe": full_entry("2.0.0", "App.exe", new_app)
+    }));
+    let (_dir, engine, _server) = start(
+        manifest,
+        &keys,
+        "1.0.0",
+        Limits::default(),
+        &[("App.exe", old_app)],
+        &[],
+        &[("artifacts/full/2.0.0/App.exe", new_app)],
+    )
+    .await;
+
+    engine.check().await.unwrap();
+    let prepared = engine.prepare(Box::new(|_| {})).await.unwrap();
+    engine.begin_commit(&prepared).unwrap();
+    let hashes = state::read_old_hashes(&engine.config().journal_root).unwrap();
+    assert_eq!(hashes["App.exe"].sha256, sha256_bytes(old_app));
+
+    // Withdraw the journal, edit the old file (same size, older mtime) and
+    // commit again: the snapshot must describe the bytes on disk, not the scan.
+    engine.discard_pending_commit().unwrap();
+    let app = engine.config().install_root.join("App.exe");
+    std::fs::write(&app, b"OLD").unwrap();
+    let earlier =
+        std::fs::metadata(&app).unwrap().modified().unwrap() - std::time::Duration::from_secs(1);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&app)
+        .unwrap()
+        .set_modified(earlier)
+        .unwrap();
+    engine.begin_commit(&prepared).unwrap();
+    let hashes = state::read_old_hashes(&engine.config().journal_root).unwrap();
+    assert_eq!(hashes["App.exe"].sha256, sha256_bytes(b"OLD"));
+    assert_eq!(hashes["App.exe"].size, 3);
+}
+
+/// S-10: confirming health drops the check snapshot of the old tree, so the
+/// next prepare checks again instead of staging against a stale diff.
+#[tokio::test]
+async fn confirm_healthy_forces_the_next_prepare_to_check_again() {
+    let keys = TestKeyPair::generate();
+    let new_app = b"new";
+    let manifest = manifest_with(json!({
+        "App.exe": full_entry("2.0.0", "App.exe", new_app)
+    }));
+    let (_dir, engine, server) = start(
+        manifest,
+        &keys,
+        "1.0.0",
+        Limits::default(),
+        &[("App.exe", b"old")],
+        &[],
+        &[("artifacts/full/2.0.0/App.exe", new_app)],
+    )
+    .await;
+
+    engine.check().await.unwrap();
+    let prepared = engine.prepare(Box::new(|_| {})).await.unwrap();
+    let pending = engine.begin_commit(&prepared).unwrap();
+    let config = state::read_apply_config(&engine.config().journal_root)
+        .unwrap()
+        .unwrap();
+    DirectWriter
+        .apply_journal(&config, &pending.journal_path)
+        .unwrap();
+    engine.confirm_healthy().unwrap();
+
+    let fetches = |server: &MockServer| {
+        server
+            .requests()
+            .iter()
+            .filter(|path| path.as_str() == "manifests/latest.json")
+            .count()
+    };
+    let before = fetches(&server);
+    engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        fetches(&server),
+        before + 1,
+        "prepare after confirm_healthy must fetch the manifest again"
+    );
 }
 
 /// F-05: a patch whose container header matches the manifest but whose

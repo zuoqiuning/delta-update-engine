@@ -26,7 +26,7 @@ function payload(state: UpdateStateName, extra: Partial<UpdateStatePayload> = {}
 
 const failure = {
   code: 'E_UPDATE_LOCKED',
-  category: 'io',
+  category: 'disk',
   message: 'locked',
   retryable: true,
   action: 'retry' as const,
@@ -105,5 +105,15 @@ describe('describeUpdate', () => {
     const failed = describeUpdate(payload('Failed', { error: failure }));
     expect(failed.canPrepare).toBe(true);
     expect(failed.error?.code).toBe('E_UPDATE_LOCKED');
+  });
+
+  it('offers cancel only while a prepare is actually running', () => {
+    expect(describeUpdate(payload('Downloading')).canCancel).toBe(true);
+    expect(describeUpdate(payload('Preparing')).canCancel).toBe(true);
+    // Checking/Committing/RollingBack are busy but cancel does nothing there.
+    for (const state of ['Idle', 'Checking', 'Committing', 'RollingBack', 'Prepared'] as const) {
+      expect(describeUpdate(payload(state)).canCancel).toBe(false);
+    }
+    expect(describeUpdate(null).canCancel).toBe(false);
   });
 });

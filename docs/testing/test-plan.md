@@ -106,7 +106,7 @@
 | 错误码稳定       | 构造已知错误               | 码值与协议文档 §7.3 一致 |
 | `retryable` 语义 | 构造 `E_NETWORK_TIMEOUT`   | `retryable == true`      |
 | `retryable` 语义 | 构造 `E_SIGNATURE_INVALID` | `retryable == false`     |
-| `detail` 脱敏    | 包含用户路径的错误         | `detail` 中不含用户名    |
+| `detail` 脱敏    | 包含用户路径的错误         | `detail` 只含数值/枚举，不含路径 |
 
 
 ## 3. L2：目录树集成测试与故障注入
@@ -300,7 +300,7 @@ fn maybe_crash_for_test() {
 | P-02 | `auto_check: true` 时后台 prepare        | 主线程不被阻塞，UI 正常显示         |
 | P-03 | prepare 完成发出 `delta-update://state`  | 前端收到 `state = Prepared` 事件    |
 | P-04 | `auto_check: false` 时不自动 prepare     | 只暴露命令，不后台执行              |
-| P-05 | 全部命令的默认权限                       | `delta-update:default` 允许全部命令 |
+| P-05 | 全部命令的默认权限                       | `delta-update:manage-confirm`（`init` 默认）允许全部 11 个命令；`delta-update:default` 等价 |
 | P-06 | 未授予权限时命令调用被拒绝               | Tauri 运行时拒绝                    |
 | P-07 | 命令入口非法并发（busy） | 返回 busy/`E_INVALID_TRANSITION`；完整状态机表目前只在单元测试覆盖，插件尚未强制 `transition_to` |
 | P-09 | 配置缺少必填字段                         | `E_CONFIG_INVALID`                  |

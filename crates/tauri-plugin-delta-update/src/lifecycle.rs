@@ -133,10 +133,32 @@ pub fn build_engine<R: Runtime>(
             .unwrap_or_default()
             .into_iter()
             .collect(),
+    )?
+    .with_signing_headers(
+        config
+            .signing_headers
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
     )?;
     // The keys are embedded at build time; with the `pinned-keys` feature they
     // are narrowed to the set the release environment compiled in.
     let signing_public_keys = crate::pinned::effective_keys(&config.signing_public_keys)?;
+    // One line that answers the first support question: which endpoint,
+    // channel and version did this process actually resolve? Credentials,
+    // query strings and path prefixes are deliberately omitted.
+    tracing::info!(
+        origin = %endpoint_origin(&endpoint),
+        channel = %config.channel,
+        current_version = %app.package_info().version,
+        install_root = %install_root.display(),
+        journal_root = %journal_root.display(),
+        auto_check = config.auto_check,
+        auto_apply = config.auto_apply,
+        auto_confirm = config.auto_confirm,
+        "delta update configured"
+    );
     let engine = Engine::new(EngineConfig {
         endpoint,
         signing_public_keys,
@@ -151,6 +173,16 @@ pub fn build_engine<R: Runtime>(
         crash_loop_threshold: u32::from(config.crash_loop_threshold),
     })?;
     Ok((engine, journal_root))
+}
+
+/// Scheme + host + port only: presigned endpoints and custom prefixes must not
+/// end up in logs or support bundles.
+fn endpoint_origin(url: &Url) -> String {
+    let host = url.host_str().unwrap_or("<unknown>");
+    match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    }
 }
 
 /// Recover a pending journal, escalating once to an elevated worker when a
@@ -507,6 +539,15 @@ mod tests {
         )]));
         assert!(!worker_mode_requested([OsString::from("--help")]));
         assert!(!worker_mode_requested(std::iter::empty()));
+    }
+
+    #[test]
+    fn endpoint_log_line_drops_credentials_query_and_path() {
+        let url = Url::parse(
+            "https://user:secret@updates.example.com:8443/private/manifests/latest.json?token=abc",
+        )
+        .unwrap();
+        assert_eq!(endpoint_origin(&url), "https://updates.example.com:8443");
     }
 
     #[test]

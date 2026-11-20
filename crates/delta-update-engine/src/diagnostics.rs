@@ -115,6 +115,9 @@ pub struct DiagnosticBundle {
     pub report: DiagnosticReport,
     pub worker_log: Option<String>,
     pub journal_dir_files: Vec<BundleFile>,
+    /// Newest terminal outcomes, so a ticket answers "did previous updates
+    /// succeed" without asking the user to run a second command.
+    pub history: Vec<crate::history::UpdateRecord>,
 }
 
 impl DiagnosticBundle {
@@ -404,6 +407,7 @@ pub fn build_bundle(
         report,
         worker_log: read_tail(&journal_dir.join("worker.log"), WORKER_LOG_TAIL_BYTES)?,
         journal_dir_files: files,
+        history: crate::history::read(journal_dir, 20),
     };
     if redact {
         bundle.redact();

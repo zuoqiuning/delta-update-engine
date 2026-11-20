@@ -113,18 +113,18 @@
   "min_client_schema": 1,
   "files": {
     "App.exe":            { "sha256": "…", "size": 10240,
-                            "strategy": "zucchini+zstd",
+                            "strategy": "qbsdiff+zstd",
                             "delta_key": "artifacts/2.0.0-to-2.1.0/App.exe.tdp",
                             "delta_size": 1832,
-                            "full_key":  "artifacts/full/2.1.0/App.exe" },
+                            "full_key":  "blobs/<sha256>" },
     "bin/core.dll":       { "sha256": "…", "size": 20480,
                             "strategy": "qbsdiff+zstd",
                             "delta_key": "artifacts/2.0.0-to-2.1.0/bin/core.dll.tdp",
                             "delta_size": 3011,
-                            "full_key":  "artifacts/full/2.1.0/bin/core.dll" },
+                            "full_key":  "blobs/<sha256>" },
     "resources/icon.png": { "sha256": "…", "size": 5120,
                             "strategy": "full",
-                            "full_key":  "artifacts/full/2.1.0/resources/icon.png" }
+                            "full_key":  "blobs/<sha256>" }
   }
 }
 ```
@@ -134,7 +134,7 @@
 | `sha256`               | 目标文件完整哈希。补丁应用后必须逐文件校验到此值。     |
 | `strategy`             | 策略标识。缺失补丁时为 `full`。                        |
 | `delta_key`/`delta_size` | 补丁对象键与字节数。`delta_size` 用于上限校验与进度。 |
-| `full_key`             | 全量对象键。带补丁的条目必须提供，作为确定性回退来源。 |
+| `full_key`             | 全量对象键，指向内容寻址的 `blobs/<sha256>`。发布 CLI 为**所有条目**生成（含未变化文件），作为跨版本、损坏修复与回滚的确定性来源。 |
 
 **签名不写在清单里**：清单是 minisign 的 detached 签名对象，签名文件是 `<清单>.minisig`，签名覆盖**清单原始字节**。客户端先验签、后解析；`version`、所有 `delta_key`、`sha256` 都在签名保护范围内。**不需要再单独签署 `version`**——整份原始字节已经包含它。
 
@@ -277,7 +277,7 @@
                      以旧版本启动，用户可用
 ```
 
-默认阈值 `2` 表示：连续两次启动都未确认健康，**第三次启动时回滚**。`confirm_healthy()` 把计数清零。阈值不随更新重置，持续崩溃的旧版本也会被检测。
+默认阈值 `3` 表示：连续三次启动都未确认健康，**第四次启动时回滚**（判定条件是 `attempts > threshold`）。`confirm_healthy()` 把计数清零；正常关闭超过 `exit_grace_period_secs` 会折扣一次计数。阈值不随更新重置，持续崩溃的旧版本也会被检测。
 
 **回滚素材恢复**：回滚不仅要还原 `.old`，还要把 `.trash/` 中被删除的旧官方文件恢复回原位，并删除新版本新增的文件。回滚本身也通过一份向前重放的 Journal 执行，可被中断并再次恢复。
 
@@ -308,7 +308,7 @@
 
 ### 4.8 权限模型
 
-Tauri 2 是 deny-by-default。插件默认权限包 `delta-update:default` 授予六个命令：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`。
+Tauri 2 是 deny-by-default。`init` 默认写入 `delta-update:manage-confirm`，授予全部 11 个命令：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`get_update_history`、`clear_skipped_version`、`skip_version`（兼容集 `delta-update:default` 当前与之等价）。诊断与历史命令同样不接收任何路径参数；`skip_version` 的版本由插件从 `check` 结果取，前端不能指定。
 
 **替换文件、写入安装目录的能力不以命令形式暴露给 WebView**。rename-then-replace 在 Rust 层由引擎调度，前端无法指定文件、无法直接写入根目录、无法绕过签名。即使 WebView 被攻破，攻击者上限是“触发检查/准备/取消/重启已就绪的更新”，**无法强制替换任意文件、无法读取目录内容、无法绕过签名**。
 
@@ -425,7 +425,7 @@ worker 从编译期内嵌的插件配置读取公钥，验签清单后再执行 
 
 **第四步：授予默认权限**
 ```json
-{ "permissions": ["delta-update:default"] }
+{ "permissions": ["delta-update:manage-confirm"] }
 ```
 
 `auto_check` 默认 true；`auto_apply` 与 `auto_confirm` 默认 false。开发者需要显式决定是否允许退出时静默替换、以及何时认为应用健康；这避免了可选更新功能阻止主应用启动或过早确认坏更新。

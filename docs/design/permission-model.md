@@ -215,7 +215,7 @@ worker 不比较清单、不计算差异、不决定备份到何处。这些决�
 | worker 不接受外部指令      | 没有 IPC；唯一输入是磁盘上已固化的 Journal          |
 | worker 不接收操作列表      | 从磁盘读取 Journal，每个 `Place`/`Restore` 校验哈希 |
 | worker 不常驻              | 完成或失败后退出，不保留管理员令牌                  |
-| 同名 Journal 不可伪造      | checksum + 路径逃逸检查 + `commit.meta.json` 绑定签名清单 + `Place` 哈希必须来自签名清单 + install_root 精确等于 worker 目录；旧 `run_applier_from_args` 迁移路径不做签名绑定 |
+| 同名 Journal 不可伪造      | checksum + 路径逃逸检查 + `commit.meta.json` 绑定签名清单 + `Place` 哈希必须来自签名清单 + install_root 精确等于 worker 目录；无密钥的 `run_applier_from_args` 迁移入口失败关闭，不会执行未绑定的 Journal |
 | 并发唯一                   | 全局 `update.lock` 独占                              |
 | 用户级进程不持有管理员令牌 | 即使从提权安装器启动，也把文件操作委托给替换进程    |
 
@@ -234,7 +234,7 @@ Windows 的 UAC 提权模型是本设计的基础，其他平台按“是否真�
 | macOS 未签名开发包        | 插件不支持；资源不在 exe 父目录                              | 否                 |
 | macOS 签名/公证 .app      | 修改 bundle 内部文件会使签名失效，插件不支持                 | 否                 |
 
-**结论**：插件只支持 Windows per-user / per-machine / 便携版。其他平台在 setup 阶段直接进入 Disabled/Failed 并返回 `E_UNSUPPORTED_PLATFORM`，不下载、不替换；不要用提权或文件替换破坏 macOS 签名或 Linux 包管理器状态。worker 协议与 Journal 协作逻辑本身是平台无关的。
+**结论**：插件只支持 Windows per-user / per-machine / 便携版。非 Windows 目标在**编译期**直接 `compile_error!`；运行期 `ensure_supported()` 再返回 `E_UNSUPPORTED_PLATFORM` 作为纵深，不下载、不替换。不要用提权或文件替换破坏 macOS 签名或 Linux 包管理器状态。worker 协议与 Journal 协作逻辑本身是平台无关的。
 
 
 ## 9. 设计检查清单
@@ -247,6 +247,7 @@ Windows 的 UAC 提权模型是本设计的基础，其他平台按“是否真�
 - [ ] worker 没有 IPC，唯一输入是磁盘上的 Journal
 - [ ] Journal checksum 与每个 `Place`/`Restore` 的来源/目标哈希均被校验
 - [ ] worker 在用户侧和 worker 侧双重执行路径逃逸检查
+- [ ] 解析目标路径时拒绝符号链接 / junction / reparse point，防止链接把写入重定向到根目录之外
 - [ ] 提权决策基于目标路径实际可写性，而非仅安装形态
 - [ ] 可写性探针使用唯一文件名，失败时重试一次
 - [ ] 用户取消 UAC 时保留 `PREPARED` 计划与暂存区

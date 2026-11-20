@@ -16,6 +16,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (command: string) => {
     if (command === 'plugin:delta-update|status') return mocks.status();
+    if (command === 'plugin:delta-update|clear_skipped_version') return { cleared: true };
     throw new Error(`unexpected command ${command}`);
   }),
 }));
@@ -116,5 +117,13 @@ describe('update controller', () => {
 
     controller.stop();
     expect(mocks.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it('wraps clearSkip so a skipped version can be surfaced again', async () => {
+    mocks.status.mockResolvedValue(snapshot('Idle'));
+    const controller = createUpdateController();
+
+    await expect(controller.clearSkip()).resolves.toEqual({ cleared: true });
+    controller.stop();
   });
 });

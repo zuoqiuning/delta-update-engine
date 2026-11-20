@@ -1,8 +1,8 @@
 # tauri-plugin-delta-update
 
-Tauri 2 插件：把引擎的生命周期接到应用启动/退出，暴露九个命令与状态事件。
+Tauri 2 插件：把引擎的生命周期接到应用启动/退出，暴露十一个命令与状态事件。
 
-> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；其他平台在 setup 阶段禁用更新并返回 `E_UNSUPPORTED_PLATFORM`，主应用仍可启动。当前版本为 `1.0.0-rc.4`（尚未发布到 crates.io/npm；仓库内请使用 path/git 依赖）。
+> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；非 Windows 目标在编译期直接失败（`compile_error!`），运行期 `ensure_supported()` 再返回 `E_UNSUPPORTED_PLATFORM` 作为纵深。当前版本为 `1.1.0`。
 
 ## 接入
 
@@ -25,11 +25,11 @@ fn main() {
 
 入口必须用 `run_with_delta_update`（或自行在 builder 之前调用 `run_applier_from_context`）——漏接时更新能准备成功，但重启进 worker 的那一步永远不会执行；debug 构建会直接 panic 提醒。
 
-在 `capabilities/default.json` 中授予 `delta-update:default`。配置写在 `tauri.conf.json` 的 `plugins.delta-update` 下。需要最小权限时可改用 `delta-update:monitor`（仅 `check`/`status`）或 `delta-update:manage`（除 `confirm_healthy` 外的管理命令）。
+在 `capabilities/default.json` 中授予 `delta-update:manage-confirm`（`init` 默认写入，含 `confirm_healthy`）。配置写在 `tauri.conf.json` 的 `plugins.delta-update` 下。需要只读时改用 `delta-update:monitor`（仅 `check`/`status`/`get_update_history`）；需要“前端不能确认健康”的严格划分时用 `delta-update:manage`。默认 `auto_confirm=false`：用 `manage` 且前端不调用 `confirm_healthy` 时，应设置 `auto_confirm: true` 作为兜底，或直接使用默认的 `manage-confirm`。
 
 ## 命令与状态
 
-`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`；状态通过 `delta-update://state` 广播。
+`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`skip_version`、`export_diagnostics`、`open_diagnostics_folder`、`get_update_history`、`clear_skipped_version`；状态通过 `delta-update://state` 广播。
 
 - 默认 `auto_check=true`、`auto_apply=false`、`auto_confirm=false`：后台只检查/准备；静默替换与自动健康确认必须显式开启。
 - 配置/平台错误会禁用更新功能并广播 `Failed`，**不会阻止主应用启动**。
@@ -37,7 +37,7 @@ fn main() {
 - 启动期自动回滚会发出 `RolledBack`，UI 可以提示“已回滚到 vX”。
 - `check` 返回清单中的 `notes` 与 `mandatory`，可用于更新说明和强制更新提示。
 - `auto_check` 只在启动时执行一次；需要长期运行时更新，配置 `check_interval_secs`（最小 60 秒）。
-- 企业网络可配置 `proxy`（HTTP/SOCKS）和 `headers`（仅清单/签名请求，不会发送到对象下载主机）。
+- 企业网络可配置 `proxy`（HTTP/SOCKS）、`headers`（仅清单/签名请求）和 `signing_headers`（仅预签名服务）；两者都不会发送到对象下载主机。
 
 ## 前端
 
@@ -57,6 +57,16 @@ await updater.start();
 ```
 
 完整步骤见 [开发者接入指南](../../docs/guides/getting-started.md)。
+
+## 日志
+
+插件只发 `tracing` 事件，默认不安装 subscriber。宿主没装日志时（例如尚未接入 `tauri-plugin-log`），启用 `logging` feature 即可看到插件日志：
+
+```toml
+tauri-plugin-delta-update = { version = "1.1.0", features = ["logging"] }
+```
+
+`init()` 与 `run_applier_from_context()` 会自动初始化；级别由 `DELTA_UPDATE_LOG` 控制（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）。如果宿主已经通过 `tracing-subscriber` 安装了 subscriber，这里不会覆盖。宿主用的是 `tauri-plugin-log`（管理 `log` crate）时，插件日志会输出到 stderr，应用日志文件不受影响；要把 `tracing` 事件写进同一个文件，仍需 `tracing` 的 `log` 特性或 `tracing-log` 桥接。
 
 ## 已知边界
 

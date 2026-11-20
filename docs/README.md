@@ -4,13 +4,13 @@
 
 ## 接入（怎么用）
 
-- [开发者接入指南](guides/getting-started.md)：四步接入、前端事件、排查清单。
+- [开发者接入指南](guides/getting-started.md)：四步接入与前五节；构建发布与排查见[后续篇](guides/getting-started-operations.md)，进阶配置与验收见[参考篇](guides/getting-started-reference.md)。
 - [CI 发布教程](tutorials/ci-release.md)：从生成密钥到 `release --pipeline` 与观察窗口。
 - [目录结构规范](guides/directory-structure.md)：仓库布局、依赖方向、新增文件落位规则。
 
 ## 参考（精确查阅）
 
-- [API 参考](reference/api.md)：公开类型、trait、命令、错误映射与平台矩阵。
+- [API 参考](reference/api.md)：索引；引擎见[api-engine](reference/api-engine.md)、错误见[api-errors](reference/api-errors.md)、插件见[api-plugin](reference/api-plugin.md)、CLI 见[api-cli](reference/api-cli.md)。
 - [CLI 契约](cli-contract.md)：退出码、`--json` 信封与发布报告 schema（CI 依赖）。
 - [技术栈](reference/tech-stack.md)：依赖选型、版本基线与验证项。
 - [版本与兼容承诺](reference/versioning.md)：crate SemVer、schema 承诺、密钥轮换。
@@ -21,7 +21,7 @@
 - [架构与不变量](design/architecture.md)：模块边界、执行顺序与失败关闭原则。
 - [协议 RFC 流程与索引](rfcs/README.md)：需要先写 RFC 的变更、评审与实现顺序。
 - [模块职责](design/modules.md)：每个模块负责什么、依赖方向如何。
-- [协议与清单](design/protocol.md)：清单 schema、补丁容器与对象命名。
+- [协议与清单](design/protocol.md)：索引；数据格式见[protocol-data](design/protocol-data.md)，运行时见[protocol-runtime](design/protocol-runtime.md)，配置与演进见[protocol-config](design/protocol-config.md)。
 - [安全模型](design/security.md)：信任边界、签名绑定与提权路径。
 - [信任模型](security/trust-model.md)：攻击者能力、逐文件约束与残余风险。
 - [权限模型](design/permission-model.md)：`default`/`manage`/`monitor` 的取舍。
@@ -31,7 +31,7 @@
 
 ## 运维（发布与排障）
 
-- [构建与发布](operations/release.md)：签名、原子上传、回滚发布与检查清单。
+- [构建与发布](operations/release.md)：索引；流程见[release-guide](operations/release-guide.md)，检查清单见[release-checklist](operations/release-checklist.md)，打包与 crates/npm 发布见[release-packaging](operations/release-packaging.md)。
 - [故障排查](operations/troubleshooting.md)：日志、状态、错误码与手动清理。
 - [性能与容量](operations/capacity.md)：补丁体积、内存、磁盘与流量估算。
 - [安全公告](security/advisories.md)：已公开 advisory 与受影响版本范围。
@@ -52,7 +52,8 @@
 
 ## 维护规则
 
-- 新增文档必须进入 `guides/`、`tutorials/`、`reference/`、`operations/`、`testing/`、`design/`、`security/`、`integrations/` 或 `rfcs/`，不得堆在 `docs/` 根目录。
+- 新增文档必须进入 `guides/`、`tutorials/`、`reference/`、`operations/`、`testing/`、`design/`、`security/`、`integrations/`、`rfcs/` 或 `reviews/`，不得堆在 `docs/` 根目录。
+- `reviews/` 只追加带日期的历史评审快照，不改写、不拆分；其他文档超过约 600 行时拆分为索引 + 分册。
 - 文件名使用英文 `kebab-case`；中文只出现在标题和正文。
 - 交叉引用使用相对路径链接，确保可点击。
 - 任何协议、命令、错误码或目录结构变更，先改对应文档，再改代码。

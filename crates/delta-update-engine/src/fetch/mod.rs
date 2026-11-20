@@ -34,6 +34,7 @@ pub trait Fetcher: Send + Sync {
         Ok(None)
     }
 
+    /// Download `key` into `dest`, resuming at `resume_from` bytes.
     async fn download(
         &self,
         key: &str,
@@ -41,6 +42,23 @@ pub trait Fetcher: Send + Sync {
         resume_from: u64,
         max_bytes: u64,
     ) -> Result<DownloadReceipt, EngineError>;
+
+    /// Same as [`Self::download`], but reports how many bytes of `dest` are
+    /// written so far.
+    ///
+    /// `on_progress` is called from the download task and must be cheap and
+    /// non-blocking. The default implementation ignores it, so fetchers that
+    /// cannot report progress keep working unchanged.
+    async fn download_with_progress(
+        &self,
+        key: &str,
+        dest: &Path,
+        resume_from: u64,
+        max_bytes: u64,
+        _on_progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<DownloadReceipt, EngineError> {
+        self.download(key, dest, resume_from, max_bytes).await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

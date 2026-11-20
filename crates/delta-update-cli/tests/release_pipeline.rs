@@ -640,6 +640,7 @@ fn verify_key_detects_matching_and_mismatched_pairs() {
     let args = delta_update_cli::cli::VerifyKeyArgs {
         key: fixture.key.clone(),
         public: fixture.public_base64.clone(),
+        json: false,
     };
     pipeline::verify_key(&args).unwrap();
 
@@ -647,6 +648,7 @@ fn verify_key_detects_matching_and_mismatched_pairs() {
     let args = delta_update_cli::cli::VerifyKeyArgs {
         key: fixture.key,
         public: other.pk.to_base64(),
+        json: false,
     };
     assert!(pipeline::verify_key(&args).is_err());
 }

@@ -1,11 +1,11 @@
-name: 1.0.0-rc feedback
-description: 试用 1.0.0-rc.4 后的接入反馈
-title: "[rc.4] "
+name: 1.1.0 feedback
+description: 试用或升级到 1.1.0 后的接入反馈
+title: "[1.1.0] "
 labels: ["rc-feedback"]
 body:
   - type: markdown
     attributes:
-      value: 感谢试用 1.0 候选版。三个问题按实际情况回答即可，不需要完整。
+      value: 感谢使用 1.1.0。三个问题按实际情况回答即可，不需要完整。
   - type: textarea
     id: stuck
     attributes:

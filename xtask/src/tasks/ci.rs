@@ -39,6 +39,19 @@ pub fn run() -> Result<(), String> {
         &["check", "--manifest-path", "real-test/demo-app/Cargo.toml"],
         &[("CARGO_TARGET_DIR", "target")],
     )?;
+    // Optional features must compile too. `logging` pulls in a subscriber and
+    // `pinned-keys` changes the trust root, so neither is on by default and
+    // either can rot unnoticed.
+    run_command(
+        "cargo",
+        &[
+            "check",
+            "-p",
+            "tauri-plugin-delta-update",
+            "--features",
+            "logging",
+        ],
+    )?;
     super::contract::run()?;
     Ok(())
 }

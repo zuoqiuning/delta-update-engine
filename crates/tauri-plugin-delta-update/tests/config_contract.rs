@@ -66,7 +66,16 @@ fn least_privilege_permission_sets_are_narrow() {
     let manage = include_str!("../permissions/manage.toml");
     assert!(manage.contains("allow-prepare"));
     assert!(manage.contains("allow-restart-to-apply"));
+    assert!(manage.contains("allow-skip-version"));
     assert!(!manage.contains("allow-confirm-healthy"));
+
+    // The set `init` writes by default: manage plus health confirmation, so the
+    // documented frontend flow works without switching sets.
+    let manage_confirm = include_str!("../permissions/manage-confirm.toml");
+    assert!(manage_confirm.contains("allow-prepare"));
+    assert!(manage_confirm.contains("allow-skip-version"));
+    assert!(manage_confirm.contains("allow-confirm-healthy"));
+    assert!(!manage_confirm.contains("delta-update:default"));
 }
 
 #[test]
@@ -179,6 +188,7 @@ fn default_permissions_cover_all_commands() {
         "open-diagnostics-folder",
         "get-update-history",
         "clear-skipped-version",
+        "skip-version",
     ] {
         assert!(
             text.contains(&format!("\"allow-{command}\"")),

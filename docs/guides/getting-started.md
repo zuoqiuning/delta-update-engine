@@ -1,6 +1,6 @@
 # Delta Update Engine 开发者接入指南
 
-> 本文面向使用 Delta Update Engine（`tauri-plugin-delta-update`）的 Tauri 应用开发者。目标：从零到跑通完整更新链路，理解两种工作模式，掌握前端集成方式，并能在出现问题时快速定位。本文不解释引擎内部原理——需要理解设计时请参阅架构文档和功能机制文档。
+> 本文面向使用 Delta Update Engine（`tauri-plugin-delta-update`）的 Tauri 应用开发者。目标：从零到跑通完整更新链路，理解两种工作模式，掌握前端集成方式。构建发布与排查见[构建、发布与常见问题](getting-started-operations.md)；进阶配置与验收见[进阶配置、验收与版本承诺](getting-started-reference.md)。
 
 
 ## 1. 你将获得什么
@@ -13,9 +13,40 @@
 - **更新失败时自动回退**：如果新版本启动即崩溃，自动回滚到上一个可用版本。
 - **细粒度差分**：只下载变化的文件，已压缩/未变化的文件零传输。
 
-你需要做的只有四步：注册插件、在 `main` 最前面处理 worker 模式、写配置、授予默认权限。
+最少三步：加依赖、注册插件、写配置并授予权限。§1.1 把后两步压成一条 `init` 命令；需要自定义 UI 时再按 §3 接前端 SDK。
 
-### 1.1 先看效果：5 分钟跑一次真实更新
+### 1.1 最快接入：零前端代码
+
+如果只需要“启动检查、退出替换、下次启动自动确认”，不写任何前端代码：
+
+```powershell
+# 1) 一条命令：写入 capability，并把 plugins.delta-update 合并进 tauri.conf.json
+#    （原文件保留为 tauri.conf.json.bak；已有该段时不覆盖）
+delta-update init --auto --merge-config --signing-key release.key
+
+# 2) 校验配置与权限是否自洽
+delta-update doctor --check-config --dir .
+```
+
+```toml
+# src-tauri/Cargo.toml
+tauri-plugin-delta-update = "1.1.0"   # 需要控制台日志时加 features = ["logging"]
+```
+
+```rust
+// src-tauri/src/main.rs
+fn main() {
+    let context = tauri::generate_context!();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_delta_update::init())
+        .run_with_delta_update(context)
+        .expect("failed to run the app");
+}
+```
+
+完成。`--auto` 已写入 `auto_check/auto_apply/auto_confirm = true`，`--merge-config` 同时写出 `delta-update:manage-confirm` 的 capability（含 `confirm_healthy`），因此回滚保护是可用的。需要进度条、“稍后提醒”或自定义更新 UI 时，再按 §3 接入前端 SDK。
+
+### 1.2 先看效果：5 分钟跑一次真实更新
 
 不想先读文档，可以直接跑仓库里的真实更新演示（不需要 Tauri 界面，也不需要 COS）。前置条件只有 PowerShell 7+ 与 Rust stable——本地静态服务由 `delta-update serve` 提供，不再依赖 Python：
 
@@ -80,7 +111,7 @@ minisign -G -p release-2.pub -s release-2.key
 
 ```toml
 [dependencies]
-tauri-plugin-delta-update = "0.1"
+tauri-plugin-delta-update = "1.1.0"
 ```
 
 **src-tauri/src/main.rs（或 lib.rs）**
@@ -155,19 +186,25 @@ delta-update init \
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "delta-update:default"
+    "delta-update:manage-confirm"
   ]
 }
 ```
 
-`delta-update:default` 包含全部命令的允许权限：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`clear_skipped_version`。
+`delta-update:manage-confirm` 是 `init` 默认写入的集合（`manage` + `confirm_healthy`），前端可以直接调用 `confirm_healthy()`。兼容集 `delta-update:default` 与之当前等价，包含全部 11 个命令：`check`、`prepare`、`cancel_prepare`、`status`、`confirm_healthy`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`get_update_history`、`clear_skipped_version`、`skip_version`。
 
-生产环境若需要更小授权，可改用预定义权限集：
+需要调整授权面时，直接换预定义权限集：
 
-- `delta-update:monitor`：仅 `check`、`status`，前端只能查看更新状态；
-- `delta-update:manage`：`check`、`status`、`prepare`、`cancel_prepare`、`restart_to_apply`、`export_diagnostics`、`open_diagnostics_folder`、`clear_skipped_version`，故意不包含 `confirm_healthy`，健康确认应由应用在关键初始化完成后自行触发。
+- `delta-update:manage-confirm`（**`init` 默认写入**）：`manage` + `confirm_healthy`，前端可以直接调用 `confirm_healthy()`；
+- `delta-update:monitor`：仅 `check`、`status`、`get_update_history`，前端只能查看更新状态与历史；
+- `delta-update:manage`：与 `manage-confirm` 相同但**不含** `confirm_healthy`，健康确认由插件（`auto_confirm`）或 Rust 侧负责；
+- `delta-update:default`：兼容旧接入口，当前与 `manage-confirm` 等价。
 
-`delta-update init` **默认生成 `manage`**（不含 `confirm_healthy`）。生产环境建议保持 `monitor` 或 `manage`；如果前端确实需要调用 `confirm_healthy`，显式使用 `--permission-set default`。
+`delta-update init` **默认生成 `manage-confirm`**，所以“按文档在前端调用 `confirm_healthy()`”开箱即用，不会被 ACL 拒绝。
+
+> **只有一种情况需要额外选择**：显式使用 `--permission-set manage` 时，前端不能调用 `confirm_healthy()`——此时设置 `auto_confirm: true` 由插件兜底，或在 Rust 侧调用 `tauri_plugin_delta_update::confirm_healthy(app.handle())`，或改用默认的 `manage-confirm`。两者都不做时不会立刻出错，但回滚保护实际处于关闭状态。
+
+**零前端代码**：`delta-update init --auto ...` 会写入 `auto_check/auto_apply/auto_confirm = true`，应用启动后自动检查并准备、退出时替换、下次启动自动确认，无需任何前端代码；需要进度条或“稍后提醒”时再接入 SDK。
 
 **完成。** 默认 `auto_check=true`、`auto_apply=false`、`auto_confirm=false`：后台只检查/准备，是否在退出时静默替换、是否自动健康确认必须由应用显式开启。这样可以避免“一个可选更新功能把主应用启动搞坏”或“坏更新被过早确认”。需要全自动体验时，把 `auto_apply` 与 `auto_confirm` 设为 `true`，并确保健康确认时机符合业务实际。下面章节解释如何自定义 UI、监听事件和排查问题。
 
@@ -236,7 +273,7 @@ delta-update init \
 
 ### 5.1 监听状态事件
 
-**推荐先看 `createUpdateController`**。它把“启动快照 + 事件订阅 + 取消订阅 + 六个命令”收进一个框架无关的小控制器，React/Vue/Svelte 都无需自己维护监听生命周期：
+**推荐先看 `createUpdateController`**。它把“启动快照 + 事件订阅 + 取消订阅 + 七个命令”收进一个框架无关的小控制器，React/Vue/Svelte 都无需自己维护监听生命周期：
 
 ```typescript
 import { createUpdateController, describeUpdate } from 'tauri-plugin-delta-update-api';
@@ -249,12 +286,12 @@ const unsubscribe = updater.subscribe((state) => {
 });
 
 await updater.start();          // 读取快照并开始监听
-// 命令：check / prepare / cancel / restart
+// 命令：check / prepare / cancel / restart / skip（“稍后提醒”）/ clearSkip（回到更新）
 // confirm 仅用于重启后的健康确认（默认 auto_confirm 已处理）
 // 卸载时：unsubscribe(); updater.stop();
 ```
 
-按钮的可用性也来自同一处：`view.canPrepare` / `view.canRestart` / `view.isBusy`。React hook 返回的就是这些字段（同一份实现），Vue/Svelte 直接对 `describeUpdate(state)` 的结果做条件渲染，语义不会分叉。
+按钮的可用性也来自同一处：`view.canPrepare` / `view.canRestart` / `view.canCancel` / `view.isBusy`。React hook 返回的就是这些字段（同一份实现），Vue/Svelte 直接对 `describeUpdate(state)` 的结果做条件渲染，语义不会分叉。
 
 React 18+ 可以直接用子路径 hook（`react` 是可选 peer 依赖）：
 
@@ -351,15 +388,15 @@ async function confirmHealthy() {
   }
 }
 
-// 方式一：在框架的 mount 完成后调用
+// 在框架的 mount 完成、且核心初始化（登录/数据库/关键插件）之后调用
 onMounted(async () => {
   await nextTick();
+  await appInitialized();       // 你的应用自己的就绪信号
   await confirmHealthy();
 });
-
-// 方式二：延迟调用，给应用留出“稳定运行”的观察窗口
-setTimeout(confirmHealthy, 3000);
 ```
+
+**不要用固定延时**（例如 `setTimeout(confirmHealthy, 3000)`）代替健康判断：慢机器上会在初始化完成前确认，坏更新因此被误判为健康，崩溃循环保护失效。
 
 **为什么不调用会出问题**：默认阈值 `3` 的判定是 `attempts > 3`——连续三次启动都未确认健康，**第四次启动时判定新版本失败并自动回滚**。**这是自愈机制，但对正常应用会造成误回滚**。正常关闭会折扣一次计数（`exit_grace_period_secs`，默认 10 秒），所以“打开看一眼就关掉”不会累计；只有崩溃或极短会话才计入。启动较慢的应用应提高 `crash_loop_threshold` 或调大 `confirm_delay_ms`。
 
@@ -435,243 +472,3 @@ async function startUpdate() {
 **不要**：在 `Downloading` / `Preparing` 期间弹出阻塞式模态框。更新是后台行为，用户可以继续使用软件。
 
 
-## 6. 构建与发布侧（简要）
-
-本节只给出最小必要流程。完整参数和 CI 配置见构建发布操作手册。
-
-### 6.1 发布一条命令
-
-```bash
-# 先把私钥从 secret 解码到临时文件
-echo "$MINISIGN_SECRET_KEY_BASE64" | base64 -d > /tmp/release.key
-
-delta-update release \
-  --from  ./dist/2.0.0 \
-  --from-version 2.0.0 \
-  --to    ./dist/2.1.0 \
-  --version 2.1.0 \
-  --bucket cos://your-bucket \
-  --key   /tmp/release.key
-
-rm -f /tmp/release.key
-```
-
-CLI 内部会：
-1. 扫描 `to/` 目录，生成 `latest.json`。
-2. 逐文件比对 `from/` 与 `to/`，对可差分的变化文件生成 qbsdiff+zstd `.tdp`；超过阈值时回退全量。
-3. 用 minisign 私钥对清单签名。
-4. **先上传补丁和全量对象，再上传签名，最后上传清单**（原子发布顺序）。
-
-### 6.2 CI 中注入私钥
-
-```yaml
-# GitHub Actions 示例
-- name: Release delta update
-  env:
-    MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
-  run: |
-    echo "$MINISIGN_SECRET_KEY_BASE64" | base64 -d > /tmp/release.key
-    delta-update release \
-      --from ./previous-dist \
-      --from-version 1.4.2 \
-      --to   ./dist \
-      --version 1.5.0 \
-      --bucket cos://your-bucket \
-      --key  /tmp/release.key
-    rm -f /tmp/release.key
-```
-
-**私钥绝不落仓库、绝不落日志、绝不出现在命令行参数里**。CLI 只接受私钥文件路径；临时文件在步骤结束前删除。
-
-### 6.3 首次发布
-
-第一次发布时没有 `from` 目录——所有文件都是新增，全部走全量。这是预期行为：
-
-```bash
-delta-update release --to ./dist --version 1.0.0 --bucket cos://your-bucket --key /tmp/release.key --initial
-```
-
-从第二个版本开始，`--from` 提供上一版本的产物目录，CLI 才能生成差分补丁。
-
-
-## 7. 最小可运行示例项目结构
-
-```
-my-tauri-app/
-├── src/                          # 前端
-│   ├── main.ts
-│   └── update-ui.ts              # 更新提示 UI（可选）
-├── src-tauri/
-│   ├── src/
-│   │   └── main.rs               # 注册插件
-│   ├── capabilities/
-│   │   └── default.json          # 授予 delta-update:default
-│   ├── tauri.conf.json           # 插件配置
-│   └── Cargo.toml
-├── dist/                         # 构建输出（用于发布）
-│   ├── 2.0.0/
-│   └── 2.1.0/
-└── .github/workflows/
-    └── release.yml               # CLI 发布流水线
-```
-
-**最小验证步骤**：
-
-1. 发布 2.0.0（`--initial`）。
-2. 安装 2.0.0 到一台测试机。
-3. 修改一点代码，构建 2.1.0。
-4. 发布 2.1.0（`--from ./dist/2.0.0`）。
-5. 在测试机上启动 2.0.0，观察日志或事件。
-6. 等待 `delta-update://state` 事件出现 `Prepared` 后，关闭应用（替换进程会应用更新），再重新打开。
-7. 应用版本应为 2.1.0，且**全程没有出现安装器界面**。
-
-
-## 8. 常见问题排查
-
-### 8.1 启动后没有任何更新事件
-
-| 可能原因                | 排查方式                                                     |
-| ----------------------- | ------------------------------------------------------------ |
-| `auto_check` 为 `false` | 检查配置                                                     |
-| `endpoint` 不可达       | 浏览器直接访问 `endpoint` URL，确认返回清单 JSON             |
-| 清单验签失败            | 检查公钥是否配置正确、清单签名是否由对应私钥生成             |
-| 版本未变化              | 确认远程 `version` 严格大于当前已安装版本                    |
-| 权限未授予              | 检查 `capabilities/default.json` 是否包含 `delta-update:default` |
-| 看不到任何插件日志      | 插件只发出 `tracing` 事件，宿主未安装 subscriber 时不会落盘；见[故障排查 §1.1](../operations/troubleshooting.md) |
-
-### 8.2 状态停在 `Failed`，错误为 `E_SIGNATURE_INVALID`
-
-- 检查 `signing_public_keys` 中的公钥是否与签名私钥配对。
-- 确认签名覆盖的是**原始清单字节**，而非解析后的 JSON。
-- 若刚执行过密钥轮换，确认客户端版本是否已内嵌新公钥（信任集不会在运行期更新）。
-
-### 8.3 状态停在 `Failed`，错误为 `E_NETWORK_PRESIGN_EXPIRED`
-
-- 预签名 URL 有效期建议设为 **10–15 分钟**（安全上限 15 分钟）。若频繁过期，检查服务端返回的 `expires_at` 与客户端时钟偏差，而不是无限延长有效期。
-- 检查签名服务是否可达、是否返回了清单中所有 key 的 URL。
-
-### 8.4 更新准备成功但重启后仍是旧版本
-
-| 可能原因                    | 排查方式                                                     |
-| --------------------------- | ------------------------------------------------------------ |
-| 安装目录定位错误            | 更新器只以当前 exe 所在目录为准；确认启动的是同一安装路径，检查 `install_dir` 是否精确指向 exe 父目录 |
-| Commit 阶段权限不足         | 错误码应为 `E_PERMISSION_DENIED`，检查是否安装在 `Program Files` |
-| `.old/` 目录残留导致状态异常 | 检查安装目录下是否有 `.old/<commit_id>/` 目录，确认对应 Journal 状态 |
-| 重启的是另一个安装实例      | 确认启动的是同一个安装路径                                   |
-
-### 8.5 更新后应用反复回滚
-
-- 检查新版本是否有启动崩溃。
-- 确认前端是否在 UI 就绪后调用了 `confirm_healthy()`。
-- 如果应用确实启动正常但总是回滚，可能是 `confirm_healthy` 调用时机过早（在核心数据加载完成前就崩溃）。
-- 查看应用数据目录下的日志，定位崩溃点。
-
-### 8.6 磁盘占用异常增长
-
-- 检查应用本地数据目录下的 `delta-update/staging/` 大小。
-- 已成功确认健康的更新会清理暂存区；如果暂存区持续增长，说明 `confirm_healthy()` 未被调用，或清理逻辑异常。
-- 检查 `journal/` 目录是否有残留的 Journal 文件。
-
-### 8.7 如何收集诊断信息
-
-当用户报告更新问题时，请收集：
-
-1. 应用本地数据目录下 `delta-update/staging/` 和 `delta-update/journal/` 的**文件名列表**（不要内容，可能包含敏感路径）。
-2. 应用日志中 `delta-update` 相关的全部行。
-3. 用户安装目录的绝对路径（帮助判断是否在 `Program Files`）。
-4. `status` 命令的返回值。
-5. 是否使用管理员权限运行。
-
-
-## 9. 进阶配置（通常不需要）
-
-以下配置有安全默认值，只在特殊场景下需要显式设置：
-
-```json
-{
-  "plugins": {
-    "delta-update": {
-      "crash_loop_threshold": 3,
-      "exit_grace_period_secs": 10,
-      "staging_dir": "custom/path",
-      "journal_dir": "custom/path",
-      "max_concurrent_downloads": 4,
-      "staging_size_limit": 1073741824
-    }
-  }
-}
-```
-
-| 字段                       | 默认值                                       | 何时修改                               |
-| -------------------------- | -------------------------------------------- | -------------------------------------- |
-| `crash_loop_threshold`     | `3`                                          | 应用启动较慢或初始化复杂时提高；数值越大越宽松 |
-| `exit_grace_period_secs`   | `10`                                         | 正常退出折扣计数的观察窗口；0 表示任何正常退出都折扣 |
-| `confirm_delay_ms`         | `3000`                                       | 启动慢、首屏晚时调大；0 表示不自动确认 |
-| `staging_dir`              | `app_local_data_dir()/delta-update/staging/` | 磁盘空间紧张且想放到其他盘（可跨卷）   |
-| `journal_dir`              | `app_local_data_dir()/delta-update/journal/` | 同上                                   |
-| `install_dir`              | 当前 exe 所在目录                            | 生产构建必须精确等于 exe 父目录；debug 开发可指向临时目录 |
-| `max_concurrent_downloads` | `4`                                          | 网络环境差时降低，强网可提高           |
-| `staging_size_limit`       | `2 GiB`                                      | 磁盘空间严格受限时降低                 |
-| `max_patch_file_size`      | `256 MiB`                                    | 有超大 sidecar 且希望差分时提高        |
-| `patch_memory_factor`      | `2.5`                                        | 内存紧张时降低，但过低保补丁失败率上升 |
-| `manifest_max_bytes`       | `8 MiB`                                      | 文件数极多的大型应用可适当提高         |
-| `max_files`                | `20000`                                      | 同上                                   |
-| `signing_endpoint`         | 空                                           | 私有 COS 桶需要预签名服务时设置        |
-| `allowed_hosts`            | 空                                           | 需要限制内容下载主机时设置             |
-
-**注意**：`staging_dir` 和 `journal_dir` 必须在用户有写权限的位置，且**不能在安装根目录之内**。可以放到其他盘；跨卷时替换进程会自动改用“复制到目标目录临时文件 + 原子 rename”，不会破坏原子性，但会多一次复制开销。
-
-
-## 10. 接入验收清单
-
-接入完成后，逐项确认：
-
-- [ ] `tauri.conf.json` 中 `endpoint` 可访问，返回合法清单 JSON
-- [ ] `signing_public_keys` 至少一把，且与签名私钥配对
-- [ ] `capabilities/default.json` 包含 `delta-update:default`
-- [ ] 前端在 UI 就绪后调用了 `confirm_healthy()`（或接受插件默认行为）
-- [ ] 监听 `delta-update://state` 事件并展示 `Prepared` 状态提示
-- [ ] CI 中 `delta-update release` 能完整执行并上传到 COS
-- [ ] 测试机安装旧版本 → 发布新版本 → 观察 `state = Prepared` → 退出再启动 → 版本更新
-- [ ] 测试机新版本启动崩溃 → 连续三次未确认 → 第四次启动自动回滚
-- [ ] 安装在 `Program Files` 时，更新流程能正确处理 UAC
-- [ ] 安装在 `Program Files` 且提交被中断后，下次启动能提权恢复（取消则保留 Journal）
-- [ ] 断网后恢复网络，更新能续传并完成
-
-
-## 11. 版本兼容性承诺
-
-| 插件版本 | 支持的 Tauri 版本 | 文件级替换支持的形态                              | 协议 schema |
-| -------- | ----------------- | ------------------------------------------------- | ----------- |
-| 1.0.x    | 2.x               | Windows 10+ x64 桌面（per-user / per-machine / 便携版） | 1           |
-
-**插件版本语义化**：
-
-- **Patch**（1.0.0 → 1.0.1）：Bug 修复，命令和配置不变。
-- **Minor**（1.0.x → 1.1.0）：新增命令或配置字段，向后兼容。旧配置无需修改。
-- **Major**（1.x → 2.0）：可能包含命令或配置的破坏性变更，会提供迁移指南。
-
-**协议 schema 独立于插件版本**。清单 schema 演进规则见协议与数据格式规范。插件会拒绝 `min_client_schema` 高于自身支持值的清单，并给出明确错误。
-
-### 11.1 多平台共存
-
-- Windows 走 `delta-update`，macOS / Linux 继续用官方 `tauri-plugin-updater` 或各自平台包管理器。文件级替换只适用于 Windows。
-- **不要同时启用两个 updater**：`plugins.updater` 与 `plugins.delta-update` 并存会产生两套检查循环和两份清单。
-- 多平台构建在 CI 中按 target 分开：Windows 产物跑 `delta-update release`，其他平台产物不经过本项目。
-- 如果必须共用 `main.rs`，用 `#[cfg(target_os = "windows")]` 条件初始化插件。
-
-### 11.2 适用规模
-
-| 规模 | 建议 |
-| --- | --- |
-| 文件数 < 5k、总大小 < 500 MiB | 默认配置即可；`check` / `prepare` 通常在秒级 |
-| 文件数 5k–20k | `HashCache` 对 `check` 有效；`prepare` 的未变化文件校验可能需要几分钟，UI 会收到 `Scanning` 进度事件 |
-| 文件数 > 20k | 默认 `max_files = 20000` 会拒绝清单，需要同时调大 `max_files`、`staging_size_limit` 与 `max_concurrent_downloads` |
-| 单文件 > 64 MiB | 调整 `--patch-max-file-size` 并降低 `--jobs`；发布端会按 6× 文件大小估算峰值内存，超过 75% 物理内存时告警 |
-
-
-## 12. 接入总结
-
-接入体验的核心判断是：**开发者不需要理解增量更新引擎的内部机制，只需要做三个正确的决定**——配置正确的 `endpoint` 和公钥、授予正确的权限、在合适的时机调用 `confirm_healthy()`。其余全部由插件在后台完成。
-
-如果接入过程中遇到本文未覆盖的问题，请优先收集 §8.7 列出的诊断信息，再对照错误码表定位类别。错误码是稳定的——它们不会在不同版本间改变含义，可以安全地作为程序分支的依据。

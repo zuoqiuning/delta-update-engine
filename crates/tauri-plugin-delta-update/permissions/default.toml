@@ -11,4 +11,5 @@ permissions = [
     "allow-open-diagnostics-folder",
     "allow-get-update-history",
     "allow-clear-skipped-version",
+    "allow-skip-version",
 ]

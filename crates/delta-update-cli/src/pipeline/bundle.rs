@@ -11,18 +11,20 @@ use serde::Deserialize;
 
 use crate::cli::InspectArgs;
 use crate::output;
-use crate::pipeline::{
-    audit_release, human_bytes, normalize_prefix, read_public_keys, ReleaseAudit,
-};
+use crate::pipeline::audit::{audit_release, ReleaseAudit};
+use crate::pipeline::keys::{human_bytes, normalize_prefix, read_public_keys};
 use crate::publisher;
 
-/// Only the two fields this command consumes; the rest of the bundle is left
+/// Only the fields this command consumes; the rest of the bundle is left
 /// untouched so its schema can evolve independently.
 #[derive(Deserialize)]
 struct BundleView {
     report: DiagnosticReport,
     #[serde(default)]
     worker_log: Option<String>,
+    /// Absent in bundles written before history was included.
+    #[serde(default)]
+    history: Vec<delta_update_engine::UpdateRecord>,
 }
 
 #[derive(Default)]
@@ -40,6 +42,7 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
     let bundle: BundleView =
         serde_json::from_slice(&raw).with_context(|| format!("parse {}", bundle_path.display()))?;
     let report = bundle.report;
+    let history = bundle.history;
 
     let audit = match args.from_release.as_deref() {
         Some(bucket) => {
@@ -147,6 +150,7 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
                     "ts": event.get("ts"),
                     "msg": event.get("msg"),
                 })),
+                "history": history.iter().rev().take(5).collect::<Vec<_>>(),
             }))?
         );
     } else {
@@ -163,6 +167,9 @@ pub(crate) fn inspect_bundle(args: &InspectArgs, bundle_path: &Path) -> anyhow::
                     .map(|msg| format!(" — {msg}"))
                     .unwrap_or_default()
             ));
+        }
+        if !history.is_empty() {
+            output::info(&format!("recent updates: {}", summarize_history(&history)));
         }
         if !journal_only.is_empty() {
             output::warn(&format!(
@@ -189,6 +196,28 @@ pub(crate) fn last_event(log: &str) -> Option<delta_update_engine::worker_log::E
     log.lines()
         .filter_map(delta_update_engine::worker_log::parse)
         .next_back()
+}
+
+/// Newest terminal outcomes in one line, e.g.
+/// `v2.1.0 rolled_back (crash loop), v2.0.0 ok`.
+fn summarize_history(history: &[delta_update_engine::UpdateRecord]) -> String {
+    history
+        .iter()
+        .rev()
+        .take(3)
+        .map(|record| {
+            let result = match record.result {
+                delta_update_engine::UpdateResult::Completed => "ok",
+                delta_update_engine::UpdateResult::RolledBack => "rolled_back",
+                delta_update_engine::UpdateResult::Failed => "failed",
+            };
+            match record.reason.as_deref().or(record.error_code.as_deref()) {
+                Some(reason) => format!("v{} {result} ({reason})", record.version),
+                None => format!("v{} {result}", record.version),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Per-file patch fallbacks, from `event=patch_fallback` lines and, for logs

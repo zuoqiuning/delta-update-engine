@@ -6,4 +6,4 @@ pub mod verify;
 
 pub use plan::{PreparedPlan, StagedFile};
 pub(crate) use prepare::{prepare, PrepareInput};
-pub use verify::verify_plan;
+pub use verify::{verify_plan, verify_plan_with, VerifiedInventory};

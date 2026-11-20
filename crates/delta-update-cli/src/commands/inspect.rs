@@ -1,8 +1,12 @@
 use anyhow::Context;
 use delta_update_engine::diagnostics::{self, DiagnosticReport};
+use delta_update_engine::history::{self, UpdateRecord, UpdateResult};
 use delta_update_engine::journal::CommitStatus;
 
 use crate::cli::InspectArgs;
+use crate::pipeline::audit::audit_release;
+use crate::pipeline::keys::{human_bytes, normalize_prefix, read_public_keys};
+use crate::publisher;
 
 /// Identifies the producer in the bundle; the plugin reuses the same code.
 const TOOL: &str = "delta-update-cli";
@@ -12,7 +16,7 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
         return crate::pipeline::bundle::inspect_bundle(args, bundle);
     }
     if args.from_release.is_some() {
-        return crate::pipeline::inspect_release(args);
+        return inspect_release(args);
     }
     let journal_dir = args
         .journal_dir
@@ -26,6 +30,7 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
     }
     let report = diagnostics::collect(journal_dir, args.verbose)?;
     let worker_event = last_worker_event(&report.journal_dir);
+    let history = history::read(&report.journal_dir, 10);
     if args.json {
         let mut value = serde_json::to_value(&report)?;
         if let Some(map) = value.as_object_mut() {
@@ -34,10 +39,11 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
             if let Some(event) = &worker_event {
                 map.insert("worker_event".into(), event_json(event));
             }
+            map.insert("history".into(), serde_json::to_value(&history)?);
         }
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        print_human(&report, worker_event.as_ref());
+        print_human(&report, worker_event.as_ref(), &history);
     }
     if let Some(path) = &args.export {
         diagnostics::write_bundle(journal_dir, args.verbose, TOOL, path, None, args.redact)?;
@@ -60,6 +66,7 @@ pub fn run(args: &InspectArgs) -> anyhow::Result<()> {
 fn print_human(
     report: &DiagnosticReport,
     worker_event: Option<&delta_update_engine::worker_log::Event>,
+    history: &[UpdateRecord],
 ) {
     println!("日志目录: {}", report.journal_dir.display());
     match &report.apply {
@@ -148,7 +155,51 @@ fn print_human(
                 .unwrap_or_default()
         );
     }
+    print_history(history);
     println!("诊断: {}", report.diagnosis);
+}
+
+/// Newest three terminal outcomes, so "did the last update succeed?" is
+/// answered by the same command that explains the current state.
+fn print_history(history: &[UpdateRecord]) {
+    if history.is_empty() {
+        println!("最近更新: 无");
+        return;
+    }
+    println!("最近更新:");
+    for record in history.iter().rev().take(3) {
+        let reason = record.reason.as_deref().or(record.error_code.as_deref());
+        println!(
+            "  - v{} {}{} · {}",
+            record.version,
+            result_label(record.result),
+            reason
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default(),
+            human_age(record.finished_at_unix)
+        );
+    }
+}
+
+fn result_label(result: UpdateResult) -> &'static str {
+    match result {
+        UpdateResult::Completed => "成功",
+        UpdateResult::RolledBack => "已回滚",
+        UpdateResult::Failed => "失败",
+    }
+}
+
+fn human_age(finished_at_unix: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let seconds = now.saturating_sub(finished_at_unix);
+    match seconds {
+        0..=59 => format!("{seconds} 秒前"),
+        60..=3_599 => format!("{} 分钟前", seconds / 60),
+        3_600..=86_399 => format!("{} 小时前", seconds / 3_600),
+        _ => format!("{} 天前", seconds / 86_400),
+    }
 }
 
 /// Newest structured `worker.log` event, shared by the human and `--json`
@@ -165,4 +216,88 @@ fn event_json(event: &delta_update_engine::worker_log::Event) -> serde_json::Val
         "ts": event.get("ts"),
         "msg": event.get("msg"),
     })
+}
+
+/// Audit a published release without downloading its objects.
+///
+/// Prints the same per-file table as `release --verbose`, but read back from
+/// the bucket, plus a coverage summary and a HEAD check for every object key.
+pub fn inspect_release(args: &InspectArgs) -> anyhow::Result<()> {
+    let bucket = args
+        .from_release
+        .as_deref()
+        .context("--from-release is required")?;
+    let version = args.version.as_deref().context("--version is required")?;
+    let public_key = args
+        .public_key
+        .as_deref()
+        .context("--public-key is required")?;
+    let publisher = publisher::open(bucket, None)?;
+    let prefix = normalize_prefix(args.prefix.as_deref())?;
+    let keys = read_public_keys(public_key)?;
+    let audit = audit_release(publisher.as_ref(), &prefix, version, &keys)?;
+
+    if args.json {
+        let value = serde_json::json!({
+            "v": 1,
+            "tool": "delta-update-cli",
+            "version": version,
+            "channel": audit.channel,
+            "files": audit.rows.iter().map(|row| serde_json::json!({
+                "path": row.path,
+                "strategy": row.strategy,
+                "size": row.size,
+                "delta_size": row.delta_size,
+                "ratio": row.ratio,
+            })).collect::<Vec<_>>(),
+            "delta_bytes": audit.delta_bytes,
+            "patched_full_bytes": audit.patched_full_bytes,
+            "missing_objects": audit.missing,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "{:<44} {:<16} {:>10} {:>10} {:>8}",
+            "FILE", "STRATEGY", "FULL", "DELTA", "RATIO"
+        );
+        for row in &audit.rows {
+            println!(
+                "{:<44} {:<16} {:>10} {:>10} {:>8}",
+                row.path,
+                row.strategy,
+                human_bytes(row.size),
+                row.delta_size
+                    .map(human_bytes)
+                    .unwrap_or_else(|| "-".into()),
+                row.delta_size
+                    .map(|_| format!("{:.2}%", row.ratio * 100.0))
+                    .unwrap_or_else(|| "-".into()),
+            );
+        }
+        let saved = audit.patched_full_bytes.saturating_sub(audit.delta_bytes);
+        let percent = if audit.patched_full_bytes == 0 {
+            0.0
+        } else {
+            saved as f64 / audit.patched_full_bytes as f64 * 100.0
+        };
+        crate::output::info(&format!(
+            "published {}: {} files, delta bytes {} vs {} for patched files (saved {:.1}%)",
+            version,
+            audit.files,
+            human_bytes(audit.delta_bytes),
+            human_bytes(audit.patched_full_bytes),
+            percent
+        ));
+    }
+
+    if !audit.missing.is_empty() {
+        for item in &audit.missing {
+            crate::output::warn(item);
+        }
+        anyhow::bail!(
+            "{} object(s) are missing or have the wrong size",
+            audit.missing.len()
+        );
+    }
+    Ok(())
 }

@@ -8,6 +8,7 @@ import type {
   DiagnosticsResult,
   PrepareResult,
   RestartResult,
+  SkipResult,
   UpdateRecord,
   UpdateStatePayload,
 } from './types';
@@ -49,6 +50,11 @@ export function openDiagnosticsFolder(): Promise<void> {
 /** Remove the rollback skip marker so the same version can be retried. */
 export function clearSkippedVersion(): Promise<ClearSkipResult> {
   return invoke<ClearSkipResult>('plugin:delta-update|clear_skipped_version');
+}
+
+/** Hide the release found by the last check ("later"). */
+export function skipVersion(): Promise<SkipResult> {
+  return invoke<SkipResult>('plugin:delta-update|skip_version');
 }
 
 /** Newest terminal update outcomes (completed / rolled_back / failed). */

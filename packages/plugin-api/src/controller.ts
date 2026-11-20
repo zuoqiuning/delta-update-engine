@@ -3,9 +3,11 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   cancelPrepare,
   check,
+  clearSkippedVersion,
   confirmHealthy,
   prepare,
   restartToApply,
+  skipVersion,
   status,
 } from './commands';
 import { STATE_EVENT, type UpdateStatePayload } from './types';
@@ -14,8 +16,8 @@ export type UpdateStateListener = (state: UpdateStatePayload | null) => void;
 
 /**
  * Framework-agnostic update store. It keeps the latest state event, exposes a
- * snapshot and wraps the six commands, so React/Vue/Svelte apps do not have to
- * duplicate listener and error plumbing.
+ * snapshot and wraps the update lifecycle commands, so React/Vue/Svelte apps do
+ * not have to duplicate listener and error plumbing.
  *
  * `start`/`stop` are reference counted: several components can share one
  * controller, and the event listener is only released when the last one stops.
@@ -30,6 +32,8 @@ export interface UpdateController {
   cancel: typeof cancelPrepare;
   confirm: typeof confirmHealthy;
   restart: typeof restartToApply;
+  skip: typeof skipVersion;
+  clearSkip: typeof clearSkippedVersion;
 }
 
 export function createUpdateController(): UpdateController {
@@ -121,5 +125,7 @@ export function createUpdateController(): UpdateController {
     cancel: cancelPrepare,
     confirm: confirmHealthy,
     restart: restartToApply,
+    skip: skipVersion,
+    clearSkip: clearSkippedVersion,
   };
 }

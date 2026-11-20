@@ -510,7 +510,49 @@ impl EngineError {
             retryable: self.retryable(),
             action: self.action(),
             user_action: self.user_action().to_string(),
-            detail: String::new(),
+            detail: self.detail(),
+        }
+    }
+
+    /// Machine-readable context for tickets and UIs, as `key=value; key=value`.
+    ///
+    /// The message already spells this out in prose; `detail` exists so a
+    /// consumer can show the numbers without pattern-matching localized text.
+    /// It is empty when the error carries no structured values.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Network(NetworkError::Http5xx { status, .. })
+            | Self::Network(NetworkError::Http4xx { status, .. }) => {
+                format!("http_status={status}")
+            }
+            Self::Network(NetworkError::RateLimited {
+                retry_after_secs: Some(seconds),
+            }) => format!("retry_after_secs={seconds}"),
+            Self::ManifestSchemaTooNew { client, required } => {
+                format!("client_schema={client}; required_schema={required}")
+            }
+            Self::VersionRollback { remote, local } => {
+                format!("remote_version={remote}; local_version={local}")
+            }
+            Self::InsufficientDiskSpace {
+                required,
+                available,
+            } => format!("required_bytes={required}; available_bytes={available}"),
+            Self::StagingLimit { limit } => format!("limit_bytes={limit}"),
+            Self::PatchFailed(PatchError::MemoryBudget { file_size, budget }) => {
+                format!("file_size={file_size}; budget={budget}")
+            }
+            Self::JournalFormatTooNew { client, actual } => {
+                format!("client_format={client}; actual_format={actual}")
+            }
+            Self::ConfigMigrationRequired { from, to } => {
+                format!("from_schema={from}; to_schema={to}")
+            }
+            Self::ElevatedRecoveryTimeout { timeout_ms } => {
+                format!("timeout_ms={timeout_ms}")
+            }
+            Self::InvalidTransition { from, to } => format!("from={from}; to={to}"),
+            _ => String::new(),
         }
     }
 }
@@ -543,6 +585,29 @@ mod tests {
             assert!(!error.code().is_empty());
             assert!(!error.user_action().is_empty(), "{error:?}");
         }
+    }
+
+    #[test]
+    fn detail_carries_structured_values_only() {
+        let error = EngineError::InsufficientDiskSpace {
+            required: 10,
+            available: 4,
+        };
+        assert_eq!(error.detail(), "required_bytes=10; available_bytes=4");
+        assert_eq!(error.to_payload().detail, error.detail());
+
+        let http = EngineError::Network(NetworkError::Http5xx {
+            status: 503,
+            detail: "upstream".into(),
+        });
+        assert_eq!(http.detail(), "http_status=503");
+
+        // Errors whose context is free-form prose keep `detail` empty so no
+        // path or server text leaks into the structured field.
+        assert!(EngineError::Cancelled.detail().is_empty());
+        assert!(EngineError::Internal("C:\\Users\\me: boom".into())
+            .detail()
+            .is_empty());
     }
 
     /// One variant per distinct match arm above. Adding a variant means adding

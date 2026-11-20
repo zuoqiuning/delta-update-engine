@@ -123,8 +123,20 @@ impl PluginState {
             .unwrap_or(EngineState::Idle)
     }
 
+    /// Record the new state.
+    ///
+    /// The transition table is an assertion, not a gate: an undocumented edge
+    /// is logged and applied, because a bookkeeping bug must never freeze the
+    /// UI. Progress ticks inside one state share its name and are not checked.
     pub fn set_state(&self, state: EngineState) {
         if let Ok(mut current) = self.snapshot.write() {
+            if current.name() != state.name() && !current.can_transition_to(&state) {
+                tracing::warn!(
+                    from = current.name(),
+                    to = state.name(),
+                    "undocumented state transition; update docs/design/protocol.md and EngineState::can_transition_to"
+                );
+            }
             *current = state;
         }
     }

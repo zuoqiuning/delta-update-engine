@@ -61,15 +61,15 @@ delta-update migrate --dir .
   "permissions": [
     "core:default",
 -   "updater:default"
-+   "delta-update:manage"
++   "delta-update:manage-confirm"
   ]
 ```
 
-`manage` 不含 `confirm_healthy`，需要前端确认健康时改用 `delta-update:default`。只读展示用 `delta-update:monitor`。也可以直接生成：
+`manage-confirm` 是 `init` 的默认集合（`manage` + `confirm_healthy`），前端可直接调用健康确认；需要“前端不能确认健康”的严格划分时用 `delta-update:manage`，只读展示用 `delta-update:monitor`。也可以直接生成：
 
 ```bash
 delta-update init --dir . --endpoint https://releases.example.com/manifests/latest.json \
-  --public-key RWQ... --write --permission-set manage
+  --public-key RWQ... --write
 ```
 
 ## 5. 前端调用对应关系
@@ -83,7 +83,9 @@ delta-update init --dir . --endpoint https://releases.example.com/manifests/late
 | — | `confirmHealthy()` | 新版本首次启动后由应用确认健康，否则按崩溃循环处理 |
 | — | `exportDiagnostics()` | 支持工单：导出脱敏诊断包 |
 
-前端封装见 [`@delta-update/plugin-api`](../../packages/plugin-api/README.md)；最小可运行示例见 [`minimal-tauri-app`](../minimal-tauri-app/README.md)。
+前端封装见 [`tauri-plugin-delta-update-api`](../../packages/plugin-api/README.md)；最小可运行示例见 [`minimal-tauri-app`](../minimal-tauri-app/README.md)。
+
+`skipVersion()` / `clearSkippedVersion()` 与 `getUpdateHistory()` 没有官方 updater 的对应物：前者实现“稍后提醒”，后者给应用提供最近几次更新结果。`check()` 在用户跳过某版本后会同时返回 `available: false` 与 `skipped_version`，据此渲染“仍然更新”即可。
 
 ## 6. 发布侧
 

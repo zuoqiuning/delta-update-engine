@@ -1,0 +1,24 @@
+"$schema" = "schemas/schema.json"
+
+[[set]]
+identifier = "manage-confirm"
+description = """
+Full update management plus health confirmation.
+
+The default set written by `init`. It is `manage` with `confirm_healthy`, so the
+documented frontend flow (call `confirm_healthy()` once the app is ready) works
+without switching to the compatibility `default` set.
+"""
+permissions = [
+    "allow-check",
+    "allow-status",
+    "allow-prepare",
+    "allow-cancel-prepare",
+    "allow-confirm-healthy",
+    "allow-restart-to-apply",
+    "allow-export-diagnostics",
+    "allow-open-diagnostics-folder",
+    "allow-get-update-history",
+    "allow-clear-skipped-version",
+    "allow-skip-version",
+]

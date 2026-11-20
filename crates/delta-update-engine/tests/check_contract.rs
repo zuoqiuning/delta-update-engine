@@ -103,6 +103,54 @@ async fn check_reports_update_and_caches_verified_manifest() {
 }
 
 #[tokio::test]
+async fn repeated_check_revalidates_the_manifest_with_etag() {
+    let keys = TestKeyPair::generate();
+    let update = manifest("2.0.0", Some("stable"), false, &sha256_bytes(b"new"), 3);
+    let (_dir, engine, server) = start(update, &keys, &keys, "1.0.0").await;
+
+    engine.check().await.unwrap();
+    assert_eq!(server.not_modified(), 0);
+    assert_eq!(
+        server.last_header("manifests/latest.json", "if-none-match"),
+        None
+    );
+
+    // The second check must cost one 304 instead of the whole document.
+    engine.check().await.unwrap();
+    assert_eq!(server.not_modified(), 1);
+    assert!(server
+        .last_header("manifests/latest.json", "if-none-match")
+        .is_some());
+}
+
+#[tokio::test]
+async fn skip_version_hides_the_release_until_cleared() {
+    let keys = TestKeyPair::generate();
+    let update = manifest("2.0.0", Some("stable"), false, &sha256_bytes(b"new"), 3);
+    let (_dir, engine, _server) = start(update, &keys, &keys, "1.0.0").await;
+
+    assert!(engine.check().await.unwrap().available);
+    engine.skip_version("2.0.0").unwrap();
+    assert_eq!(engine.skipped_version().as_deref(), Some("2.0.0"));
+    let skipped = engine.check().await.unwrap();
+    assert!(!skipped.available);
+    assert_eq!(skipped.version, None);
+    assert_eq!(skipped.skipped_version.as_deref(), Some("2.0.0"));
+
+    engine.clear_skipped_version().unwrap();
+    let available = engine.check().await.unwrap();
+    assert!(available.available);
+    assert_eq!(available.skipped_version, None);
+    assert_eq!(engine.skipped_version(), None);
+
+    // Only versions, not arbitrary strings, can be skipped.
+    assert_eq!(
+        engine.skip_version("not-a-version").unwrap_err().code(),
+        "E_VERSION_INVALID"
+    );
+}
+
+#[tokio::test]
 async fn check_exposes_release_notes_and_mandatory() {
     let keys = TestKeyPair::generate();
     let mut value: Value = serde_json::from_slice(&manifest(

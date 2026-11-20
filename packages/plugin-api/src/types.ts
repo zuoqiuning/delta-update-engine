@@ -40,9 +40,24 @@ export type ErrorAction =
   | 'unsupported'
   | 'restart';
 
+export type ErrorCategory =
+  | 'network'
+  | 'signature'
+  | 'manifest'
+  | 'security'
+  | 'disk'
+  | 'permission'
+  | 'patch'
+  | 'journal'
+  | 'rollback'
+  | 'config'
+  | 'platform'
+  | 'apply'
+  | 'internal';
+
 export interface UpdateError {
   code: string;
-  category: string;
+  category: ErrorCategory;
   message: string;
   retryable: boolean;
   action: ErrorAction;
@@ -81,6 +96,12 @@ export interface CheckResult {
    * Older plugin versions omit this field; treat a missing value as 0.
    */
   cloud_placeholders_skipped?: number;
+  /**
+   * Set when the manifest was suppressed because the user skipped this exact
+   * version (`skipVersion()`). `available` stays `false`; call
+   * `clearSkippedVersion()` to surface the update again.
+   */
+  skipped_version?: string | null;
 }
 
 export interface PrepareResult {
@@ -110,6 +131,11 @@ export interface DiagnosticsResult {
 export interface ClearSkipResult {
   /** Whether a rollback skip marker existed and was removed. */
   cleared: boolean;
+}
+
+export interface SkipResult {
+  /** Version now hidden from `check` until a newer release appears. */
+  skipped: string;
 }
 
 /** One terminal update outcome from `get_update_history`. */
@@ -180,6 +206,8 @@ export interface UpdateView {
   isUpdateRequired: boolean;
   canPrepare: boolean;
   canRestart: boolean;
+  /** A prepare is in flight and `cancel_prepare` will actually stop it. */
+  canCancel: boolean;
   error: UpdateError | null;
 }
 
@@ -198,6 +226,8 @@ export function describeUpdate(state: UpdateStatePayload | null): UpdateView {
       state?.state === 'UpdateRequired' ||
       isFailed(state),
     canRestart: state !== null && isPrepared(state),
+    canCancel:
+      state?.state === 'Downloading' || state?.state === 'Preparing',
     error: state?.error ?? null,
   };
 }

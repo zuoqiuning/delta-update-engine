@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{bail, Context};
 
@@ -29,15 +31,45 @@ pub struct ManifestSet<'a> {
     pub attachments: &'a [(String, Vec<u8>)],
 }
 
+/// Objects uploaded at the same time. Every PUT is independent and retried on
+/// its own, and a release with hundreds of artifacts is dominated by network
+/// round trips. The bound keeps CI runners and enterprise uplinks from opening
+/// dozens of connections.
+const UPLOAD_CONCURRENCY: usize = 4;
+
 /// Upload objects and confirm every one exists with the expected size. This
 /// runs before any manifest is published. Transient object-store failures are
 /// retried; a release can be re-run safely because keys are content-addressed
 /// or version-scoped.
+///
+/// The first failure stops the remaining uploads; the verification pass still
+/// runs only when every object succeeded.
 pub fn upload_objects(publisher: &dyn Publisher, objects: &[ObjectUpload]) -> anyhow::Result<()> {
-    for object in objects {
-        put_with_retry(publisher, object)?;
+    let next = AtomicUsize::new(0);
+    let failure: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let workers = UPLOAD_CONCURRENCY.min(objects.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                if failure.lock().map(|slot| slot.is_some()).unwrap_or(true) {
+                    return;
+                }
+                let Some(object) = objects.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                    return;
+                };
+                if let Err(error) = put_with_retry(publisher, object) {
+                    if let Ok(mut slot) = failure.lock() {
+                        slot.get_or_insert(error);
+                    }
+                    return;
+                }
+            });
+        }
+    });
+    match failure.into_inner() {
+        Ok(Some(error)) => Err(error),
+        _ => verify_objects(publisher, objects),
     }
-    verify_objects(publisher, objects)
 }
 
 fn put_with_retry(publisher: &dyn Publisher, object: &ObjectUpload) -> anyhow::Result<()> {
@@ -263,5 +295,62 @@ mod tests {
             size: 2,
         }];
         assert!(upload_objects(&publisher, &objects).is_err());
+    }
+
+    /// Counts overlapping PUTs so the test fails if uploads regress to serial.
+    struct CountingPublisher {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        stored: Mutex<Vec<String>>,
+    }
+
+    impl Publisher for CountingPublisher {
+        fn put(&self, key: &str, _bytes: &[u8]) -> anyhow::Result<()> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            self.stored.lock().unwrap().push(key.to_string());
+            Ok(())
+        }
+
+        fn head(&self, key: &str) -> anyhow::Result<Option<u64>> {
+            let stored = self.stored.lock().unwrap();
+            Ok(stored
+                .iter()
+                .any(|seen| seen.as_str() == key)
+                .then_some(1_u64))
+        }
+
+        fn get(&self, key: &str) -> anyhow::Result<Vec<u8>> {
+            match self.head(key)? {
+                Some(size) => Ok(vec![0; size as usize]),
+                None => bail!("missing {key}"),
+            }
+        }
+    }
+
+    #[test]
+    fn uploads_run_in_parallel_and_still_verify() {
+        let publisher = CountingPublisher {
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            stored: Mutex::new(Vec::new()),
+        };
+        let objects: Vec<ObjectUpload> = (0..8)
+            .map(|index| ObjectUpload {
+                key: format!("artifacts/full/1.0.0/{index}.bin"),
+                body: ObjectBody::Bytes(vec![0]),
+                size: 1,
+            })
+            .collect();
+
+        upload_objects(&publisher, &objects).unwrap();
+
+        assert_eq!(publisher.stored.lock().unwrap().len(), objects.len());
+        assert!(
+            publisher.peak.load(Ordering::SeqCst) > 1,
+            "uploads must overlap"
+        );
     }
 }

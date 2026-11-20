@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "版本号，必须与 workspace.package.version 一致（例如 1.0.0-rc.4）"
+        description: "版本号，必须与 workspace.package.version 一致（例如 1.1.0）"
         required: true
         type: string
   push:
@@ -106,7 +106,7 @@ jobs:
             done
           }
           package_has delta-update-engine Cargo.toml src/lib.rs
-          package_has tauri-plugin-delta-update Cargo.toml src/lib.rs permissions/default.toml
+          package_has tauri-plugin-delta-update Cargo.toml src/lib.rs permissions/default.toml permissions/manage-confirm.toml
           package_has delta-update-cli Cargo.toml src/lib.rs
           cargo publish -p delta-update-engine --locked --no-verify
           wait_for_crate delta-update-engine "$version"

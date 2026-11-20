@@ -29,7 +29,7 @@ if (result.available) {
 }
 ```
 
-`describeUpdate` is the only place that encodes "what can the UI do now": `isReady`, `canPrepare`, `canRestart`, `isBusy`, `isUpdateRequired` and `error`. Gate buttons on those flags instead of comparing state strings. React 18+ can use the optional hook subpath; its return value already contains the same flags:
+`describeUpdate` is the only place that encodes "what can the UI do now": `isReady`, `canPrepare`, `canRestart`, `canCancel`, `isBusy`, `isUpdateRequired` and `error`. Gate buttons on those flags instead of comparing state strings (`canCancel` is true only in `Downloading`/`Preparing`, where `cancel_prepare` actually stops work). React 18+ can use the optional hook subpath; its return value already contains the same flags:
 
 ```tsx
 import { useUpdater } from 'tauri-plugin-delta-update-api/react';
@@ -45,10 +45,27 @@ function UpdateBanner() {
 `confirm()` is the post-restart health acknowledgement (state `Committed`). It is
 **not** called automatically by default (`auto_confirm: false`); call it after
 your app's core startup work succeeds. Set `auto_confirm: true` only if the
-window being visible is a sufficient health signal for your app. When several
-components share one controller, `start()`/`stop()` are reference counted and
-the listener is only released by the last consumer. React is an optional peer
-dependency: Vue/Svelte and vanilla apps use `createUpdateController` directly.
+window being visible is a sufficient health signal for your app. `skip()`
+implements “later”: it hides the version found by the last check until a newer
+one appears, and is refused for mandatory updates or while an update is already
+prepared (cancel first). The loop is closed by `check()` returning
+`skipped_version`:
+
+```ts
+const result = await updater.check();
+if (result.available) {
+  await updater.prepare();
+} else if (result.skipped_version) {
+  // "仍然更新": clear the marker, then check again to get `available: true`.
+  await updater.clearSkip();
+  await updater.check();
+}
+```
+
+When several components share one controller,
+`start()`/`stop()` are reference counted and the listener is only released by
+the last consumer. React is an optional peer dependency: Vue/Svelte and vanilla
+apps use `createUpdateController` directly.
 
 ### Vue / Svelte
 

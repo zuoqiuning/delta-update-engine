@@ -18,7 +18,7 @@ pnpm tauri dev
 1. `minisign -G -p release.pub -s release.key`
 2. 准备两版产物目录（如 `dist/v1`、`dist/v2`，各含应用可执行文件）
 3. `delta-update release --to dist/v2 --from dist/v1 --version 0.2.0 --from-version 0.1.0 --bucket ./channel --key release.key`
-4. `python -m http.server 8000 --directory channel`，把 `endpoint` 改为 `http://127.0.0.1:8000/manifests/latest.json`，并加 `"allow_insecure_http": true`
+4. `delta-update serve --dir channel --port 8000`（无需 Python；启动时会打印可粘贴的 `endpoint`），把 `endpoint` 改为打印出的 `http://127.0.0.1:8000/manifests/latest.json`，并加 `"allow_insecure_http": true`
 5. 按接入指南 §3.4 用临时 `install_dir` 放入 v1 产物，退出应用后确认文件已被替换
 
 `allow_insecure_http` 只放行 loopback，仅用于本地调试，不要随真实通道提交。

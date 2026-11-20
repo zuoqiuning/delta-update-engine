@@ -9,6 +9,7 @@ const COMMANDS: &[&str] = &[
     "open_diagnostics_folder",
     "get_update_history",
     "clear_skipped_version",
+    "skip_version",
 ];
 
 fn main() {
