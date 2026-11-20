@@ -2,7 +2,7 @@
 
 面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> **`1.1.0` 发布准备就绪** — 公共 API 保持兼容。本版新增：`init` 默认的 `manage-confirm` 权限集、Rust 侧健康确认、多签名与单对象信封、`skip_version`、诊断包更新史、并行下载与校验。接入反馈请用 [反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml)。
+> **`1.1.0` 已发布** — 公共 API 保持兼容。本版新增：`init` 默认的 `manage-confirm` 权限集、Rust 侧健康确认、多签名与单对象信封、`skip_version`、诊断包更新史、并行下载与校验。接入反馈请用 [反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml)。
 
 | 支持矩阵 | |
 | --- | --- |
