@@ -74,7 +74,7 @@ jobs:
       # Report-only for now: the threshold is deferred until a baseline exists,
       # but the artifact makes line/branch drift visible per pull request.
       - run: cargo llvm-cov -p delta-update-engine --lib --lcov --output-path engine-lcov.info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: engine-coverage
           path: engine-lcov.info
