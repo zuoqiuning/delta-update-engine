@@ -36,7 +36,7 @@ jobs:
       - run: cargo xtask ci
       - run: cargo xtask docs-check
       - run: cargo xtask version-sync
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.15.0
       - uses: actions/setup-node@v4
@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.15.0
       - uses: actions/setup-node@v4
