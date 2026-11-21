@@ -22,6 +22,7 @@ pub(crate) fn build_sbom(raw: &[u8], channel: &str, version: &str) -> anyhow::Re
                         "strategy": entry.get("strategy"),
                         "delta_key": entry.get("delta_key"),
                         "full_key": entry.get("full_key"),
+                        "deltas": entry.get("deltas").cloned().unwrap_or(serde_json::json!([])),
                     })
                 })
                 .collect()

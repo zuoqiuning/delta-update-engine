@@ -2,6 +2,14 @@
 #
 # The pipeline needs the previous release's build output as --from. Fetch it
 # from the previous tag's artifact before this job runs.
+#
+# Optional multi-baseline: fetch older build artifacts into build/<version> and
+# add `--baseline "<version>=build/<version>"` for each. Keep the count small:
+# every baseline adds one manifest entry per file.
+#
+# Canary flow: release with --channel canary, then after verification run
+# `delta-update promote --version $version --channel stable --verify` instead
+# of building and patching the release again.
 stages:
   - release
 
@@ -23,6 +31,9 @@ delta-update:
       --bucket "cos://$env:COS_BUCKET"
       --key release.key
       --pipeline --report release-report.json
+      # Multi-baseline example (fetch the artifacts first):
+      #   --baseline "1.9.0=build/1.9.0"
+      #   --baseline "1.8.0=build/1.8.0"
   artifacts:
     when: always
     paths:

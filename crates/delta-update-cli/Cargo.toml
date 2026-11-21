@@ -16,7 +16,7 @@ name = "delta-update"
 path = "src/main.rs"
 
 [dependencies]
-delta-update-engine = { path = "../delta-update-engine", version = "1.1.0" }
+delta-update-engine = { path = "../delta-update-engine", version = "1.2.0" }
 clap.workspace = true
 anyhow.workspace = true
 serde.workspace = true

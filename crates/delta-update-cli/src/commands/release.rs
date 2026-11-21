@@ -11,12 +11,30 @@ use crate::cli::ReleaseArgs;
 use crate::ignore::DeltaIgnore;
 use crate::output;
 use crate::pipeline::keys::{delta_key, full_key, human_bytes, normalize_prefix};
-use crate::pipeline::manifest::ManifestFile;
+use crate::pipeline::manifest::{ManifestDelta, ManifestFile};
 use crate::pipeline::patches::{PatchAttempt, SkipReason};
 use crate::pipeline::plan::ChangeKind;
 use crate::pipeline::publish::{ManifestSet, ObjectBody, ObjectUpload};
 use crate::pipeline::{audit, manifest, patches, plan, publish, sbom, scan, self_test, sign};
 use crate::publisher;
+
+/// A non-primary patch baseline (`--baseline VERSION=DIR`).
+struct ExtraBaseline {
+    version: String,
+    root: PathBuf,
+    scan: scan::ScanResult,
+    plan: Vec<plan::PlannedFile>,
+}
+
+/// What one baseline produced, for the report and the summary line.
+#[derive(Default)]
+struct BaselineStat {
+    patches: u64,
+    delta_bytes: u64,
+    /// Target size of the files served as patches; the saving is the gap to
+    /// `delta_bytes`.
+    patched_full_bytes: u64,
+}
 
 pub fn run(args: &ReleaseArgs) -> anyhow::Result<()> {
     release(args)
@@ -80,6 +98,42 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             bail!("--from is not a directory: {}", from.display());
         }
     }
+    if args.initial && !args.baselines.is_empty() {
+        bail!("--initial cannot be combined with --baseline");
+    }
+    if !args.baselines.is_empty() && args.from.is_none() {
+        // Extra baselines sit next to a primary one: legacy fields, coverage
+        // statistics and self-test all describe `--from`.
+        bail!("--baseline requires --from and --from-version");
+    }
+    let mut extra_baselines: Vec<(String, PathBuf)> = Vec::new();
+    for spec in &args.baselines {
+        let (value, dir) = spec
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--baseline must be VERSION=DIR, got {spec}"))?;
+        semver::Version::parse(value)
+            .with_context(|| format!("invalid --baseline version: {value}"))?;
+        if value == args.version {
+            bail!("--baseline {value} equals --version");
+        }
+        if from_version
+            .as_ref()
+            .is_some_and(|(primary, _)| primary == value)
+        {
+            bail!("--baseline {value} duplicates --from-version");
+        }
+        if extra_baselines
+            .iter()
+            .any(|(existing, _)| existing == value)
+        {
+            bail!("--baseline {value} was repeated");
+        }
+        let root = PathBuf::from(dir);
+        if !root.is_dir() {
+            bail!("--baseline {value}: not a directory: {}", root.display());
+        }
+        extra_baselines.push((value.to_string(), root));
+    }
     if !args.key.is_file() {
         bail!("--key is not a file: {}", args.key.display());
     }
@@ -98,6 +152,18 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             planned.len(),
             Limits::default().max_files
         );
+    }
+
+    let mut extras: Vec<ExtraBaseline> = Vec::new();
+    for (version, root) in &extra_baselines {
+        let scan = scan::scan_with_jobs(root, &ignore, jobs)?;
+        let plan = plan::plan(Some(&scan), &to_scan);
+        extras.push(ExtraBaseline {
+            version: version.clone(),
+            root: root.clone(),
+            scan,
+            plan,
+        });
     }
 
     let publisher = if args.dry_run {
@@ -153,6 +219,41 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         }
         _ => BTreeMap::new(),
     };
+
+    // Extra baselines run one after another: each pool is internally parallel,
+    // so peak memory stays bounded by `jobs` rather than jobs x baselines.
+    let mut extra_patch_results: Vec<(String, BTreeMap<String, PatchAttempt>)> = Vec::new();
+    for baseline in &extras {
+        let inputs = patches::patch_input_sizes(
+            &baseline.plan,
+            &baseline.scan,
+            &to_scan,
+            args.patch_max_file_size,
+        );
+        let estimated_peak = patches::estimated_peak_bytes(&inputs, jobs);
+        output::info(&format!(
+            "baseline {}: {} patch candidates, estimated peak ~{}",
+            baseline.version,
+            inputs.len(),
+            human_bytes(estimated_peak)
+        ));
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build()
+            .context("build patch thread pool")?;
+        let results = pool.install(|| {
+            patches::generate(
+                &baseline.root,
+                &args.to,
+                &baseline.plan,
+                &baseline.scan,
+                &to_scan,
+                args.patch_max_file_size,
+                args.delta_max_ratio,
+            )
+        })?;
+        extra_patch_results.push((baseline.version.clone(), results));
+    }
 
     // Coverage is computed before the loop consumes each attempt below.
     let modified_total = planned
@@ -255,6 +356,11 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
     let mut reused_full_blobs = 0_u64;
     let mut uploaded_blobs = HashSet::new();
     let mut fallbacks: Vec<(String, &'static str)> = Vec::new();
+    let primary_version = from_version.as_ref().map(|(value, _)| value.clone());
+    let mut baseline_stats: BTreeMap<String, BaselineStat> = extras
+        .iter()
+        .map(|baseline| (baseline.version.clone(), BaselineStat::default()))
+        .collect();
 
     for (path, scanned) in &to_scan {
         delta_update_engine::path::validate_rel_path(path)
@@ -271,6 +377,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             delta_key: None,
             delta_size: None,
             full_key: Some(full_key.clone()),
+            deltas: Vec::new(),
         };
         let mut delta_size = None;
         let mut ratio = None;
@@ -304,6 +411,14 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                         entry.strategy = "qbsdiff+zstd".to_string();
                         entry.delta_key = Some(key.clone());
                         entry.delta_size = Some(size);
+                        if let Some(from) = &primary_version {
+                            entry.deltas.push(ManifestDelta {
+                                from_version: from.clone(),
+                                strategy: "qbsdiff+zstd".into(),
+                                delta_key: key.clone(),
+                                delta_size: size,
+                            });
+                        }
                         objects += 1;
                         if let Some(publisher) = &publisher {
                             publish::upload_objects(
@@ -321,6 +436,38 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                     None => {}
                 }
             }
+        }
+
+        for (version, results) in &mut extra_patch_results {
+            let Some(PatchAttempt::Candidate(candidate)) = results.remove(path) else {
+                continue;
+            };
+            let key = delta_key(&prefix, version, &args.version, path);
+            let size = candidate.bytes.len() as u64;
+            objects += 1;
+            delta_bytes += size;
+            if let Some(stats) = baseline_stats.get_mut(version) {
+                stats.patches += 1;
+                stats.delta_bytes += size;
+                stats.patched_full_bytes += scanned.size;
+            }
+            if let Some(publisher) = &publisher {
+                publish::upload_objects(
+                    publisher.as_ref(),
+                    &[ObjectUpload {
+                        key: key.clone(),
+                        body: ObjectBody::Bytes(candidate.bytes),
+                        size,
+                    }],
+                )?;
+                uploaded_delta_bytes += size;
+            }
+            entry.deltas.push(ManifestDelta {
+                from_version: version.clone(),
+                strategy: "qbsdiff+zstd".into(),
+                delta_key: key,
+                delta_size: size,
+            });
         }
 
         // Every entry points at a content-addressed blob, including unchanged
@@ -427,8 +574,18 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
         signing_key_ids: &signing_key_ids,
         files,
     })?;
-    if manifest.len() as u64 > Limits::default().manifest_max_bytes {
-        bail!("manifest exceeds the client size limit");
+    let manifest_limit = Limits::default().manifest_max_bytes;
+    if manifest.len() as u64 > manifest_limit {
+        bail!(
+            "manifest is {} bytes, above the client limit of {manifest_limit}; every --baseline adds one entry per changed file — reduce baselines or exclude files via .deltaignore",
+            manifest.len()
+        );
+    }
+    if !extras.is_empty() && manifest.len() as u64 > manifest_limit / 4 * 3 {
+        output::warn(&format!(
+            "manifest is {} of the {manifest_limit} byte client limit; each --baseline costs one entry per file",
+            manifest.len()
+        ));
     }
     let signature = sign::sign_manifest(&manifest, &args.key)?;
     let mut attachments: Vec<(String, Vec<u8>)> = Vec::new();
@@ -558,6 +715,16 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
             ));
         }
     }
+    for (version, stats) in &baseline_stats {
+        if stats.patches > 0 {
+            output::info(&format!(
+                "baseline {version}: {} patch(es), delta {}, client savings {}",
+                stats.patches,
+                human_bytes(stats.delta_bytes),
+                human_bytes(stats.patched_full_bytes.saturating_sub(stats.delta_bytes)),
+            ));
+        }
+    }
     if args.pipeline {
         // Honest accounting, split by cost: `client` is what users download,
         // `publish` is what this run writes to the bucket. A first release has
@@ -585,6 +752,25 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                 reused_full_blobs
             ));
         }
+        // `client` and `coverage` describe the primary `--from` baseline; extra
+        // baselines only add upload cost and per-file patch choices, so they get
+        // their own counter instead of diluting the head-to-head saving.
+        let baselines_report: Vec<serde_json::Value> = baseline_stats
+            .iter()
+            .map(|(version, stats)| {
+                serde_json::json!({
+                    "version": version,
+                    "patches": stats.patches,
+                    "delta_bytes": stats.delta_bytes,
+                    "client": {
+                        "patched_full_bytes": stats.patched_full_bytes,
+                        "net_savings_bytes": stats
+                            .patched_full_bytes
+                            .saturating_sub(stats.delta_bytes),
+                    },
+                })
+            })
+            .collect();
         let report = serde_json::json!({
             "v": 1,
             "tool": "delta-update-cli",
@@ -609,6 +795,7 @@ pub fn release(args: &ReleaseArgs) -> anyhow::Result<()> {
                 "reused_full_bytes": reused_full_bytes,
                 "reused_full_blobs": reused_full_blobs,
             },
+            "baselines": baselines_report,
             "coverage": {
                 "modified": modified_total,
                 "patched": patched,

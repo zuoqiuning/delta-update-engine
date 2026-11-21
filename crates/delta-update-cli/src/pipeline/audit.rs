@@ -127,7 +127,7 @@ pub(crate) fn verify_published(
 
     let mut checked = 0_u64;
     for (path, entry) in &manifest.files {
-        if entry.delta_key.is_some() && entry.full_key.is_none() {
+        if (entry.delta_key.is_some() || !entry.deltas.is_empty()) && entry.full_key.is_none() {
             bail!("{path}: patch entry is missing full_key");
         }
         if let Some(key) = &entry.full_key {
@@ -150,6 +150,22 @@ pub(crate) fn verify_published(
             }
             checked += 1;
         }
+        for delta in &entry.deltas {
+            match publisher.head(&delta.delta_key)? {
+                Some(size) if size == delta.delta_size => {}
+                Some(size) => bail!(
+                    "{path}: delta for {} has size {size}, expected {}",
+                    delta.from_version,
+                    delta.delta_size
+                ),
+                None => bail!(
+                    "{path}: delta for {} is missing: {}",
+                    delta.from_version,
+                    delta.delta_key
+                ),
+            }
+            checked += 1;
+        }
     }
 
     let mut patches_verified = 0_usize;
@@ -158,7 +174,13 @@ pub(crate) fn verify_published(
         if attempts >= sample {
             break;
         }
-        let Some(delta_key) = &entry.delta_key else {
+        // Sample one patch per file: the primary baseline when present,
+        // otherwise the first extra baseline.
+        let delta_key = entry
+            .delta_key
+            .as_ref()
+            .or_else(|| entry.deltas.first().map(|delta| &delta.delta_key));
+        let Some(delta_key) = delta_key else {
             continue;
         };
         attempts += 1;

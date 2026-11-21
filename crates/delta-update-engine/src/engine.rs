@@ -420,7 +420,8 @@ impl Engine {
             let install_root = self.config.install_root.clone();
             let journal_root = self.config.journal_root.clone();
             let manifest = manifest.clone();
-            move || scan::diff_install(&install_root, &journal_root, &manifest)
+            let running = current_version.clone();
+            move || scan::diff_install(&install_root, &journal_root, &manifest, &running)
         })
         .await
         .map_err(|err| EngineError::Internal(format!("scan task: {err}")))??;
@@ -460,7 +461,9 @@ impl Engine {
     /// large install do not re-hash unchanged files. `check` runs this on the
     /// blocking pool.
     pub fn diff(&self, local_root: &Path, remote: &Manifest) -> Result<DiffResult, EngineError> {
-        scan::diff_install(local_root, &self.config.journal_root, remote).map(|(diff, _, _)| diff)
+        let running = self.current_version.to_string();
+        scan::diff_install(local_root, &self.config.journal_root, remote, &running)
+            .map(|(diff, _, _)| diff)
     }
 
     /// Prepare the version that passed `check`. Runs a check first when no

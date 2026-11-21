@@ -360,7 +360,8 @@ impl PluginConfig {
         for key in self.extra.keys() {
             if key == "key_rotation" {
                 tracing::warn!("key_rotation is not implemented and will be ignored");
-            } else {
+            } else if key != "$schema" {
+                // `$schema` is the editor autocomplete hint, not a plugin option.
                 tracing::warn!(%key, "unknown delta-update config field");
             }
         }
@@ -430,6 +431,17 @@ mod tests {
             ],
             ..PluginConfig::default()
         }
+    }
+
+    #[test]
+    fn schema_hint_is_not_an_unknown_field() {
+        let value = serde_json::json!({
+            "config_version": 1,
+            "endpoint": "https://example.com/manifests/latest.json",
+            "signing_public_keys": ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"],
+            "$schema": "./delta-update.schema.json",
+        });
+        assert!(PluginConfig::from_json(&value).is_ok());
     }
 
     #[test]

@@ -163,7 +163,11 @@ async fn run_check<R: Runtime>(
     state: &PluginState,
 ) -> Result<CheckOutcome, EngineError> {
     publish(app, state, EngineState::Checking);
-    let outcome = state.engine()?.check().await?;
+    let engine = state.engine()?;
+    let outcome = engine.check().await?;
+    // `check` may clear a stale skip marker when the manifest is a rollback,
+    // so resync the cache once per check instead of on every payload build.
+    state.set_skipped_version(engine.skipped_version());
     if outcome.available {
         state.set_target_version(outcome.version.clone());
     } else {
@@ -306,7 +310,16 @@ async fn check_and_prepare<R: Runtime>(
     let outcome = match run_check(app, &state).await {
         Ok(outcome) => outcome,
         Err(error) => {
-            report_check_error(app, &state, &before, &error);
+            // A failed background check must not turn a healthy app into an
+            // error banner; offline launches are the common case. Manual
+            // `check()` still returns the same error and publishes `Failed`.
+            tracing::warn!(%error, "background update check failed");
+            let next = match &before {
+                // These already describe a problem the user should see.
+                EngineState::Failed { .. } | EngineState::RolledBack { .. } => before.clone(),
+                _ => resting(&before, &state),
+            };
+            publish(app, &state, next);
             return;
         }
     };
@@ -438,7 +451,8 @@ pub async fn status(state: State<'_, Arc<PluginState>>) -> Result<StatePayload, 
 /// Needed when a publisher fixes a release and re-uploads the same version:
 /// `check` would otherwise skip it until a higher version appears.
 #[tauri::command]
-pub async fn clear_skipped_version(
+pub async fn clear_skipped_version<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, Arc<PluginState>>,
 ) -> Result<ClearSkipResult, ErrorPayload> {
     let engine = state.engine().map_err(|error| error.to_payload())?;
@@ -446,6 +460,9 @@ pub async fn clear_skipped_version(
     engine
         .clear_skipped_version()
         .map_err(|error| error.to_payload())?;
+    state.set_skipped_version(None);
+    // Republish so every open window drops its "skipped" banner immediately.
+    publish(&app, &state, state.snapshot());
     Ok(ClearSkipResult { cleared })
 }
 
@@ -480,6 +497,7 @@ pub async fn skip_version<R: Runtime>(
         .skip_version(&version)
         .map_err(|error| error.to_payload())?;
     state.set_target_version(None);
+    state.set_skipped_version(Some(version.clone()));
     publish(&app, &state, EngineState::Idle);
     Ok(SkipResult { skipped: version })
 }

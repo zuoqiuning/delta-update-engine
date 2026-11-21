@@ -31,11 +31,15 @@ impl Fetcher for StubFetcher {
 }
 
 fn engine(install: PathBuf, journal: PathBuf) -> Engine {
+    engine_for(install, journal, "1.0.0")
+}
+
+fn engine_for(install: PathBuf, journal: PathBuf, version: &str) -> Engine {
     Engine::new(EngineConfig {
         endpoint: "https://example.com/manifests/latest.json".parse().unwrap(),
         signing_public_keys: vec!["RWQtest".into()],
         channel: "stable".into(),
-        current_version: "1.0.0".into(),
+        current_version: version.into(),
         install_root: install,
         staging_root: journal.join("staging"),
         journal_root: journal,
@@ -180,4 +184,90 @@ fn changed_entries_still_require_full_key() {
         .diff(&root, &manifest)
         .unwrap_err();
     assert_eq!(error.code(), "E_MANIFEST_PARSE");
+}
+
+fn multi_baseline_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "schema": 1,
+        "version": "2.1.0",
+        "min_client_schema": 1,
+        "files": {
+            "app.bin": {
+                "sha256": sha256_bytes(b"new"),
+                "size": 3,
+                "strategy": "qbsdiff+zstd",
+                "delta_key": "artifacts/0.9.0-to-2.1.0/app.bin.tdp",
+                "delta_size": 900,
+                "full_key": "blobs/new",
+                "deltas": [
+                    {
+                        "from_version": "1.0.0",
+                        "strategy": "qbsdiff+zstd",
+                        "delta_key": "artifacts/1.0.0-to-2.1.0/app.bin.tdp",
+                        "delta_size": 40
+                    },
+                    {
+                        "from_version": "0.9.0",
+                        "strategy": "qbsdiff+zstd",
+                        "delta_key": "artifacts/0.9.0-to-2.1.0/app.bin.tdp",
+                        "delta_size": 80
+                    }
+                ]
+            }
+        }
+    })
+}
+
+#[test]
+fn selects_the_patch_for_the_running_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let journal = temp.path().join("journal");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(root.join("app.bin"), b"old").unwrap();
+
+    let manifest = parse_manifest(
+        multi_baseline_manifest().to_string().as_bytes(),
+        &Limits::default(),
+    )
+    .unwrap();
+    let result = engine_for(root.clone(), journal, "1.0.0")
+        .diff(&root, &manifest)
+        .unwrap();
+
+    let entry = &result.modified[0].entry;
+    assert_eq!(
+        entry.delta_key.as_deref(),
+        Some("artifacts/1.0.0-to-2.1.0/app.bin.tdp")
+    );
+    assert_eq!(entry.delta_size, Some(40));
+    assert_eq!(
+        result.download_bytes, 40,
+        "the estimate must match the patch this client will apply"
+    );
+}
+
+#[test]
+fn a_client_without_a_matching_baseline_downloads_full() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let journal = temp.path().join("journal");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&journal).unwrap();
+    std::fs::write(root.join("app.bin"), b"old").unwrap();
+
+    let manifest = parse_manifest(
+        multi_baseline_manifest().to_string().as_bytes(),
+        &Limits::default(),
+    )
+    .unwrap();
+    let result = engine_for(root.clone(), journal, "1.5.0")
+        .diff(&root, &manifest)
+        .unwrap();
+
+    let entry = &result.modified[0].entry;
+    assert_eq!(entry.delta_key, None, "no baseline means no patch attempt");
+    assert_eq!(entry.strategy, delta_update_engine::Strategy::Full);
+    assert_eq!(result.download_bytes, 3, "full size, not a doomed patch");
 }

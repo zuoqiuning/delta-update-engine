@@ -104,6 +104,9 @@ delta-update release [OPTIONS]
   --from <DIR>            上一版本的构建输出目录。缺失时所有文件视为新增，
                           全部走全量，等效于 --initial。
   --from-version <SEMVER> 上一版本号，用于补丁对象键；提供 --from 时必填。
+  --baseline <VERSION=DIR> 额外补丁基线，可重复。为每个基线生成一份补丁并写入
+                          清单 deltas，使跨多个版本的客户端也能走差分；必须同时
+                          提供 --from/--from-version，版本号不能重复或等于 --version。
 
 可选：
   --initial               首次发布标记。等价于不提供 --from。
@@ -162,6 +165,33 @@ delta-update release \
   --require-delta \
   --verbose
 ```
+
+**多基线（跨版本升级）**：用户可能从 1.8.0 直接升到 2.1.0。`--baseline` 为每个旧版本生成一份补丁，写入清单的 `deltas`；客户端只使用 `from_version` 等于自己当前版本的补丁，没有匹配项才走全量。
+
+```bash
+delta-update release \
+  --from ./dist-2.0.0 --from-version 2.0.0 \
+  --baseline 1.9.0=./dist-1.9.0 \
+  --baseline 1.8.0=./dist-1.8.0 \
+  --to ./dist-2.1.0 --version 2.1.0 \
+  --bucket cos://your-bucket --key /tmp/release.key
+```
+
+- `--from` 仍是**主基线**：`delta_key`/`delta_size`/`strategy` 继续描述它，供未升级的旧客户端使用；`deltas` 同时包含主基线与所有 `--baseline`。
+- 每个基线独立做“是否值得差分”的判定；某个基线没有产出补丁时，该基线的客户端下载全量，不影响其他基线。
+- 基线按顺序逐个生成，峰值内存仍由 `--jobs` 决定，不会乘以基线数量；代价是构建时间线性增加。
+- 清单会随基线数变大（每文件每基线一项）；超过客户端 8 MiB 上限时发布失败，接近 75% 时会给出警告。大型应用应控制基线数量，或先用 `.deltaignore` 排除不需要差分的文件。
+- 覆盖率统计与 `--require-delta` 只针对主基线；每个基线实际产出的补丁数与体积会在发布输出与 `release --pipeline` 报告的 `baselines` 字段中列出。
+- `verify` / `inspect --from-release` / `doctor` 会 `HEAD` 校验所有基线对象，不只主基线。
+
+**灰度发布（channel）**：先用 `--channel canary` 发布同一构建，只有配置 `channel: canary` 的客户端能看到它；验证通过后用 `promote` 切到 stable：
+
+```bash
+delta-update promote --bucket cos://your-bucket --version 2.1.0 \
+  --channel stable --key release.key --verify
+```
+
+`promote` 只改写清单的 `channel` 并重签，补丁与对象保持原样，不重新生成补丁；`--verify` 会先 HEAD 校验全部对象（含多基线补丁），缺对象时拒绝切换。清单里**刻意不做百分比灰度**：旧客户端会忽略未知的 rollout 字段而直接全量升级，形不成真正的灰度边界；需要精确划分时用 channel。
 
 `--require-delta` 的语义：对每个 `Modified` 且未被标记为“不可压缩格式”的文件，如果最终策略是 `full`，或补丁体积 ≥ `--delta-max-ratio`，发布失败。显式标记为不可压缩（png/jpg/zip 等）的文件不参与判定。这防止 CI 静默退化为“全量发布”而无人察觉。
 
@@ -246,7 +276,7 @@ delta-update report --history .reports/ --json > coverage.json
 
 1. 扫描 `--to` 目录，递归计算每个文件的 SHA-256 和大小。
 2. 读取 `--from` 目录（若提供），逐文件比对，分类为 `Unchanged` / `Modified` / `Added`。
-3. 对 `Modified` 文件，可压缩的文件走 qbsdiff+zstd，生成 `.tdp` 容器；已压缩格式或超过 `--patch-max-file-size`（默认 64 MiB）的文件直接标记全量。**当前不做文件内分块差分**——超大文件走全量比 OOM 更可靠。
+3. 对 `Modified` 文件，可压缩的文件走 qbsdiff+zstd，生成 `.tdp` 容器；已压缩格式或超过 `--patch-max-file-size`（默认 64 MiB）的文件直接标记全量。**当前不做文件内分块差分**——超大文件走全量比 OOM 更可靠。每个 `--baseline` 目录重复同一过程，补丁键为 `artifacts/<baseline>-to-<version>/...`。
 4. 若候选补丁 ≥ 全量的 `--delta-max-ratio`，降级为全量（`strategy: "full"`）。
 5. 生成 `latest.json`，包含所有文件条目和版本元数据。
 6. 用 `--key` 指定的私钥对**清单原始字节**签名，产出 `.minisig`。

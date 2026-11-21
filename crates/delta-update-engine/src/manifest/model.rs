@@ -155,6 +155,17 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// One patch that upgrades a specific published version to this entry.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct DeltaEntry {
+    /// The client version this patch must be applied to.
+    pub from_version: String,
+    pub strategy: Strategy,
+    pub delta_key: String,
+    pub delta_size: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct FileEntry {
@@ -165,4 +176,44 @@ pub struct FileEntry {
     pub delta_size: Option<u64>,
     pub full_key: Option<String>,
     pub executable: Option<bool>,
+    /// Patches for several baselines, keyed by the client version they start
+    /// from. New publishers list every supported baseline here; clients before
+    /// this field existed ignore it and keep using `delta_key`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deltas: Vec<DeltaEntry>,
+}
+
+impl FileEntry {
+    /// Point `strategy`/`delta_key`/`delta_size` at the patch for a client
+    /// currently running `current_version`.
+    ///
+    /// When `deltas` is present it is authoritative: a client that matches no
+    /// baseline must download the full blob, because a patch built from other
+    /// bytes cannot apply. Manifests without `deltas` keep the legacy single
+    /// patch behavior.
+    pub(crate) fn select_patch(&mut self, current_version: &str) {
+        if self.deltas.is_empty() {
+            return;
+        }
+        let wanted = semver::Version::parse(current_version).ok();
+        let matched = self.deltas.iter().find(|delta| {
+            delta.from_version == current_version
+                || match (&wanted, semver::Version::parse(&delta.from_version)) {
+                    (Some(wanted), Ok(from)) => *wanted == from,
+                    _ => false,
+                }
+        });
+        match matched {
+            Some(delta) => {
+                self.strategy = delta.strategy.clone();
+                self.delta_key = Some(delta.delta_key.clone());
+                self.delta_size = Some(delta.delta_size);
+            }
+            None => {
+                self.strategy = Strategy::Full;
+                self.delta_key = None;
+                self.delta_size = None;
+            }
+        }
+    }
 }

@@ -29,7 +29,7 @@ if (result.available) {
 }
 ```
 
-`describeUpdate` is the only place that encodes "what can the UI do now": `isReady`, `canPrepare`, `canRestart`, `canCancel`, `isBusy`, `isUpdateRequired` and `error`. Gate buttons on those flags instead of comparing state strings (`canCancel` is true only in `Downloading`/`Preparing`, where `cancel_prepare` actually stops work). React 18+ can use the optional hook subpath; its return value already contains the same flags:
+`describeUpdate` is the only place that encodes "what can the UI do now": `isReady`, `canCheck`, `canPrepare`, `canRestart`, `canCancel`, `canSkip`, `isBusy`, `isUpdateRequired` and `error`. Gate buttons on those flags instead of comparing state strings (`canCancel` is true only in `Downloading`/`Preparing`, where `cancel_prepare` actually stops work; `canPrepare` requires an actual offer (`target_version` non-null), stays true in `Cancelled` so the UI can resume, and stays false for a failure whose `error.retryable` is false). React 18+ can use the optional hook subpath; its return value already contains the same flags:
 
 ```tsx
 import { useUpdater } from 'tauri-plugin-delta-update-api/react';

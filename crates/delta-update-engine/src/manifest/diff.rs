@@ -32,10 +32,14 @@ pub struct DiffResult {
 }
 
 /// Classify every remote entry against the local tree and the known-file set.
+///
+/// `current_version` selects the matching patch from `entry.deltas`, so the
+/// reported `download_bytes` is what this exact client will download.
 pub fn diff(
     local: &LocalManifest,
     remote: &Manifest,
     known: &BTreeSet<String>,
+    current_version: &str,
 ) -> Result<DiffResult, EngineError> {
     let mut unchanged = Vec::new();
     let mut modified = Vec::new();
@@ -51,10 +55,12 @@ pub fn diff(
             }
             Some(_) => {
                 require_full_key(path, entry)?;
-                download_bytes = download_bytes.saturating_add(download_size(entry));
+                let mut entry = entry.clone();
+                entry.select_patch(current_version);
+                download_bytes = download_bytes.saturating_add(download_size(&entry));
                 modified.push(ModifiedFile {
                     path: path.clone(),
-                    entry: entry.clone(),
+                    entry,
                 });
             }
             None => {

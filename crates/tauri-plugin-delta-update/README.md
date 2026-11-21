@@ -2,7 +2,7 @@
 
 Tauri 2 插件：把引擎的生命周期接到应用启动/退出，暴露十一个命令与状态事件。
 
-> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；非 Windows 目标在编译期直接失败（`compile_error!`），运行期 `ensure_supported()` 再返回 `E_UNSUPPORTED_PLATFORM` 作为纵深。当前版本为 `1.1.0`。
+> **仅支持 Windows 10+ 桌面**（per-user / per-machine / 便携版）。macOS 签名 `.app`、Linux AppImage/deb/rpm/Flatpak/Snap 不在范围内；非 Windows 目标在编译期直接失败（`compile_error!`），运行期 `ensure_supported()` 再返回 `E_UNSUPPORTED_PLATFORM` 作为纵深。当前版本为 `1.2.0`。
 
 ## 接入
 
@@ -63,7 +63,7 @@ await updater.start();
 插件只发 `tracing` 事件，默认不安装 subscriber。宿主没装日志时（例如尚未接入 `tauri-plugin-log`），启用 `logging` feature 即可看到插件日志：
 
 ```toml
-tauri-plugin-delta-update = { version = "1.1.0", features = ["logging"] }
+tauri-plugin-delta-update = { version = "1.2.0", features = ["logging"] }
 ```
 
 `init()` 与 `run_applier_from_context()` 会自动初始化；级别由 `DELTA_UPDATE_LOG` 控制（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）。如果宿主已经通过 `tracing-subscriber` 安装了 subscriber，这里不会覆盖。宿主用的是 `tauri-plugin-log`（管理 `log` crate）时，插件日志会输出到 stderr，应用日志文件不受影响；要把 `tracing` 事件写进同一个文件，仍需 `tracing` 的 `log` 特性或 `tracing-log` 桥接。

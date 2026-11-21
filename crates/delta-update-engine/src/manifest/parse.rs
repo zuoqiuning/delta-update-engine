@@ -11,6 +11,8 @@ pub const SUPPORTED_SCHEMA: u32 = 1;
 pub const MAX_NOTES_BYTES: usize = 64 * 1024;
 /// Bounds the extra signature fetches a check can trigger.
 pub const MAX_SIGNING_KEY_IDS: usize = 8;
+/// Bounds the number of baseline patches one file may list.
+pub const MAX_DELTAS_PER_FILE: usize = 16;
 
 /// Parse and validate a manifest from its raw bytes.
 ///
@@ -136,6 +138,39 @@ pub fn parse_manifest(raw: &[u8], limits: &Limits) -> Result<Manifest, EngineErr
                 )));
             }
         }
+
+        if entry.deltas.len() > MAX_DELTAS_PER_FILE {
+            return Err(EngineError::ManifestInvalid(format!(
+                "{path}: more than {MAX_DELTAS_PER_FILE} baseline patches"
+            )));
+        }
+        let mut baselines = HashSet::new();
+        for delta in &entry.deltas {
+            semver::Version::parse(&delta.from_version).map_err(|_| {
+                EngineError::ManifestInvalid(format!(
+                    "{path}: delta from_version is not SemVer: {}",
+                    delta.from_version
+                ))
+            })?;
+            if !baselines.insert(delta.from_version.as_str()) {
+                return Err(EngineError::ManifestInvalid(format!(
+                    "{path}: duplicate delta for version {}",
+                    delta.from_version
+                )));
+            }
+            validate_rel_path(&delta.delta_key)?;
+            if delta.strategy.is_full() {
+                return Err(EngineError::ManifestInvalid(format!(
+                    "{path}: a delta entry cannot use the full strategy"
+                )));
+            }
+            if delta.delta_size == 0 || delta.delta_size > limits.max_patch_bytes {
+                return Err(EngineError::ManifestInvalid(format!(
+                    "{path}: delta for {} exceeds the patch object limit",
+                    delta.from_version
+                )));
+            }
+        }
     }
 
     Ok(manifest)
@@ -157,6 +192,81 @@ mod tests {
             "signing_key_ids": ids,
         }))
         .unwrap()
+    }
+
+    fn with_deltas(deltas: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "schema": 1,
+            "version": "2.1.0",
+            "min_client_schema": 1,
+            "files": {
+                "a.txt": {
+                    "sha256": "a".repeat(64),
+                    "size": 10,
+                    "strategy": "full",
+                    "full_key": "blobs/aaa",
+                    "deltas": deltas
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn delta(from: &str, key: &str, size: u64, strategy: &str) -> serde_json::Value {
+        json!({
+            "from_version": from,
+            "strategy": strategy,
+            "delta_key": key,
+            "delta_size": size,
+        })
+    }
+
+    #[test]
+    fn accepts_several_baselines_per_file() {
+        let raw = with_deltas(json!([
+            delta(
+                "1.0.0",
+                "artifacts/1.0.0-to-2.1.0/a.txt.tdp",
+                5,
+                "qbsdiff+zstd"
+            ),
+            delta(
+                "2.0.0",
+                "artifacts/2.0.0-to-2.1.0/a.txt.tdp",
+                3,
+                "qbsdiff+zstd"
+            ),
+        ]));
+        let parsed = parse_manifest(&raw, &Limits::default()).unwrap();
+        assert_eq!(parsed.files["a.txt"].deltas.len(), 2);
+    }
+
+    #[test]
+    fn rejects_malformed_baselines() {
+        for deltas in [
+            json!([delta("nope", "artifacts/x/a.tdp", 5, "qbsdiff+zstd")]),
+            json!([
+                delta("1.0.0", "artifacts/1.0.0-to-2.1.0/a.tdp", 5, "qbsdiff+zstd"),
+                delta("1.0.0", "artifacts/1.0.0-to-2.1.0/b.tdp", 4, "qbsdiff+zstd"),
+            ]),
+            json!([delta("1.0.0", "artifacts/1.0.0-to-2.1.0/a.tdp", 5, "full")]),
+            json!([delta(
+                "1.0.0",
+                "artifacts/1.0.0-to-2.1.0/a.tdp",
+                0,
+                "qbsdiff+zstd"
+            )]),
+            json!([delta("1.0.0", "../escape.tdp", 5, "qbsdiff+zstd")]),
+        ] {
+            let error = parse_manifest(&with_deltas(deltas), &Limits::default()).unwrap_err();
+            assert!(
+                matches!(
+                    error.code(),
+                    "E_MANIFEST_PARSE" | "E_PATH_INVALID" | "E_PATH_ESCAPE"
+                ),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

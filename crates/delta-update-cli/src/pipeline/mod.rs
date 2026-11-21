@@ -20,6 +20,7 @@ pub use crate::commands::doctor::{doctor, simulated_error};
 pub use crate::commands::inspect::inspect_release;
 pub use crate::commands::key_info::key_info;
 pub use crate::commands::migrate::migrate;
+pub use crate::commands::promote::promote;
 pub use crate::commands::release::release;
 pub use crate::commands::report::report_history;
 pub use crate::commands::rollback::rollback;

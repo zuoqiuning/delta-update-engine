@@ -2,6 +2,14 @@
 #
 # The pipeline needs the previous release's build output as --from. In a real
 # workflow, download it from the previous tag's artifact or a build cache.
+#
+# Optional multi-baseline: also download the two or three older build artifacts
+# (build/1.9.0, build/1.8.0, ...) and pass `--baseline <version>=<dir>` for each.
+# Keep the number small: every baseline adds one manifest entry per file.
+#
+# Canary flow: release with --channel canary, then after verification run
+# `delta-update promote --version "$version" --channel stable --verify`
+# instead of building and patching the release again.
 name: release
 
 on:
@@ -43,6 +51,10 @@ jobs:
             --bucket "cos://${{ vars.COS_BUCKET }}" \
             --key "$RUNNER_TEMP/release.key" \
             --pipeline --report release-report.json
+          # Add one line per retained older build to upgrade skipped versions
+          # with a patch instead of a full download:
+          #   --baseline "1.9.0=build/1.9.0" \
+          #   --baseline "1.8.0=build/1.8.0" \
 
       - uses: actions/upload-artifact@v4
         with:

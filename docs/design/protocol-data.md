@@ -133,7 +133,21 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
   "delta_key": "artifacts/2.0.0-to-2.1.0/App.exe.tdp",
   "delta_size": 1832,
   "full_key": "blobs/<sha256>",
-  "executable": true
+  "executable": true,
+  "deltas": [
+    {
+      "from_version": "2.0.0",
+      "strategy": "qbsdiff+zstd",
+      "delta_key": "artifacts/2.0.0-to-2.1.0/App.exe.tdp",
+      "delta_size": 1832
+    },
+    {
+      "from_version": "1.9.0",
+      "strategy": "qbsdiff+zstd",
+      "delta_key": "artifacts/1.9.0-to-2.1.0/App.exe.tdp",
+      "delta_size": 9120
+    }
+  ]
 }
 ```
 
@@ -146,6 +160,13 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
 | `delta_size` | u64        | 条件 | 补丁对象字节数。**存在 `delta_key` 时必填**，用于大小上限校验、进度与并发调度。 |
 | `full_key`   | string     | 条件 | 全量对象键。**`Added`/`Modified` 必填；发布 CLI 对所有条目（含 `Unchanged`）都生成 `blobs/<sha256>`，用于跨版本与损坏修复。** |
 | `executable` | bool       | 否   | 该文件是否为 PE/ELF 可执行体，供审计与诊断用。默认为 `false`。 |
+| `deltas`     | array      | 否   | 多基线补丁列表，每项 `{from_version, strategy, delta_key, delta_size}`。最多 16 项，`from_version` 不得重复且必须是 SemVer。 |
+
+**多基线选择规则**：条目存在 `deltas` 时，客户端只使用 `from_version` 等于**当前运行版本**的那一项；没有匹配项时直接下载 `full_key`，不会尝试其他基线的补丁（来源字节不同，补丁必然失败）。条目没有 `deltas` 时沿用 `delta_key` 的单基线语义。旧客户端忽略 `deltas`，继续读 `delta_key`，因此发布端必须同时写这两组字段。
+
+`deltas` 中的策略不能是 `"full"`，`delta_size` 必须为正且不超过单个补丁对象上限；违反任一条都返回 `E_MANIFEST_PARSE`（路径非法时为 `E_PATH_INVALID` / `E_PATH_ESCAPE`）。
+
+**体积约束**：每个 `deltas` 项约占 120–200 字节，清单总大小上限 8 MiB。一个 2 万文件的安装树，每增加一个基线大约增加 3–4 MB 清单；实际可用基线数受此限制，发布 CLI 在超过上限时直接失败，并在接近 75% 时警告。
 
 **为什么 `full_key` 是条件必填**：它是所有变化文件与本地损坏文件的最终修复来源。**发布 CLI 会为每个条目（包括 `Unchanged`）生成 `full_key`，指向内容寻址的 `blobs/<sha256>`**。客户端对 `Added`/`Modified` 或本地哈希不匹配的条目要求 `full_key`；缺失时返回 `E_MANIFEST_PARSE`。旧版发布端如果只为变化文件生成 full_key，只能支持相邻版本且本地文件树完全健康；不建议继续这样做。
 
@@ -176,7 +197,7 @@ artifacts/<from>-to-<to>/<relative_path>.tdp
 | 本地状态       | 远程条目                         | 分类        | 行为                              |
 | -------------- | -------------------------------- | ----------- | --------------------------------- |
 | 存在，哈希一致 | 存在                             | `Unchanged` | 不下载、不替换；`strategy`/`delta_key` 被忽略 |
-| 存在，哈希不同 | 存在                             | `Modified`  | 有 `delta_key` 走差分，否则走全量 |
+| 存在，哈希不同 | 存在                             | `Modified`  | 有匹配当前版本的 `deltas` 项（或旧式 `delta_key`）走差分，否则走全量 |
 | 不存在         | 存在                             | `Added`     | **直接走全量**，不进入差分管线    |
 | 存在           | 不存在，且曾出现在任一历史清单   | `Removed`   | 移入 `.trash/`，不物理删除        |
 | 存在           | 不存在，且从未出现在任何历史清单 | `Untracked` | **不处理**（保护用户数据）        |

@@ -17,6 +17,18 @@ pub struct ManifestFile {
     pub delta_size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_key: Option<String>,
+    /// One patch per supported baseline. `delta_key`/`delta_size` stay the
+    /// primary baseline for clients that predate this field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deltas: Vec<ManifestDelta>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestDelta {
+    pub from_version: String,
+    pub strategy: String,
+    pub delta_key: String,
+    pub delta_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +135,7 @@ mod tests {
                 delta_key: None,
                 delta_size: None,
                 full_key: Some("artifacts/full/1.0.0/b.txt".into()),
+                deltas: Vec::new(),
             },
         );
         files.insert(
@@ -134,6 +147,7 @@ mod tests {
                 delta_key: None,
                 delta_size: None,
                 full_key: None,
+                deltas: Vec::new(),
             },
         );
         let first = build(ManifestInput {

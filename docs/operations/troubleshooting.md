@@ -12,7 +12,7 @@
 **最快方式**：给插件启用 `logging` feature。`init()` 与 `run_applier_from_context()` 会在进程没有 subscriber 时自动装一个 stderr subscriber，级别由 `DELTA_UPDATE_LOG` 控制（`error`/`warn`/`info`/`debug`/`trace`，默认 `info`）：
 
 ```toml
-tauri-plugin-delta-update = { version = "1.1.0", features = ["logging"] }
+tauri-plugin-delta-update = { version = "1.2.0", features = ["logging"] }
 ```
 
 ```powershell

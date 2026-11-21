@@ -2,7 +2,7 @@
 
 面向 **Windows 10+ 桌面 Tauri 2** 的文件级增量更新内核：只下载变化的文件，应用退出后由独立替换进程完成替换，下次启动即为新版本；失败可回滚，签名先于落盘。
 
-> **`1.1.0` 已发布** — 公共 API 保持兼容。本版新增：`init` 默认的 `manage-confirm` 权限集、Rust 侧健康确认、多签名与单对象信封、`skip_version`、诊断包更新史、并行下载与校验。接入反馈请用 [反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml)。
+> **`1.2.0` 已发布** — 公共 API 保持兼容。本版新增：多基线清单（`deltas`，跳版本升级也能走差分）、`release --baseline`、`promote`（canary → stable 不重打包）、`init`/`migrate` 自动写编辑器 schema、状态 payload 带 `target_version`/`skipped_version`，后台检查失败不再打断界面。接入反馈请用 [反馈模板](https://github.com/zuoqiuning/delta-update-engine/issues/new?template=rc-feedback.yml)。
 
 | 支持矩阵 | |
 | --- | --- |
@@ -16,12 +16,12 @@
 ## 安装
 
 ```bash
-cargo add delta-update-engine@1.1.0
-cargo add tauri-plugin-delta-update@1.1.0
+cargo add delta-update-engine@1.2.0
+cargo add tauri-plugin-delta-update@1.2.0
 pnpm add tauri-plugin-delta-update-api
 ```
 
-npm 包的 `latest` 指向当前稳定版；需要锁定次要版本时写 `tauri-plugin-delta-update = "1.1"`。
+npm 包的 `latest` 指向当前稳定版；需要锁定次要版本时写 `tauri-plugin-delta-update = "1.2"`。
 
 ## 快速接入（零前端代码）
 
@@ -33,7 +33,7 @@ delta-update doctor --check-config --dir .
 
 ```toml
 # src-tauri/Cargo.toml
-tauri-plugin-delta-update = "1.1.0"
+tauri-plugin-delta-update = "1.2.0"
 ```
 
 ```rust

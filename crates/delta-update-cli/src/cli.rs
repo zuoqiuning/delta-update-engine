@@ -50,6 +50,8 @@ pub enum Command {
     Serve(ServeArgs),
     /// Point `latest.json` at an already published version (incident response).
     Rollback(RollbackArgs),
+    /// Move an already published version to another channel (canary → stable).
+    Promote(PromoteArgs),
 }
 
 /// Generate patches, manifest and signature, then publish.
@@ -85,6 +87,12 @@ pub struct ReleaseArgs {
     /// Previous version (SemVer); required with --from.
     #[arg(long)]
     pub from_version: Option<String>,
+    /// Extra patch baseline as `VERSION=DIR`. Repeatable.
+    ///
+    /// Each baseline adds a patch per file, so clients several versions behind
+    /// can still upgrade with a delta instead of downloading full files.
+    #[arg(long = "baseline", value_name = "VERSION=DIR")]
+    pub baselines: Vec<String>,
     /// First release: every file is uploaded in full.
     #[arg(long)]
     pub initial: bool,
@@ -371,6 +379,9 @@ pub struct InitArgs {
         value_parser = ["default", "manage", "manage-confirm", "monitor"]
     )]
     pub permission_set: String,
+    /// Emit one machine-readable JSON object instead of the human walkthrough.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -382,6 +393,9 @@ pub struct MigrateArgs {
     /// existing files.
     #[arg(long)]
     pub write: bool,
+    /// Emit one machine-readable JSON object instead of the human plan.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -405,6 +419,44 @@ pub struct ServeArgs {
     /// Address to bind. Loopback only unless you explicitly change it.
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
+}
+
+/// Rewrite the channel of an already published manifest and make it `latest`.
+///
+/// Patches and objects stay exactly as released, so promotion costs one
+/// signature instead of a full patch regeneration.
+#[derive(Debug, Args)]
+pub struct PromoteArgs {
+    /// Object store: cos://bucket, s3://bucket, or a local directory.
+    #[arg(long)]
+    pub bucket: String,
+    /// Published version to promote.
+    #[arg(long)]
+    pub version: String,
+    /// Target channel written into the manifest and `latest`.
+    #[arg(long, default_value = "stable")]
+    pub channel: String,
+    /// minisign secret key that signed the release; used to re-sign the rewrite.
+    #[arg(long)]
+    pub key: PathBuf,
+    /// Extra minisign secret keys; must match the manifest `signing_key_ids`.
+    #[arg(long = "additional-signing-key", value_name = "PATH")]
+    pub additional_signing_keys: Vec<PathBuf>,
+    /// COS region (defaults to COS_REGION).
+    #[arg(long)]
+    pub region: Option<String>,
+    /// Prefix used by release for object keys.
+    #[arg(long)]
+    pub prefix: Option<String>,
+    /// Print what would be published without uploading.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Audit every referenced object before switching `latest`.
+    #[arg(long)]
+    pub verify: bool,
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Reuse an already published manifest instead of rebuilding patches.

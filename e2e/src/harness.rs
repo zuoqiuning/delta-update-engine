@@ -438,6 +438,7 @@ pub async fn publish_with_cli(
         additional_signing_keys: Vec::new(),
         from: Some(from.to_path_buf()),
         from_version: Some(from_version.to_string()),
+        baselines: Vec::new(),
         initial: false,
         rollback,
         channel: CHANNEL.into(),

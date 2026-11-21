@@ -9,11 +9,36 @@ use std::path::Path;
 use anyhow::Context;
 use serde_json::Value;
 
+/// Editor schema for `plugins.delta-update`, embedded so `init`/`migrate` can
+/// drop it next to `tauri.conf.json` without shipping loose files. A test keeps
+/// it byte-identical to `docs/reference/config.schema.json`.
+const CONFIG_SCHEMA: &str = include_str!("../assets/config.schema.json");
+
+/// Write `src-tauri/delta-update.schema.json` unless it already exists.
+pub(crate) fn write_schema(dir: &Path, quiet: bool) -> anyhow::Result<bool> {
+    let src_tauri = dir.join("src-tauri");
+    if !src_tauri.is_dir() {
+        anyhow::bail!(
+            "--write requires {}; run it from a Tauri project root",
+            src_tauri.display()
+        );
+    }
+    write_new_file(
+        &src_tauri.join("delta-update.schema.json"),
+        CONFIG_SCHEMA,
+        quiet,
+    )
+}
+
 /// Write `src-tauri/capabilities/delta-update.json` unless it already exists.
 ///
 /// Returns `true` when a file was written. The identifier must be unique, so it
 /// is forced to `delta-update` regardless of the caller's template.
-pub(crate) fn write_capability(dir: &Path, permissions: &Value) -> anyhow::Result<bool> {
+pub(crate) fn write_capability(
+    dir: &Path,
+    permissions: &Value,
+    quiet: bool,
+) -> anyhow::Result<bool> {
     let src_tauri = dir.join("src-tauri");
     if !src_tauri.is_dir() {
         anyhow::bail!(
@@ -26,7 +51,9 @@ pub(crate) fn write_capability(dir: &Path, permissions: &Value) -> anyhow::Resul
         .with_context(|| format!("create {}", capabilities_dir.display()))?;
     let path = capabilities_dir.join("delta-update.json");
     if path.exists() {
-        println!("已存在 {}，未覆盖。", path.display());
+        if !quiet {
+            println!("已存在 {}，未覆盖。", path.display());
+        }
         return Ok(false);
     }
     let mut capability = permissions.clone();
@@ -36,7 +63,9 @@ pub(crate) fn write_capability(dir: &Path, permissions: &Value) -> anyhow::Resul
         serde_json::to_vec_pretty(&capability).context("serialize capability")?,
     )
     .with_context(|| format!("write {}", path.display()))?;
-    println!("已写入 {}", path.display());
+    if !quiet {
+        println!("已写入 {}", path.display());
+    }
     Ok(true)
 }
 
@@ -46,7 +75,7 @@ pub(crate) fn write_capability(dir: &Path, permissions: &Value) -> anyhow::Resul
 /// hand-edited keys are never clobbered. The first rewrite keeps a `.bak` copy
 /// of the original file. Key order may change because `serde_json` re-serializes
 /// the document; values are preserved.
-pub(crate) fn merge_plugin_config(dir: &Path, config: &Value) -> anyhow::Result<bool> {
+pub(crate) fn merge_plugin_config(dir: &Path, config: &Value, quiet: bool) -> anyhow::Result<bool> {
     let json5 = ["src-tauri/tauri.conf.json5", "tauri.conf.json5"]
         .into_iter()
         .map(|name| dir.join(name))
@@ -85,7 +114,9 @@ pub(crate) fn merge_plugin_config(dir: &Path, config: &Value) -> anyhow::Result<
         .as_object_mut()
         .with_context(|| format!("plugins in {} must be an object", path.display()))?;
     if plugins.contains_key("delta-update") {
-        println!("{} 已有 plugins.delta-update，未修改。", path.display());
+        if !quiet {
+            println!("{} 已有 plugins.delta-update，未修改。", path.display());
+        }
         return Ok(false);
     }
     plugins.insert("delta-update".into(), section);
@@ -97,11 +128,13 @@ pub(crate) fn merge_plugin_config(dir: &Path, config: &Value) -> anyhow::Result<
     let mut bytes = serde_json::to_vec_pretty(&value).context("serialize tauri.conf.json")?;
     bytes.push(b'\n');
     write_atomic(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
-    println!(
-        "已合并 plugins.delta-update 到 {}（原文件备份：{}）",
-        path.display(),
-        backup.display()
-    );
+    if !quiet {
+        println!(
+            "已合并 plugins.delta-update 到 {}（原文件备份：{}）",
+            path.display(),
+            backup.display()
+        );
+    }
     Ok(true)
 }
 
@@ -116,15 +149,19 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Write a file unless it exists; user edits are never clobbered.
-pub(crate) fn write_new_file(path: &Path, contents: &str) -> anyhow::Result<bool> {
+pub(crate) fn write_new_file(path: &Path, contents: &str, quiet: bool) -> anyhow::Result<bool> {
     if path.exists() {
-        println!("已存在 {}，未覆盖。", path.display());
+        if !quiet {
+            println!("已存在 {}，未覆盖。", path.display());
+        }
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
     std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
-    println!("已写入 {}", path.display());
+    if !quiet {
+        println!("已写入 {}", path.display());
+    }
     Ok(true)
 }

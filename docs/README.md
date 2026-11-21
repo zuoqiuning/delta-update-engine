@@ -12,6 +12,7 @@
 
 - [API 参考](reference/api.md)：索引；引擎见[api-engine](reference/api-engine.md)、错误见[api-errors](reference/api-errors.md)、插件见[api-plugin](reference/api-plugin.md)、CLI 见[api-cli](reference/api-cli.md)。
 - [CLI 契约](cli-contract.md)：退出码、`--json` 信封与发布报告 schema（CI 依赖）。
+- [插件配置 JSON Schema](reference/config.schema.json)：复制进 `src-tauri/` 后供编辑器补全与校验 `plugins.delta-update`。
 - [技术栈](reference/tech-stack.md)：依赖选型、版本基线与验证项。
 - [版本与兼容承诺](reference/versioning.md)：crate SemVer、schema 承诺、密钥轮换。
 - [版本兼容与迁移](reference/compatibility.md)：schema、密钥、策略与配置的演进规则。

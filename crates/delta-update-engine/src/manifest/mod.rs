@@ -9,5 +9,5 @@ pub mod parse;
 pub use diff::{diff, DiffResult, LocalFile, LocalManifest, ModifiedFile};
 pub use hash_cache::HashCache;
 pub use history::KnownFiles;
-pub use model::{FileEntry, Manifest, Strategy};
+pub use model::{DeltaEntry, FileEntry, Manifest, Strategy};
 pub use parse::{parse_manifest, SUPPORTED_SCHEMA};

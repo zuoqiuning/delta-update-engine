@@ -36,6 +36,26 @@ delta-update release \
 
 `--pipeline` 依次执行生成、自测（apply + rollback）、上传、审计；`--watch 600` 在审计后继续检查 10 分钟，覆盖 CDN 传播延迟。任一步失败即停止。
 
+### 3.1 可选：多基线（跳版本升级）
+
+只保留最近两三个版本的构建产物，就能让"跳版本"的用户也走差分。把旧产物下载到 `build/<version>/`，为每个旧版本加一行 `--baseline`：
+
+```bash
+delta-update release \
+  --from build/1.9.0 --from-version 1.9.0 \
+  --baseline "1.8.0=build/1.8.0" \
+  --baseline "1.7.0=build/1.7.0" \
+  --to target/release --version 2.0.0 \
+  --bucket "cos://$COS_BUCKET" --key "$RUNNER_TEMP/release.key" \
+  --pipeline --report .delta-update-reports/
+```
+
+CI 侧建议：
+
+- 用 artifact/cache 保留最近 2–3 个已发布版本的构建产物；再多收益递减，清单也会变大（每文件每基线一项，客户端上限 8 MiB）。
+- 额外基线按顺序生成，构建时间线性增加；峰值内存仍由 `--jobs` 控制。
+- `release-report.json` 的 `baselines[]` 给出每个基线的补丁数与客户端节省，用它决定下个版本是否还保留该基线。
+
 ## 4. 报告归档
 
 `--report .delta-update-reports/` 会写 `.delta-update-reports/<version>.json`。把整个目录作为 CI artifact 保存，之后可以：
@@ -89,6 +109,7 @@ delta-update doctor --endpoint https://cdn.example.com/manifests/latest.json \
 
 - [ ] `release.key` 只存在于 CI secret，工作区文件在 job 结束后删除
 - [ ] `--from` 指向真正的上一版构建产物
+- [ ] 多基线：旧版本产物可用，且基线数量在清单体积预算内
 - [ ] `--report` 目录作为 artifact 归档
 - [ ] `--watch` 的窗口覆盖 CDN 传播时间
 - [ ] 退出码 2 不会自动重试

@@ -89,6 +89,7 @@ fn fixture() -> Fixture {
                 delta_key: None,
                 delta_size: None,
                 full_key: Some("artifacts/full/2.0.0/a.txt".into()),
+                deltas: Vec::new(),
             },
         )]),
     })

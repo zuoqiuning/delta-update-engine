@@ -42,6 +42,8 @@
 
 **注意**：`staging_dir` 和 `journal_dir` 必须在用户有写权限的位置，且**不能在安装根目录之内**。可以放到其他盘；跨卷时替换进程会自动改用“复制到目标目录临时文件 + 原子 rename”，不会破坏原子性，但会多一次复制开销。
 
+**编辑器补全**：`delta-update init --write` / `--merge-config`（以及 `migrate --write`）会自动把 [config.schema.json](../reference/config.schema.json) 写到 `src-tauri/delta-update.schema.json`，并在配置里加 `"$schema": "./delta-update.schema.json"`，无需手工复制即可获得字段补全、默认值与取值范围提示；`$schema` 不会被当成未知字段。
+
 
 ## 10. 接入验收清单
 

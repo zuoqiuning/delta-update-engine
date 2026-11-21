@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use delta_update_cli::cli::{InspectArgs, ReleaseArgs, RollbackArgs, VerifyArgs};
+use delta_update_cli::cli::{InspectArgs, PromoteArgs, ReleaseArgs, RollbackArgs, VerifyArgs};
 use delta_update_cli::pipeline;
 use delta_update_cli::publisher::fs::FsPublisher;
 use delta_update_cli::publisher::Publisher;
@@ -74,6 +74,7 @@ fn release_args(
         additional_signing_keys: Vec::new(),
         from: Some(fixture.from.clone()),
         from_version: from_version.map(str::to_string),
+        baselines: Vec::new(),
         initial: false,
         rollback,
         channel: "stable".into(),
@@ -97,6 +98,21 @@ fn release_args(
     }
 }
 
+fn promote_args(fixture: &Fixture, version: &str, channel: &str, dry_run: bool) -> PromoteArgs {
+    PromoteArgs {
+        bucket: fixture.publish.display().to_string(),
+        version: version.to_string(),
+        channel: channel.to_string(),
+        key: fixture.key.clone(),
+        additional_signing_keys: Vec::new(),
+        region: None,
+        prefix: None,
+        dry_run,
+        verify: true,
+        json: false,
+    }
+}
+
 fn publish_previous_source(fixture: &Fixture) {
     let publisher = FsPublisher::new(&fixture.publish);
     for path in ["bin/app.exe", "resources/icon.png"] {
@@ -115,6 +131,147 @@ fn self_test_applies_and_rolls_back_the_generated_update() {
     let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, true);
     args.self_test = true;
     pipeline::release(&args).unwrap();
+}
+
+#[test]
+fn release_emits_patches_for_every_baseline() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    let older = fixture._temp.path().join("older");
+    std::fs::create_dir_all(older.join("bin")).unwrap();
+    let mut oldest = b"version zero payload".to_vec();
+    oldest.extend(std::iter::repeat_n(b'c', 8 * 1024));
+    std::fs::write(older.join("bin/app.exe"), &oldest).unwrap();
+
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
+    args.baselines = vec![format!("0.5.0={}", older.display())];
+    args.pipeline = true;
+    args.report = fixture._temp.path().join("report.json");
+    pipeline::release(&args).unwrap();
+
+    let report: Value = serde_json::from_slice(&std::fs::read(&args.report).unwrap()).unwrap();
+    let baselines = report["baselines"].as_array().unwrap();
+    assert_eq!(baselines.len(), 1);
+    assert_eq!(baselines[0]["version"], "0.5.0");
+    assert!(
+        baselines[0]["client"]["net_savings_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0,
+        "a patch baseline must report its own client saving"
+    );
+
+    let publisher = FsPublisher::new(&fixture.publish);
+    let manifest_bytes = publisher.get("manifests/latest.json").unwrap();
+    let manifest = parse_manifest(&manifest_bytes, &Limits::default()).unwrap();
+    let app = &manifest.files["bin/app.exe"];
+    let baselines: Vec<&str> = app.deltas.iter().map(|d| d.from_version.as_str()).collect();
+    assert!(baselines.contains(&"1.0.0"), "{baselines:?}");
+    assert!(baselines.contains(&"0.5.0"), "{baselines:?}");
+    for delta in &app.deltas {
+        let bytes = publisher.get(&delta.delta_key).unwrap();
+        assert_eq!(bytes.len() as u64, delta.delta_size, "{}", delta.delta_key);
+    }
+    // The legacy fields still describe the primary baseline for old clients.
+    assert_eq!(app.strategy.as_str(), "qbsdiff+zstd");
+    assert!(app.delta_key.is_some());
+
+    // `verify` HEAD-checks every baseline object, not just the primary.
+    let verify_args = VerifyArgs {
+        bucket: fixture.publish.display().to_string(),
+        version: "2.0.0".into(),
+        public_key: fixture.public_key.clone(),
+        sample: 3,
+        region: None,
+        prefix: None,
+    };
+    pipeline::verify(&verify_args).unwrap();
+}
+
+#[test]
+fn baseline_requires_a_primary_baseline() {
+    let fixture = fixture();
+    let mut args = release_args(&fixture, "2.0.0", None, false, true);
+    args.from = None;
+    args.from_version = None;
+    args.baselines = vec![format!("0.5.0={}", fixture.from.display())];
+    assert!(pipeline::release(&args).is_err());
+}
+
+#[test]
+fn baseline_flag_requires_version_and_directory() {
+    let fixture = fixture();
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, true);
+    args.baselines = vec!["0.5.0".into()];
+    assert!(pipeline::release(&args).is_err());
+}
+
+#[test]
+fn promote_moves_a_canary_release_to_stable() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
+    args.channel = "canary".into();
+    pipeline::release(&args).unwrap();
+
+    pipeline::promote(&promote_args(&fixture, "2.0.0", "stable", false)).unwrap();
+
+    let publisher = FsPublisher::new(&fixture.publish);
+    let bytes = publisher.get("manifests/latest.json").unwrap();
+    let parsed = parse_manifest(&bytes, &Limits::default()).unwrap();
+    assert_eq!(parsed.channel.as_deref(), Some("stable"));
+    assert_eq!(publisher.get("manifests/2.0.0.json").unwrap(), bytes);
+    let signature = publisher.get("manifests/latest.json.minisig").unwrap();
+    delta_update_engine::crypto::verify_manifest(
+        &bytes,
+        std::str::from_utf8(&signature).unwrap(),
+        std::slice::from_ref(&fixture.public_base64),
+    )
+    .unwrap();
+    let envelope: Value =
+        serde_json::from_slice(&publisher.get("manifests/latest.envelope.json").unwrap()).unwrap();
+    assert_eq!(
+        envelope["manifest"].as_str().unwrap(),
+        std::str::from_utf8(&bytes).unwrap()
+    );
+}
+
+#[test]
+fn promote_refuses_a_key_that_did_not_sign_the_release() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
+    args.channel = "canary".into();
+    pipeline::release(&args).unwrap();
+
+    let other = fixture._temp.path().join("other.key");
+    let keypair = minisign::KeyPair::generate_encrypted_keypair(Some(String::new())).unwrap();
+    std::fs::write(&other, keypair.sk.to_box(None).unwrap().to_bytes()).unwrap();
+    let mut promote = promote_args(&fixture, "2.0.0", "stable", false);
+    promote.key = other;
+    assert!(pipeline::promote(&promote).is_err());
+
+    let publisher = FsPublisher::new(&fixture.publish);
+    let parsed = parse_manifest(
+        &publisher.get("manifests/latest.json").unwrap(),
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(parsed.channel.as_deref(), Some("canary"));
+}
+
+#[test]
+fn promote_dry_run_does_not_touch_latest() {
+    let fixture = fixture();
+    publish_previous_source(&fixture);
+    let mut args = release_args(&fixture, "2.0.0", Some("1.0.0"), false, false);
+    args.channel = "canary".into();
+    pipeline::release(&args).unwrap();
+
+    let publisher = FsPublisher::new(&fixture.publish);
+    let before = publisher.get("manifests/latest.json").unwrap();
+    pipeline::promote(&promote_args(&fixture, "2.0.0", "stable", true)).unwrap();
+    assert_eq!(publisher.get("manifests/latest.json").unwrap(), before);
 }
 
 #[test]

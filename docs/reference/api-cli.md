@@ -18,6 +18,9 @@ delta-update inspect    # 离线解码本地 journal 目录，或审计已发布
 delta-update init       # 打印插件配置与 capability 片段；`--write` 生成 capabilities/delta-update.json
 delta-update migrate    # 从官方 tauri-plugin-updater 打印迁移计划；--write 生成 capability 与迁移指南
 delta-update report     # 汇总 release --pipeline 的历史报告，查看增量覆盖率趋势
+delta-update promote    # 把已发布版本切到另一个 channel（canary → stable），只改 channel 并重签
+delta-update rollback   # 让 latest 指回已发布版本（事故响应）
+delta-update serve      # 本地 HTTP 演示服务
 ```
 
 ### 5.2 `release` 参数
@@ -30,6 +33,7 @@ delta-update report     # 汇总 release --pipeline 的历史报告，查看增�
 --additional-signing-key <PATH> 附加私钥，可重复；为每把签名并写入 signing_key_ids
 --from <DIR>            增量发布的基准目录；省略时等价于 --initial
 --from-version <SEMVER> 基准版本号；提供 --from 时必填
+--baseline <VERSION=DIR> 额外补丁基线，可重复，需同时提供 --from；写入清单 deltas
 --initial               首次发布，所有文件走全量
 --rollback              生成 rollback: true 的降级清单（必须提供 --from）
 --channel <NAME>        默认 stable
@@ -104,14 +108,16 @@ init:
 --public-key <KEY>      受信公钥，可重复（轮换用）；至少一把
 --signing-key <PATH>    从私钥派生公钥，可重复；免去手工复制 base64
 --channel <NAME>        默认 stable
---write                 生成 src-tauri/capabilities/delta-update.json（不改 tauri.conf.json）
+--write                 生成 capability 与编辑器 schema（不改 tauri.conf.json）
 --merge-config          把 plugins.delta-update 合并进 tauri.conf.json 并写 capability；已有该段不覆盖，原文件保留 .bak
 --auto                  写入 auto_apply/auto_confirm = true：无需前端代码即可自动检查、退出替换、自动确认
 --permission-set <SET>  manage-confirm（默认）/ manage / monitor / default
+--json                  stdout 只输出一个 JSON 对象（配置、写入结果、警告）
 
 migrate:
 --dir <DIR>             项目根目录，默认 .
---write                 生成 src-tauri/capabilities/delta-update.json 与 delta-update-migration.md
+--write                 生成 capability、编辑器 schema 与 delta-update-migration.md
+--json                  stdout 只输出一个 JSON 对象（配置、写入结果、迁移指南）
 
 serve:
 --dir <DIR>             `release --bucket <DIR>` 写出的目录
@@ -154,6 +160,18 @@ diff before.txt after.txt
 | 3 | 内部错误 | 引擎不变量被破坏，需要报告 |
 
 `inspect --journal-dir` 的 `1`/`2` 语义与上表对齐：`1` 是“重启即可恢复”，`2` 是“需要人工介入”。任何 `--json` 输出的顶层都包含 `"v": 1` 与 `"tool": "delta-update-cli"`，调用方应据此判断格式版本。
+
+### 5.4 `promote` / `rollback`
+
+```bash
+delta-update promote --bucket cos://your-bucket --version 2.1.0 \
+  --channel stable --key release.key --verify
+delta-update rollback --bucket cos://your-bucket --to-version 2.0.0 --key release.key
+```
+
+`promote` 把已发布版本切到另一个 channel（典型流程：先 `release --channel canary`，验证后 `promote --channel stable`）。它只改写清单的 `channel`、重签并重写 `latest`/envelope/SBOM，**不重新生成补丁**；`--verify` 在切换前 HEAD 校验全部对象（含多基线补丁），缺对象时拒绝提升。多签名发布必须用 `--additional-signing-key` 传入与清单 `signing_key_ids` 完全相同的集合，否则报错。`--dry-run` 不上传，`--json` 输出 `{v, tool, version, from_channel, channel, manifest_bytes, signatures, dry_run}`。
+
+`rollback` 只把 `latest` 指回已发布版本并标记 `rollback: true`，版本化清单保持不变。
 
 ## 6. Feature Flags
 

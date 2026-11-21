@@ -33,8 +33,9 @@
 
 | 字段                       | 默认                                        | 语义                                      |
 | -------------------------- | ------------------------------------------- | ----------------------------------------- |
-| `crash_loop_threshold`     | `2`                                         | 启动尝试计数超过该值即回滚（见 §9.2）     |
+| `crash_loop_threshold`     | `3`                                         | 启动尝试计数超过该值即回滚（见 §9.2）     |
 | `confirm_delay_ms`         | `3000`                                      | `auto_confirm` 的延迟；0 表示不自动确认   |
+| `exit_grace_period_secs`   | `10`                                        | 正常退出超过该时长，抵消一次未确认启动    |
 | `check_interval_secs`      | 空（关闭）                                  | 定时 check + prepare 间隔，最小 60 秒     |
 | `staging_dir`              | `app_local_data_dir()/delta-update/staging/` | 暂存区；跨卷时自动降级为复制+原子替换     |
 | `journal_dir`              | `app_local_data_dir()/delta-update/journal/` | Journal 与锁文件目录                     |
@@ -50,6 +51,7 @@
 | `allow_insecure_http`      | `false`                                     | 仅本地测试；生产必须为 `false`            |
 | `proxy`                    | 空                                          | HTTP/SOCKS 代理 URL，企业内网使用          |
 | `headers`                  | 空                                          | 附加到清单/签名请求的请求头；不发送到对象下载 |
+| `signing_headers`          | 空                                          | 只发给预签名服务的请求头，不会转发给对象主机 |
 
 ### 9.1 配置校验时机
 
@@ -62,7 +64,7 @@
 - `staging_dir` / `journal_dir` 位于安装根目录之内（会把更新素材暴露给替换操作）。
 - `install_dir` 不存在、不是目录、不是绝对路径，或在 release 构建中不等于当前 exe 父目录。
 
-**未知字段**：插件配置与清单都不启用 `deny_unknown_fields`，未知字段被忽略；插件配置中的未知字段会额外输出一条警告日志，便于发现拼写错误。`key_rotation` 目前不生效，出现在配置中时只警告。
+**未知字段**：插件配置与清单都不启用 `deny_unknown_fields`，未知字段被忽略；插件配置中的未知字段会额外输出一条警告日志，便于发现拼写错误。`$schema` 是编辑器补全提示（见 §9.6），不会被当成未知字段。`key_rotation` 目前不生效，出现在配置中时只警告。
 
 ### 9.2 崩溃循环判定
 
@@ -72,7 +74,7 @@ if attempts > crash_loop_threshold: 触发回滚
 confirm_healthy(): attempts = 0
 ```
 
-默认 `crash_loop_threshold = 2` 的含义是：**连续两次启动都没有确认健康，第三次启动时回滚**。阈值 `1` 表示第二次启动即回滚。阈值不随更新重置——持续崩溃的旧版本同样会被检测。
+默认 `crash_loop_threshold = 3` 的含义是：**连续三次启动都没有确认健康，第四次启动时回滚**。阈值 `1` 表示第二次启动即回滚。阈值不随更新重置——持续崩溃的旧版本同样会被检测。
 
 **回滚成功后必须把 `attempts` 重置为 0**，否则旧版本在下一次启动时会再次满足 `attempts > threshold`，触发一次无素材可用的“空回滚”。回滚完成同时记录 `skipped_version`。
 
@@ -146,6 +148,27 @@ Content-Type: application/json
 - `ttl_seconds` 上限 900 秒；服务端可以返回更短的有效期。
 - 客户端在 URL 到期前 60 秒主动刷新；刷新失败时若当前 URL 仍有效则继续使用，否则返回 `E_NETWORK_SIGNING_SERVICE`。
 - 签名服务只返回 URL，**不参与验签**。验签始终在客户端完成，服务端被攻破也无法注入未签名字节。
+
+### 9.6 编辑器自动补全（JSON Schema）
+
+[`config.schema.json`](../reference/config.schema.json) 描述完整的 `plugins.delta-update` 字段、类型、默认值与取值范围。`delta-update init --write`、`init --merge-config` 与 `migrate --write` 会自动把它写到 `src-tauri/delta-update.schema.json` 并加上 `$schema`；手工接入时把两者复制过去即可。之后 VS Code / Cursor / JetBrains 就会给出补全与错误提示：
+
+```json
+{
+  "plugins": {
+    "delta-update": {
+      "$schema": "./delta-update.schema.json",
+      "config_version": 1,
+      "endpoint": "https://cdn.example.com/manifests/latest.json",
+      "signing_public_keys": ["RWQ…"]
+    }
+  }
+}
+```
+
+`$schema` 是编辑器提示，不是插件选项：插件与 `doctor --check-config` 都接受它，且不会把它当成未知字段告警。schema 的 `additionalProperties` 为 `true`，旧插件遇到未来新增的字段仍能启动。
+
+schema 由测试锁定：`config_schema` 断言属性集合与 `PluginConfig` 完全一致、`default` 与运行期默认值一致、`required` 只有三个必填键，字段增删不会让两份定义静默分叉。
 
 
 ## 10. Schema 版本演进规则

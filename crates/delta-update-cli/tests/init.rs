@@ -84,8 +84,13 @@ fn merge_config_writes_section_backup_and_capability() {
     assert_eq!(merged["plugins"]["other"]["keep"], true);
     assert_eq!(merged["plugins"]["delta-update"]["auto_apply"], true);
     assert_eq!(merged["plugins"]["delta-update"]["auto_confirm"], true);
+    assert_eq!(
+        merged["plugins"]["delta-update"]["$schema"],
+        "./delta-update.schema.json"
+    );
     assert!(src_tauri.join("tauri.conf.json.bak").is_file());
     assert!(src_tauri.join("capabilities/delta-update.json").is_file());
+    assert!(src_tauri.join("delta-update.schema.json").is_file());
 
     // A second run reports the existing section and leaves the file untouched.
     let before = std::fs::read(&conf).unwrap();
@@ -183,10 +188,17 @@ fn migrate_write_creates_new_files_without_touching_config() {
         .unwrap()
         .contains(&serde_json::json!("delta-update:manage-confirm")));
 
+    assert!(
+        dir.path()
+            .join("src-tauri/delta-update.schema.json")
+            .is_file(),
+        "migrate --write must ship the editor schema too"
+    );
     let guide = dir.path().join("delta-update-migration.md");
     let text = std::fs::read_to_string(&guide).unwrap();
     assert!(text.contains("run_with_delta_update"), "{text}");
     assert!(text.contains(KEY), "{text}");
+    assert!(text.contains("$schema"), "{text}");
 
     assert_eq!(
         std::fs::read(&conf).unwrap(),
@@ -232,6 +244,118 @@ fn migrate_prints_a_plan_from_the_official_updater() {
     assert!(warnings.contains("不能复用"), "{warnings}");
     assert!(text.contains("tauri-plugin-updater"), "{text}");
     assert!(text.contains("run_with_delta_update"), "{text}");
+}
+
+#[test]
+fn init_json_is_one_parseable_object() {
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args([
+            "init",
+            "--json",
+            "--endpoint",
+            "https://example.com/manifests/latest.json",
+            "--public-key",
+            KEY,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+    assert_eq!(value["v"], 1);
+    assert_eq!(value["tool"], "delta-update-cli");
+    assert_eq!(
+        value["endpoint"],
+        "https://example.com/manifests/latest.json"
+    );
+    assert_eq!(value["signing_public_keys"][0], KEY);
+    assert_eq!(value["permission_set"], "manage-confirm");
+    assert_eq!(value["capability_written"], serde_json::Value::Null);
+    assert!(
+        !text.contains("下一步"),
+        "human text must not precede the JSON"
+    );
+}
+
+#[test]
+fn init_json_reports_what_it_wrote() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src-tauri")).unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args([
+            "init",
+            "--json",
+            "--write",
+            "--dir",
+            dir.path().to_str().unwrap(),
+            "--endpoint",
+            "https://example.com/manifests/latest.json",
+            "--public-key",
+            KEY,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["capability_written"], true);
+    assert_eq!(value["schema_written"], true);
+    assert_eq!(value["config"]["$schema"], "./delta-update.schema.json");
+    assert!(dir
+        .path()
+        .join("src-tauri/capabilities/delta-update.json")
+        .is_file());
+    assert!(dir
+        .path()
+        .join("src-tauri/delta-update.schema.json")
+        .is_file());
+    assert_eq!(
+        value["config"]["auto_apply"], false,
+        "the echoed config must match what --write used"
+    );
+}
+
+#[test]
+fn migrate_json_reports_the_plan_without_human_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src-tauri")).unwrap();
+    std::fs::write(
+        dir.path().join("src-tauri/tauri.conf.json"),
+        format!(
+            r#"{{"plugins":{{"updater":{{"endpoints":["https://example.com/latest.json"],"pubkey":"{KEY}"}}}}}}"#
+        ),
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("delta-update")
+        .unwrap()
+        .args(["migrate", "--json", "--dir"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+    assert_eq!(
+        value["config"]["endpoint"],
+        "https://example.com/latest.json"
+    );
+    assert_eq!(value["config"]["signing_public_keys"][0], KEY);
+    assert!(value["guide"]
+        .as_str()
+        .unwrap()
+        .contains("run_with_delta_update"));
+    assert!(
+        text.starts_with('{'),
+        "human text must not precede the JSON: {text}"
+    );
 }
 
 #[test]

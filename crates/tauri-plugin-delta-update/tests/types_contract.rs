@@ -146,6 +146,8 @@ fn state_payload_fields_match_the_typescript_sdk() {
         file: Some("App.exe".into()),
         unit: Some(ProgressUnit::Bytes),
     });
+    payload.target_version = Some("2.0.0".into());
+    payload.skipped_version = Some("1.9.0".into());
     let rust = serialized_fields(&payload);
 
     // Every emitted field must exist in the SDK, and every required SDK field

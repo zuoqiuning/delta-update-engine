@@ -73,6 +73,10 @@ export interface UpdateStatePayload {
   error: UpdateError | null;
   /** Set only in `UpdateRequired`: the oldest version the publisher supports. */
   min_supported_version?: string | null;
+  /** Version offered by the last check; lets a late window render without re-checking. */
+  target_version?: string | null;
+  /** Version hidden by `skipVersion()` or recorded by a rollback. */
+  skipped_version?: string | null;
   timestamp: string;
 }
 
@@ -204,14 +208,31 @@ export interface UpdateView {
   isFailed: boolean;
   isBusy: boolean;
   isUpdateRequired: boolean;
+  /** `check()` will be accepted (the plugin is not busy with another command). */
+  canCheck: boolean;
   canPrepare: boolean;
   canRestart: boolean;
   /** A prepare is in flight and `cancel_prepare` will actually stop it. */
   canCancel: boolean;
+  /** `skipVersion()` will be accepted: an offer exists and nothing is locked in. */
+  canSkip: boolean;
   error: UpdateError | null;
 }
 
 export function describeUpdate(state: UpdateStatePayload | null): UpdateView {
+  // `target_version` is absent on plugins before 1.2; only an explicit null
+  // means "a check ran and found nothing", so old payloads keep the old rules.
+  const hasOffer =
+    state !== null &&
+    (state.state === 'UpdateRequired' ||
+      state.target_version === undefined ||
+      state.target_version !== null);
+  // Cancelled is recoverable: calling prepare() again resumes the download.
+  const prepareState =
+    state?.state === 'Idle' ||
+    state?.state === 'UpdateRequired' ||
+    state?.state === 'Cancelled' ||
+    (isFailed(state) && state.error.retryable);
   return {
     isChecking: state?.state === 'Checking',
     isDownloading: state?.state === 'Downloading' || state?.state === 'Preparing',
@@ -221,13 +242,18 @@ export function describeUpdate(state: UpdateStatePayload | null): UpdateView {
     isFailed: isFailed(state),
     isBusy: isBusy(state),
     isUpdateRequired: isUpdateRequired(state),
-    canPrepare:
-      state?.state === 'Idle' ||
-      state?.state === 'UpdateRequired' ||
-      isFailed(state),
+    canCheck: state !== null && !isBusy(state),
+    // A failed check is only retryable when the error says so: offering
+    // "prepare" for a signature/config failure just repeats the same failure.
+    canPrepare: hasOffer && prepareState,
     canRestart: state !== null && isPrepared(state),
     canCancel:
       state?.state === 'Downloading' || state?.state === 'Preparing',
+    canSkip:
+      !!state?.target_version &&
+      (state?.state === 'Idle' ||
+        state?.state === 'Cancelled' ||
+        state?.state === 'Failed'),
     error: state?.error ?? null,
   };
 }

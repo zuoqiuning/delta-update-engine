@@ -9,7 +9,7 @@
 ```rust
 pub fn init<R: Runtime>() -> TauriPlugin<R, Config>;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
     pub config_version: u32,
@@ -17,12 +17,14 @@ pub struct Config {
     pub signing_public_keys: Vec<String>,
     #[serde(default = "default_true")]
     pub auto_check: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_apply: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub auto_confirm: bool,
     #[serde(default = "default_confirm_delay")]
     pub confirm_delay_ms: u64,
+    #[serde(default)]
+    pub check_interval_secs: Option<u64>,
     #[serde(default = "default_channel")]
     pub channel: String,
     pub signing_endpoint: Option<String>,
@@ -43,10 +45,15 @@ pub struct Config {
     pub max_files: Option<usize>,
     #[serde(default)]
     pub allow_insecure_http: bool,
+    pub proxy: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub signing_headers: Option<BTreeMap<String, String>>,
 }
 ```
 
-配置字段的完整语义见协议文档 §9。**Config 结构体不启用 `deny_unknown_fields`**，以便未来新增字段时旧客户端可以忽略；但未知字段会输出警告日志，帮助发现拼写错误。`config_version` 低于当前实现时插件启动失败并返回 `E_CONFIG_MIGRATION_REQUIRED`；配置非法返回 `E_CONFIG_INVALID`。
+`auto_apply` / `auto_confirm` **默认关闭**，必须由产品显式开启。字段的完整类型、默认值与取值范围以 [config.schema.json](config.schema.json) 为准（由 `config_schema` 测试与 `Config` 双向锁定），人类可读语义见协议文档 §9。
+
+**Config 结构体不启用 `deny_unknown_fields`**，以便未来新增字段时旧客户端可以忽略；未知字段会输出警告日志，帮助发现拼写错误。`$schema` 是编辑器补全提示，不触发该警告。`config_version` 低于当前实现时插件启动失败并返回 `E_CONFIG_MIGRATION_REQUIRED`；配置非法返回 `E_CONFIG_INVALID`。
 
 **信任根**（三选一，可叠加收窄）：内嵌 `signing_public_keys`（默认）→ 构建期 `pinned-keys`（`config ∩ DELTA_UPDATE_PINNED_PUBLIC_KEYS`，为空拒绝启动）→ 运行期 `set_trusted_keys(keys, mode)`：
 
@@ -86,7 +93,7 @@ pub struct CheckResult {
 }
 ```
 
-拉取清单、验签、比对。**不下载补丁**。`available` 为 `false` 时其余字段仍填充（`version` 为 `None`），便于 UI 展示“已是最新”。`skipped_version` 在用户调用过 `skip_version` 且远程仍是同一版本时给出被跳过的版本号（`version` 仍为 `None`、`available` 为 `false`），UI 可据此提供“仍要更新”并调用 `clearSkippedVersion()`。`cloud_placeholders_skipped` 是本次扫描中被跳过的云占位文件数（OneDrive/Files On-Demand）：它们不参与 diff，若清单仍列出则按全量下载，UI 可用它解释“为什么下载量比预期大”。`update_required` 为 `true` 时表示本地版本低于同一通道清单的 `min_supported_version`：插件只上报事实，**不阻止应用运行**；应用可以选择显示模态框或禁用功能，直到更新完成。与 `prepare` 互斥：`prepare` 进行中调用返回 `E_INVALID_TRANSITION`。检查失败时若已有 `Prepared` 或未确认的 `Committed`，保留原状态，不覆盖为 `Failed`。
+拉取清单、验签、比对。**不下载补丁**。`available` 为 `false` 时其余字段仍填充（`version` 为 `None`），便于 UI 展示“已是最新”。`skipped_version` 在用户调用过 `skip_version` 且远程仍是同一版本时给出被跳过的版本号（`version` 仍为 `None`、`available` 为 `false`），UI 可据此提供“仍要更新”并调用 `clearSkippedVersion()`。`cloud_placeholders_skipped` 是本次扫描中被跳过的云占位文件数（OneDrive/Files On-Demand）：它们不参与 diff，若清单仍列出则按全量下载，UI 可用它解释“为什么下载量比预期大”。`update_required` 为 `true` 时表示本地版本低于同一通道清单的 `min_supported_version`：插件只上报事实，**不阻止应用运行**；应用可以选择显示模态框或禁用功能，直到更新完成。与 `prepare` 互斥：`prepare` 进行中调用返回 `E_INVALID_TRANSITION`。检查失败时若已有 `Prepared` 或未确认的 `Committed`，保留原状态，不覆盖为 `Failed`。**后台自动检查**（`auto_check` 与定时检查）失败同样保留原稳定状态，只写日志——离线启动不会把界面打成错误横幅；手动调用 `check()` 仍然返回错误并发布 `Failed`。
 
 **`prepare`**
 
@@ -117,7 +124,7 @@ invoke<{ state: 'Cancelled' }>('plugin:delta-update|cancel_prepare')
 invoke<StatusPayload>('plugin:delta-update|status')
 ```
 
-返回当前状态快照，结构同事件 payload（§3.3）。
+返回当前状态快照，结构同事件 payload（§3.3）。快照带 `target_version` / `skipped_version`，窗口重新打开时不必先 `check` 就能显示“有 v2.1.0 可用”。
 
 **`confirm_healthy`**
 
@@ -157,7 +164,7 @@ invoke<void>('plugin:delta-update|open_diagnostics_folder')
 invoke<{ cleared: boolean }>('plugin:delta-update|clear_skipped_version')
 ```
 
-清除回滚后写入的版本跳过标记。发布者修复问题并**重新发布同一个版本号**时，`check` 会一直跳过它（除非清单带 `rollback: true`）；这个命令是唯一的手动出口。`cleared` 表示此前是否存在标记。该命令只在 `manage`/`default` 权限集中，`monitor` 不包含。它不是“跳过所有更新”的开关：只清除回滚写入的那一个版本标记，`check` 仍会正常拉取其他版本。
+清除回滚后写入的版本跳过标记。发布者修复问题并**重新发布同一个版本号**时，`check` 会一直跳过它（除非清单带 `rollback: true`）；这个命令是唯一的手动出口。`cleared` 表示此前是否存在标记。成功后插件会重新推送一次当前状态，已打开的窗口立即去掉“已跳过”提示，不必等下一次检查。该命令只在 `manage`/`default` 权限集中，`monitor` 不包含。它不是“跳过所有更新”的开关：只清除回滚写入的那一个版本标记，`check` 仍会正常拉取其他版本。
 
 **`skip_version`**
 
@@ -207,6 +214,8 @@ interface StatePayload {
   progress: { total: number; completed: number; unit?: 'bytes' | 'files' | 'ops'; file?: string | null } | null;
   error: ErrorPayload | null;
   min_supported_version?: string | null; // 仅 UpdateRequired 状态
+  target_version?: string | null; // 总是输出；null 表示检查过但没有更新，旧插件缺少该键
+  skipped_version?: string | null; // 被 skipVersion() 或回滚记录的版本；无值时省略
   timestamp: string;     // RFC 3339 UTC
 }
 ```
@@ -227,7 +236,7 @@ interface ErrorPayload {
 }
 ```
 
-前端只读事件，**不参与决策**。事件中的 `error` 仅在 `state === 'Failed'` 时非空；`progress` 仅在 `Downloading` / `Preparing` / `Committing` 时非空；这些状态的 `version` 是本次目标版本，UI 可直接用于进度文案。`UpdateRequired` 是稳定状态：应用低于发布者最低支持版本时会停在这里，`min_supported_version` 与 `version` 同时给出，直到更新已准备或下一次检查判定不再需要。
+前端只读事件，**不参与决策**。事件中的 `error` 仅在 `state === 'Failed'` 时非空；`progress` 仅在 `Downloading` / `Preparing` / `Committing` 时非空；这些状态的 `version` 是本次目标版本，UI 可直接用于进度文案。`UpdateRequired` 是稳定状态：应用低于发布者最低支持版本时会停在这里，`min_supported_version` 与 `version` 同时给出，直到更新已准备或下一次检查判定不再需要。`target_version` 在每次 payload 构建时都会带上（没有可安装版本时为 `null`，旧插件则缺少该键），`skipped_version` 只在有值时出现；因此窗口重开、或 `clear_skipped_version` 之后都不需要再跑一次 `check` 才能恢复横幅。
 
 ### 3.4 Rust 侧访问
 
@@ -276,10 +285,10 @@ npm 包是命令与状态的薄封装，无额外运行时依赖（React 仅作�
 | --- | --- |
 | `check` / `prepare` / `cancelPrepare` / `status` / `confirmHealthy` / `restartToApply` / `skipVersion` / `exportDiagnostics` / `openDiagnosticsFolder` / `clearSkippedVersion` / `getUpdateHistory` | 与命令一一对应，返回的类型见 §3.2 |
 | `createUpdateController()` | 启动快照 + 事件订阅（引用计数）+ 生命周期命令（`check` / `prepare` / `cancel` / `confirm` / `restart` / `skip` / `clearSkip`），框架无关 |
-| `describeUpdate(state)` | 派生 `isReady` / `canPrepare` / `canRestart` / `canCancel` / `isBusy` / `isUpdateRequired` / `error`，与 React hook 共用同一实现 |
+| `describeUpdate(state)` | 派生 `isReady` / `canCheck` / `canPrepare` / `canRestart` / `canCancel` / `canSkip` / `isBusy` / `isUpdateRequired` / `error`，与 React hook 共用同一实现 |
 | `isPrepared` / `isCommitted` / `isRolledBack` / `isFailed` / `isUpdateRequired` / `isBusy` | 单状态类型守卫（带谓词收窄） |
 | `STATE_EVENT` / `STATE_NAMES` | `delta-update://state` 与全部状态名 |
 | `useUpdater()`（`react` 子路径） | `useSyncExternalStore` + controller，返回值包含 `describeUpdate` 的全部字段 |
 
-`prepare()` 返回 `state: 'Prepared'` 才代表产物可用；`restartToApply()` 成功后进程会被替换并重启，因此不要在它之后继续依赖当前进程的状态。UI 判断优先用 `describeUpdate`，不要在业务代码里散落字符串比较——规则变更时只需升级这个包。`skip()` 后的“仍然更新”由 `check()` 的 `skipped_version` 与 `clearSkip()` 组成，与命令一一对应，不需要额外状态。
+`prepare()` 返回 `state: 'Prepared'` 才代表产物可用；`restartToApply()` 成功后进程会被替换并重启，因此不要在它之后继续依赖当前进程的状态。UI 判断优先用 `describeUpdate`，不要在业务代码里散落字符串比较——规则变更时只需升级这个包。`skip()` 后的“仍然更新”由 `check()` 的 `skipped_version` 与 `clearSkip()` 组成，与命令一一对应，不需要额外状态。`canPrepare` 只在确实有可安装版本时才是 `true`：`target_version` 为 `null`（检查过、没有更新）时即使处于 `Idle` 也为 `false`；`Cancelled` 状态为 `true`，再次调用 `prepare()` 会继续下载；`Failed` 状态还要求 `error.retryable` 为真，签名/配置这类不可重试错误不会给出一个必然再次失败的按钮。旧版插件不返回 `target_version` 时按缺失处理，行为与此前一致。
 

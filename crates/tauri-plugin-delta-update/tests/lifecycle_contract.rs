@@ -586,7 +586,11 @@ async fn prepare_reuses_a_recent_check() {
 
     let app = build_app(
         &plugin_config(&layout, &server, &keys, false, false),
-        &["plugin:delta-update|check", "plugin:delta-update|prepare"],
+        &[
+            "plugin:delta-update|check",
+            "plugin:delta-update|prepare",
+            "plugin:delta-update|status",
+        ],
     );
     let state = plugin_state(&app);
     let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -594,6 +598,13 @@ async fn prepare_reuses_a_recent_check() {
         .expect("mock webview");
 
     invoke(&webview, "plugin:delta-update|check", Default::default()).expect("check");
+    // A window opening after the check must see the offer without re-checking.
+    let status = invoke(&webview, "plugin:delta-update|status", Default::default())
+        .expect("status")
+        .deserialize::<serde_json::Value>()
+        .expect("status payload");
+    assert_eq!(status["target_version"], NEW_VERSION);
+
     invoke(&webview, "plugin:delta-update|prepare", Default::default()).expect("prepare");
 
     assert!(matches!(state.snapshot(), EngineState::Prepared { .. }));
@@ -605,6 +616,99 @@ async fn prepare_reuses_a_recent_check() {
     assert_eq!(
         manifest_requests, 1,
         "prepare re-fetched the manifest instead of reusing the check"
+    );
+}
+
+/// `clear_skipped_version` republishes the snapshot, so an open window drops
+/// its "skipped" banner without waiting for the next check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_skipped_version_republishes_the_payload() {
+    let _serial = SERIAL.lock().await;
+    let layout = Layout::new();
+    let keys = TestKeyPair::generate();
+    let server = release_server(&keys, NEW_VERSION, b"build 0.2.0").await;
+    state::write_skipped_version(&layout.journal(), NEW_VERSION).expect("skip marker");
+
+    let app = build_app(
+        &plugin_config(&layout, &server, &keys, false, false),
+        &["plugin:delta-update|clear_skipped_version"],
+    );
+    let cached = plugin_state(&app);
+    assert_eq!(
+        cached.skipped_version().as_deref(),
+        Some(NEW_VERSION),
+        "the marker must be cached at startup, not read per event"
+    );
+    let events = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+    let sink = Arc::clone(&events);
+    app.listen_any(STATE_EVENT, move |event| {
+        if let Ok(payload) = serde_json::from_str::<StatePayload>(event.payload()) {
+            sink.lock().expect("events").push(payload.skipped_version);
+        }
+    });
+    let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .expect("mock webview");
+
+    let result = invoke(
+        &webview,
+        "plugin:delta-update|clear_skipped_version",
+        Default::default(),
+    )
+    .expect("clear")
+    .deserialize::<serde_json::Value>()
+    .expect("result");
+    assert_eq!(result["cleared"], true);
+    assert_eq!(state::read_skipped_version(&layout.journal()), None);
+    assert_eq!(
+        cached.skipped_version(),
+        None,
+        "the cache must be cleared too"
+    );
+
+    let seen = events.lock().expect("events");
+    assert!(
+        !seen.is_empty(),
+        "clearing must publish so open windows refresh"
+    );
+    assert_eq!(
+        seen.last().cloned().flatten(),
+        None,
+        "the republished payload must not carry the cleared marker"
+    );
+}
+
+/// Offline launches are the common case: a failed background check keeps the
+/// previous stable state instead of painting the app `Failed`. Manual
+/// `check()` still returns the error to its caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_check_failure_keeps_the_previous_state() {
+    let _serial = SERIAL.lock().await;
+    let layout = Layout::new();
+    let keys = TestKeyPair::generate();
+    let server = release_server(&keys, NEW_VERSION, b"build 0.2.0").await;
+    // Exhaust the manifest retry budget so the check really fails.
+    server.fail_next("manifests/latest.json", 4);
+
+    let app = build_app(&plugin_config(&layout, &server, &keys, true, false), &[]);
+    let state = plugin_state(&app);
+
+    wait_for(
+        &state,
+        |state| matches!(state, EngineState::Checking),
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for(
+        &state,
+        |state| !matches!(state, EngineState::Checking),
+        Duration::from_secs(10),
+    )
+    .await;
+    assert!(
+        matches!(state.snapshot(), EngineState::Idle),
+        "a failed background check must not publish Failed: {:?}",
+        state.snapshot()
     );
 }
 

@@ -107,6 +107,41 @@ describe('describeUpdate', () => {
     expect(failed.error?.code).toBe('E_UPDATE_LOCKED');
   });
 
+  it('needs an actual offer before prepare, and can resume after cancel', () => {
+    expect(describeUpdate(payload('Idle', { target_version: '2.0.0' })).canPrepare).toBe(true);
+    expect(describeUpdate(payload('Idle', { target_version: null })).canPrepare).toBe(false);
+    expect(
+      describeUpdate(payload('Cancelled', { version: '2.0.0', target_version: '2.0.0' }))
+        .canPrepare,
+    ).toBe(true);
+    // A failed check with nothing found retries via check, not prepare.
+    expect(
+      describeUpdate(payload('Failed', { error: failure, target_version: null })).canPrepare,
+    ).toBe(false);
+    expect(
+      describeUpdate(payload('Failed', { error: failure, target_version: '2.0.0' })).canPrepare,
+    ).toBe(true);
+  });
+
+  it('does not offer prepare for a failure that cannot be retried', () => {
+    const view = describeUpdate(
+      payload('Failed', {
+        error: { ...failure, retryable: false, action: 'contact_support' },
+      }),
+    );
+    expect(view.isFailed).toBe(true);
+    expect(view.canPrepare).toBe(false);
+  });
+
+  it('offers check whenever the plugin is not busy', () => {
+    expect(describeUpdate(null).canCheck).toBe(false);
+    expect(describeUpdate(payload('Idle')).canCheck).toBe(true);
+    expect(describeUpdate(payload('Committed')).canCheck).toBe(true);
+    for (const state of ['Checking', 'Downloading', 'Preparing', 'Committing', 'RollingBack'] as const) {
+      expect(describeUpdate(payload(state)).canCheck).toBe(false);
+    }
+  });
+
   it('offers cancel only while a prepare is actually running', () => {
     expect(describeUpdate(payload('Downloading')).canCancel).toBe(true);
     expect(describeUpdate(payload('Preparing')).canCancel).toBe(true);
@@ -115,5 +150,22 @@ describe('describeUpdate', () => {
       expect(describeUpdate(payload(state)).canCancel).toBe(false);
     }
     expect(describeUpdate(null).canCancel).toBe(false);
+  });
+
+  it('offers skip only while an offer exists and nothing is locked in', () => {
+    expect(describeUpdate(payload('Idle', { target_version: '2.0.0' })).canSkip).toBe(true);
+    expect(
+      describeUpdate(payload('Cancelled', { version: '2.0.0', target_version: '2.0.0' }))
+        .canSkip,
+    ).toBe(true);
+    // No offer yet, mandatory update, or already prepared: skip is rejected.
+    expect(describeUpdate(payload('Idle')).canSkip).toBe(false);
+    expect(describeUpdate(payload('UpdateRequired', { target_version: '2.0.0' })).canSkip).toBe(
+      false,
+    );
+    expect(
+      describeUpdate(payload('Prepared', { version: '2.0.0', target_version: '2.0.0' })).canSkip,
+    ).toBe(false);
+    expect(describeUpdate(null).canSkip).toBe(false);
   });
 });

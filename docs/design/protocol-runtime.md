@@ -71,6 +71,7 @@ stateDiagram-v2
   "v": 1,
   "state": "Prepared",
   "version": "2.1.0",
+  "target_version": "2.1.0",
   "progress": null,
   "error": null,
   "timestamp": "2026-11-10T08:00:00Z"
@@ -84,7 +85,12 @@ stateDiagram-v2
 | `version`   | string\|null | 相关版本号；Downloading/Preparing/Committing/Failed 时为本次目标版本（如有），Prepared/Cancelled/Committed/RolledBack 时为对应版本。 |
 | `progress`  | object\|null | `{ "total": u64, "completed": u64, "file": string\|null }`，仅 Downloading/Preparing/Committing 时非空；`file` 为当前正在下载/校验的文件（未知时省略）。 |
 | `error`     | object\|null | 仅 Failed 时非空，结构见 7.2。                               |
+| `min_supported_version` | string\|null | 仅 UpdateRequired 时非空：发布者仍支持的最低版本。 |
+| `target_version` | string\|null | 最近一次检查找到的可用版本；**总是输出**，`null` 表示检查过但没有更新。窗口重新打开时可直接渲染“有 v2.1.0 可用”，无需再跑一次 `check`；旧版插件缺少该键时按“未知”处理。 |
+| `skipped_version` | string\|null | 用户以“稍后提醒”跳过的版本，或回滚记录写入的版本。 |
 | `timestamp` | string       | RFC 3339 UTC。                                               |
+
+`min_supported_version` 与 `skipped_version` 使用 `skip_serializing_if = "Option::is_none"`：无可报告值时整个键省略。`target_version` 例外地总是输出（可为 `null`），以便 SDK 区分“检查过、没有更新”和“旧插件不支持该字段”。
 
 
 ## 7. 错误码协议

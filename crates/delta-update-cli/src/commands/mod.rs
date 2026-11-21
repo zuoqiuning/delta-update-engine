@@ -3,6 +3,7 @@ pub mod init;
 pub mod inspect;
 pub mod key_info;
 pub mod migrate;
+pub mod promote;
 pub mod release;
 pub mod report;
 pub mod rollback;

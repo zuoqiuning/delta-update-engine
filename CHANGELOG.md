@@ -2,6 +2,26 @@
 
 本项目遵循 [SemVer](https://semver.org/)。发布前必须同步更新本文件。
 
+## [1.2.0] - 2026-11-21
+
+- **状态快照携带 `target_version` / `skipped_version`**：`status` 与 `delta-update://state` 现在总是带上最近一次检查找到的可用版本，以及被 `skip_version`/回滚记录的版本。窗口在检查之后才打开时，可以直接渲染“有 v2.1.0 可用”，不必再跑一次 `check`。`target_version` 总是输出（`null` 表示检查过但没有更新，旧插件缺少该键），`skipped_version` 无值则省略；旧前端不受影响，`types_contract` 已覆盖。
+- **`describeUpdate` 增加 `canSkip`**：只有存在可用版本且状态为 `Idle`/`Cancelled`/`Failed` 时为 `true`，与 `skip_version` 拒绝 `UpdateRequired`、`Prepared` 的规则一致，UI 不必再各自拼条件。
+- **`init` / `migrate` 支持 `--json`**：stdout 只输出一个 JSON 对象（配置、写入了什么、从现有配置复用了哪些字段、capability 警告），人类说明全部不再输出，警告改走 stderr。CI 与 Agent 不必再解析分步中文说明，也不会因为 `--write` 与否而拿到不同结构。
+- **`clear_skipped_version` 立即刷新窗口**：清除标记后插件重新推送当前状态，已打开窗口马上撤销“已跳过”提示，不必等下一次 `check` 或轮询 `status`（配合新增的 `skipped_version` 字段）。
+- **`canPrepare` 尊重 `retryable`**：`Failed` 状态下只有 `error.retryable` 为真才给出“重试/准备”按钮；签名不匹配、清单 schema 过新、配置错误这类不可重试失败不再显示一个必然再次失败的按钮。
+- **提供 `plugins.delta-update` 的 JSON Schema**：新增 [config.schema.json](docs/reference/config.schema.json)，复制到 `src-tauri/` 后在配置对象里写一行 `"$schema": "./delta-update.schema.json"` 即可获得编辑器补全与默认值提示。`$schema` 不再被当作未知字段告警；`config_schema` 测试锁定字段集合、默认值与必填项，字段增删不会让 schema 静默漂移。
+- **配置文档默认值纠偏**：`crash_loop_threshold` 的默认值在协议文档里仍写作 `2`（代码与其余文档早就是 `3`），已统一为 `3`，并补上遗漏的 `exit_grace_period_secs` 与 `signing_headers` 两个字段。
+- **API 参考里的配置结构纠偏**：`api-plugin.md` 把 `auto_apply` / `auto_confirm` 写成默认 `true`，并漏掉 `check_interval_secs`、`proxy`、`headers`、`signing_headers`；现已与 `Config` 完全一致，并注明以 JSON Schema 为准。
+- **`describeUpdate` 增加 `canCheck`**：非忙碌状态（含 `Idle`/`Committed`/`RolledBack`）为 `true`，`Checking`/`Downloading`/`Preparing`/`Committing`/`RollingBack` 为 `false`；“检查更新”按钮不再需要在业务代码里判断状态字符串。
+- **`canPrepare` 只对真实可安装的版本为真**：`target_version` 为 `null`（检查过、没有更新）时，即使处于 `Idle` 也不会显示“准备更新”；`Cancelled` 改为 `true`，用户取消后可以再次调用 `prepare()` 继续下载（暂存文件与断点续传仍然有效）。旧插件不返回 `target_version` 时按缺失处理，行为不变。
+- **接入示例统一用派生标志**：`getting-started` 的 React 示例改用 `isReady`，不再自己比较 `state.state === 'Prepared'`，与“不要散落字符串比较”的建议一致。
+- **后台检查失败不再把界面打成 `Failed`**：`auto_check` 与定时检查失败时保持原稳定状态并写日志，离线启动不会出现错误横幅；手动 `check()` 仍返回错误并发布 `Failed`。`canCheck`/`canPrepare` 的语义因此更适合“后台静默、手动可见”的交互。
+- **`skipped_version` 改为进程内缓存**：启动时读一次 journal，`skip_version` / `clear_skipped_version` / 每次 `check` 后更新，不再在每次进度事件里读磁盘。
+- **接入即得编辑器补全**：`init --write` / `--merge-config` 与 `migrate --write` 现在会自动写入 `src-tauri/delta-update.schema.json` 并在配置里加 `$schema`，无需手工复制；`--json` 信封新增 `schema_written` / `schema_path`。schema 以 `assets/config.schema.json` 内嵌进 CLI，`schema_sync` 测试保证它与文档版本字节一致。
+- **CI 模板支持多基线**：`examples/ci/` 的 GitHub Actions 与 GitLab CI 模板加上 `--baseline` 示例与注意事项，`ci-release.md` 新增"保留最近两三个产物"的接入小节与检查项。
+- **`promote`：canary → stable 不再重打包**：新增 `delta-update promote --version <V> --channel stable`，只改写清单的 `channel` 并重签，补丁与对象保持不变；`--verify` 在切换前 HEAD 校验全部对象（含多基线补丁），缺对象时拒绝提升；多签名发布要求传入与 `signing_key_ids` 一致的 `--additional-signing-key`。`--json` 输出 `{v, tool, version, from_channel, channel, manifest_bytes, signatures, dry_run}`。
+- **多基线升级**：`release` 新增可重复的 `--baseline VERSION=DIR`（需同时提供 `--from`），为每个旧版本生成补丁并写入清单 `deltas`（每文件最多 16 项）。客户端按自身运行版本精确匹配补丁，没有匹配项直接下载全量；跳版本升级不再必然退化成整文件下载。`delta_key`/`delta_size`/`strategy` 继续描述主基线，旧客户端行为不变，schema 无需升级。`verify` / `inspect --from-release` / `doctor` 会校验全部基线对象，`--pipeline` 报告的 `baselines` 为每个基线给出补丁数、体积与**客户端节省字节**，便于判断是否值得继续维护某个旧基线。清单接近 8 MiB 客户端上限时会警告，超限时报错并提示减少基线或使用 `.deltaignore`。
+
 ## [1.1.0] - 2026-11-20
 
 本次是候选版之后的第一个稳定版。升级前请阅读：

@@ -30,7 +30,7 @@ delta-update doctor --check-config --dir .
 
 ```toml
 # src-tauri/Cargo.toml
-tauri-plugin-delta-update = "1.1.0"   # 需要控制台日志时加 features = ["logging"]
+tauri-plugin-delta-update = "1.2.0"   # 需要控制台日志时加 features = ["logging"]
 ```
 
 ```rust
@@ -111,7 +111,7 @@ minisign -G -p release-2.pub -s release-2.key
 
 ```toml
 [dependencies]
-tauri-plugin-delta-update = "1.1.0"
+tauri-plugin-delta-update = "1.2.0"
 ```
 
 **src-tauri/src/main.rs（或 lib.rs）**
@@ -291,7 +291,7 @@ await updater.start();          // 读取快照并开始监听
 // 卸载时：unsubscribe(); updater.stop();
 ```
 
-按钮的可用性也来自同一处：`view.canPrepare` / `view.canRestart` / `view.canCancel` / `view.isBusy`。React hook 返回的就是这些字段（同一份实现），Vue/Svelte 直接对 `describeUpdate(state)` 的结果做条件渲染，语义不会分叉。
+按钮的可用性也来自同一处：`view.canCheck` / `view.canPrepare` / `view.canRestart` / `view.canCancel` / `view.canSkip` / `view.isBusy`。React hook 返回的就是这些字段（同一份实现），Vue/Svelte 直接对 `describeUpdate(state)` 的结果做条件渲染，语义不会分叉。
 
 React 18+ 可以直接用子路径 hook（`react` 是可选 peer 依赖）：
 
@@ -299,13 +299,11 @@ React 18+ 可以直接用子路径 hook（`react` 是可选 peer 依赖）：
 import { useUpdater } from 'tauri-plugin-delta-update-api/react';
 
 export function UpdateBanner() {
-  const { state, restart } = useUpdater();
-  if (state?.state === 'Prepared') {
-    return (
-      <button onClick={() => void restart()}>立即重启并更新到 v{state.version}</button>
-    );
-  }
-  return null;
+  const { state, isReady, restart } = useUpdater();
+  if (!isReady) return null;
+  return (
+    <button onClick={() => void restart()}>立即重启并更新到 v{state?.version}</button>
+  );
 }
 ```
 

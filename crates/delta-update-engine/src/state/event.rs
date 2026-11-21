@@ -40,6 +40,16 @@ pub struct StatePayload {
     /// Set only in `UpdateRequired`: the oldest version the publisher supports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_supported_version: Option<String>,
+    /// The version the last check found available. Filled by the plugin so a
+    /// window that mounts later can render "v2.1.0 available" without re-checking.
+    /// Always serialized (possibly `null`): the SDK uses an explicit `null` to
+    /// mean "checked, nothing available", while an absent key means the plugin
+    /// predates this field.
+    #[serde(default)]
+    pub target_version: Option<String>,
+    /// The version the user skipped ("later") or a rollback recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_version: Option<String>,
     pub timestamp: String,
 }
 
@@ -102,6 +112,8 @@ impl StatePayload {
             progress,
             error,
             min_supported_version,
+            target_version: None,
+            skipped_version: None,
             timestamp: now_rfc3339(),
         }
     }
@@ -140,6 +152,17 @@ mod tests {
 
         let json = serde_json::to_value(&downloading).unwrap();
         assert_eq!(json["progress"]["unit"], "bytes");
+    }
+
+    #[test]
+    fn target_version_is_always_on_the_wire() {
+        let payload = StatePayload::from_state(&EngineState::Idle);
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.as_object().unwrap().contains_key("target_version"),
+            "the SDK distinguishes an absent key (old plugin) from null (no offer)"
+        );
+        assert!(json["target_version"].is_null());
     }
 
     #[test]

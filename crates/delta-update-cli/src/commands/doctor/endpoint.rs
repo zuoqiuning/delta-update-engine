@@ -12,6 +12,41 @@ pub(crate) struct DoctorReport {
     pub(crate) errors: Vec<String>,
 }
 
+/// HEAD one manifest-referenced object and record a size/missing mismatch.
+fn check_object(
+    client: &reqwest::blocking::Client,
+    origin: &str,
+    path: &str,
+    kind: &str,
+    key: &str,
+    expected: Option<u64>,
+    report: &mut DoctorReport,
+) {
+    let object_url = format!(
+        "{origin}{}",
+        crate::publisher::cos_signer::encode_path(&format!("/{key}"))
+    );
+    match head_object(client, &object_url) {
+        Ok(Some(size)) if expected == Some(size) => {}
+        Ok(Some(size)) => {
+            report.ok = false;
+            report.errors.push(format!(
+                "{path} {kind} object has size {size}, expected {expected:?}"
+            ));
+        }
+        Ok(None) => {
+            report.ok = false;
+            report
+                .errors
+                .push(format!("{path} {kind} object is missing: {key}"));
+        }
+        Err(error) => {
+            report.ok = false;
+            report.errors.push(format!("{path} {kind} object: {error}"));
+        }
+    }
+}
+
 pub(crate) fn check_endpoint(
     client: &reqwest::blocking::Client,
     endpoint: &str,
@@ -87,40 +122,45 @@ pub(crate) fn check_endpoint(
 
     let origin = url.origin().ascii_serialization();
     for (path, entry) in &parsed.files {
-        if entry.delta_key.is_some() && entry.full_key.is_none() {
+        let has_patch = entry.delta_key.is_some() || !entry.deltas.is_empty();
+        if has_patch && entry.full_key.is_none() {
             report.ok = false;
             report
                 .errors
                 .push(format!("{path}: patch entry is missing full_key"));
         }
-        for (kind, key, expected) in [
-            ("full", entry.full_key.as_deref(), Some(entry.size)),
-            ("delta", entry.delta_key.as_deref(), entry.delta_size),
-        ] {
-            let Some(key) = key else { continue };
-            let object_url = format!(
-                "{origin}{}",
-                crate::publisher::cos_signer::encode_path(&format!("/{key}"))
+        if let Some(key) = &entry.full_key {
+            check_object(
+                client,
+                &origin,
+                path,
+                "full",
+                key,
+                Some(entry.size),
+                &mut report,
             );
-            match head_object(client, &object_url) {
-                Ok(Some(size)) if expected == Some(size) => {}
-                Ok(Some(size)) => {
-                    report.ok = false;
-                    report.errors.push(format!(
-                        "{path} {kind} object has size {size}, expected {expected:?}"
-                    ));
-                }
-                Ok(None) => {
-                    report.ok = false;
-                    report
-                        .errors
-                        .push(format!("{path} {kind} object is missing: {key}"));
-                }
-                Err(error) => {
-                    report.ok = false;
-                    report.errors.push(format!("{path} {kind} object: {error}"));
-                }
-            }
+        }
+        if let Some(key) = &entry.delta_key {
+            check_object(
+                client,
+                &origin,
+                path,
+                "delta",
+                key,
+                entry.delta_size,
+                &mut report,
+            );
+        }
+        for delta in &entry.deltas {
+            check_object(
+                client,
+                &origin,
+                path,
+                "delta",
+                &delta.delta_key,
+                Some(delta.delta_size),
+                &mut report,
+            );
         }
     }
     report

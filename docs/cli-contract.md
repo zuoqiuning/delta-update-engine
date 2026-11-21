@@ -193,6 +193,7 @@ fi
 - `client.net_savings_bytes = patched_full - delta_bytes`：`patched_full` 的定义是**实际走 delta 的文件的新版本 full size 之和**（回退成 full 的 Modified 文件不计入），`delta_bytes` 是这些补丁的字节数。`changed_bytes` 包含新增与回退全量的文件，不能当节省额。
 - `client.full_download_bytes = changed_bytes - patched_full`：客户端仍需以整文件下载的变化文件（新增 + 回退）。
 - `publish.uploaded_full_bytes` / `publish.uploaded_delta_bytes`：本次真正写入发布端的字节。全量对象按内容寻址，键已存在且大小一致时跳过，计入 `reused_full_bytes` / `reused_full_blobs`。
+- `baselines`：仅包含 `--baseline` 指定的额外基线，每项 `{version, patches, delta_bytes, client: {patched_full_bytes, net_savings_bytes}}`；未使用该参数时为空数组。顶层 `client` 与 `coverage` 只描述主基线（`--from`），避免多基线把“相邻版本节省”摊薄；每个额外基线的收益在自己的 `client` 里。
 - `release_kind`：`initial`（无 `--from`，没有基线）、`incremental`（有 `--from-version`）、`rollback`（`--rollback`，重新发布旧版本）。`initial` 时 `client.net_savings_bytes` 与 `publish.reused_full_blobs` 都是 0，`publish.uploaded_full_bytes` ≈ 全部文件大小，这是正常形态而不是“增量没有收益”。
 - `--pipeline` 与 `--dry-run` 互斥，所以正常流程里这些字段总有意义。
 
@@ -340,6 +341,51 @@ delta-update doctor --simulate-failure lock --json | jq -e '.simulated_error.cod
 `key_id` 为大写十六进制。输出只含公钥信息，脚本可以直接用它填充 `signing_public_keys` 或 `init --public-key`，不必解析人类输出。
 
 `verify-key --json` 输出 `{ "v": 1, "tool": "delta-update-cli", "matches": true, "public_key": "…" }`；不匹配时仍打印该 JSON，并以退出码 `1` 结束，脚本可以同时依赖 `matches` 与退出码。
+
+### 2.10 `init` / `migrate` 的 `--json`
+
+两者默认输出给人看的分步说明；加 `--json` 后 stdout 只有一个 JSON 对象，说明文字全部消失，警告改走 stderr，脚本与 Agent 可以直接解析：
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "endpoint": "https://example.com/manifests/latest.json",
+  "channel": "stable",
+  "signing_public_keys": ["RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"],
+  "permission_set": "manage-confirm",
+  "auto": false,
+  "reused_from_config": ["endpoint"],
+  "config_merged": false,
+  "schema_written": true,
+  "schema_path": "src-tauri/delta-update.schema.json",
+  "capability_written": true,
+  "capability_path": "src-tauri/capabilities/delta-update.json",
+  "config": { "config_version": 1, "endpoint": "https://example.com/manifests/latest.json" },
+  "warnings": []
+}
+```
+
+`--write`/`--merge-config` 还会写入 `src-tauri/delta-update.schema.json` 并在配置里加 `$schema`；`schema_written` 为 `null` 表示本次没有写入权限（只打印配置），`false` 表示文件已存在。`migrate --json` 的信封同样包含这两个字段。
+
+`migrate --json` 返回 `{ v, tool, config, capability, written, schema_written, schema_path, capability_written, guide_written, guide_path, guide }`：`guide` 是完整迁移指南，未加 `--write` 时也可直接落盘。`capability_written` / `guide_written` / `schema_written` 为 `null` 表示本次没有尝试写入，`false` 表示文件已存在、未被覆盖；`reused_from_config` 列出从现有 `tauri.conf.json` 复用的字段。
+
+### 2.11 `promote --json`
+
+```json
+{
+  "v": 1,
+  "tool": "delta-update-cli",
+  "version": "2.1.0",
+  "from_channel": "canary",
+  "channel": "stable",
+  "manifest_bytes": 48213,
+  "signatures": 1,
+  "dry_run": false
+}
+```
+
+`promote` 只改写 `channel` 并重签，补丁与对象不变。`--dry-run` 时 `dry_run` 为 `true` 且不写任何对象；失败时以非零退出码结束并只输出人类可读错误。
 
 ## 3. 门禁
 

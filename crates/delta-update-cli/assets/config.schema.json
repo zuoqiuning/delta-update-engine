@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "plugins.delta-update",
+  "description": "Delta Update Engine plugin configuration for tauri.conf.json. Unknown keys are ignored (with a startup warning), so this schema stays forward-compatible.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["config_version", "endpoint", "signing_public_keys"],
+  "properties": {
+    "config_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Configuration format version. Bump it only for breaking changes; older configs fail with E_CONFIG_MIGRATION_REQUIRED."
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "Manifest URL. HTTPS is required outside local loopback development."
+    },
+    "signing_public_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "Trusted minisign public keys. Any one of them may sign a manifest; embed more than one to allow rotation."
+    },
+    "auto_check": {
+      "type": "boolean",
+      "default": true,
+      "description": "Run check + prepare in the background after setup."
+    },
+    "auto_apply": {
+      "type": "boolean",
+      "default": false,
+      "description": "Replace the prepared update when the app exits. Explicit opt-in."
+    },
+    "auto_confirm": {
+      "type": "boolean",
+      "default": false,
+      "description": "Confirm the new version as healthy after the first window loads."
+    },
+    "confirm_delay_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 3000,
+      "description": "Delay before auto_confirm. 0 confirms as soon as the window loads."
+    },
+    "check_interval_secs": {
+      "type": ["integer", "null"],
+      "minimum": 60,
+      "default": null,
+      "description": "Periodic check + prepare interval in seconds. Omitted or null disables it; the minimum is 60."
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\s]+$",
+      "default": "stable",
+      "description": "Update channel compared with the manifest channel."
+    },
+    "signing_endpoint": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "default": null,
+      "description": "Signed-URL service for a private bucket. Must be HTTPS."
+    },
+    "allowed_hosts": {
+      "type": ["array", "null"],
+      "items": { "type": "string", "minLength": 1 },
+      "default": null,
+      "description": "Host allowlist for object downloads. Null allows any HTTPS host."
+    },
+    "crash_loop_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255,
+      "default": 3,
+      "description": "Unconfirmed starts allowed before the committed update is rolled back."
+    },
+    "exit_grace_period_secs": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 10,
+      "description": "A clean exit after this many seconds discounts one unconfirmed start. 0 discounts any clean exit."
+    },
+    "install_dir": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Install root when auto-detection fails (portable builds). Must be absolute."
+    },
+    "staging_dir": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Staging directory. Must be absolute and outside install_dir."
+    },
+    "journal_dir": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Journal and lock directory. Must be absolute and outside install_dir."
+    },
+    "max_concurrent_downloads": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 4,
+      "description": "Concurrent object downloads."
+    },
+    "staging_size_limit": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Staging area limit in bytes. Null uses 2 GiB."
+    },
+    "max_patch_file_size": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Files above this size skip the delta pipeline. Null uses 256 MiB."
+    },
+    "patch_memory_factor": {
+      "type": ["number", "null"],
+      "minimum": 1.0,
+      "default": null,
+      "description": "Patch memory budget = file size x this factor. Null uses 2.5."
+    },
+    "manifest_max_bytes": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Manifest size limit in bytes. Null uses 8 MiB."
+    },
+    "max_files": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Manifest entry limit. Null uses 20000."
+    },
+    "allow_insecure_http": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow plain HTTP strictly for loopback hosts. Local development only."
+    },
+    "proxy": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "default": null,
+      "description": "HTTP/SOCKS proxy URL for enterprise networks."
+    },
+    "headers": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string" },
+      "default": null,
+      "description": "Extra headers for manifest and signature requests only."
+    },
+    "signing_headers": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string" },
+      "default": null,
+      "description": "Extra headers for the signed-URL service only, kept apart from `headers`."
+    }
+  }
+}

@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::{bail, Context};
 
 use crate::cli::MigrateArgs;
-use crate::output;
+use crate::output::{self, Console};
 
 pub fn run(args: &MigrateArgs) -> anyhow::Result<()> {
     migrate(args)
@@ -52,7 +52,8 @@ pub fn migrate(args: &MigrateArgs) -> anyhow::Result<()> {
         .or_else(|| updater.get("endpoint").and_then(|value| value.as_str()));
     let pubkey = updater.get("pubkey").and_then(|value| value.as_str());
 
-    println!("检测到 {} 的 plugins.updater。\n", path.display());
+    let out = Console::new(args.json);
+    out.say(format!("检测到 {} 的 plugins.updater。\n", path.display()));
     if let Some(endpoint) = endpoint {
         if endpoint.contains("{{") {
             output::warn(
@@ -64,7 +65,7 @@ pub fn migrate(args: &MigrateArgs) -> anyhow::Result<()> {
         "官方 updater 的 latest.json 不能复用：必须用 `delta-update release` 生成 delta 清单与签名",
     );
 
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "plugins": {
             "delta-update": {
                 "config_version": 1,
@@ -77,6 +78,12 @@ pub fn migrate(args: &MigrateArgs) -> anyhow::Result<()> {
             }
         }
     });
+    if args.write {
+        // The guide is what the user pastes into tauri.conf.json, so it points
+        // at the schema file written next to it in the same pass.
+        config["plugins"]["delta-update"]["$schema"] =
+            serde_json::Value::String("./delta-update.schema.json".into());
+    }
     let capabilities = serde_json::json!({
         "identifier": "delta-update",
         "windows": ["main"],
@@ -84,13 +91,51 @@ pub fn migrate(args: &MigrateArgs) -> anyhow::Result<()> {
     });
     let guide = migration_guide(&path, &config, &capabilities)?;
 
+    let mut schema_written = None;
+    let mut capability_written = None;
+    let mut guide_written = None;
     if args.write {
-        crate::scaffold::write_capability(&args.dir, &capabilities)?;
-        crate::scaffold::write_new_file(&args.dir.join("delta-update-migration.md"), &guide)?;
-        println!("\ntauri.conf.json、Cargo.toml 与 main.rs 保持原样，请按指南手动修改。");
+        schema_written = Some(crate::scaffold::write_schema(&args.dir, args.json)?);
+        capability_written = Some(crate::scaffold::write_capability(
+            &args.dir,
+            &capabilities,
+            args.json,
+        )?);
+        guide_written = Some(crate::scaffold::write_new_file(
+            &args.dir.join("delta-update-migration.md"),
+            &guide,
+            args.json,
+        )?);
+        out.say("\ntauri.conf.json、Cargo.toml 与 main.rs 保持原样，请按指南手动修改。");
     } else {
-        print!("{guide}");
-        println!("\n提示：加 --write 可生成 capability 与 delta-update-migration.md（不会修改现有文件）。");
+        out.raw(&guide);
+        out.say("\n提示：加 --write 可生成 capability、编辑器 schema 与 delta-update-migration.md（不会修改现有文件）。");
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "v": 1,
+                "tool": "delta-update-cli",
+                "config": config["plugins"]["delta-update"],
+                "capability": capabilities,
+                "written": args.write,
+                "schema_written": schema_written,
+                "schema_path": args.write.then(|| {
+                    args.dir
+                        .join("src-tauri/delta-update.schema.json")
+                        .display()
+                        .to_string()
+                }),
+                "capability_written": capability_written,
+                "guide_written": guide_written,
+                "guide_path": args
+                    .write
+                    .then(|| args.dir.join("delta-update-migration.md").display().to_string()),
+                "guide": guide,
+            }))?
+        );
     }
     Ok(())
 }

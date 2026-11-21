@@ -34,6 +34,9 @@ pub struct PluginState {
     current_version: String,
     snapshot: RwLock<EngineState>,
     target_version: RwLock<Option<String>>,
+    /// Cached journal marker. Reading it on every payload build would hit the
+    /// disk once per progress event; only skip/clear/startup can change it.
+    skipped_version: RwLock<Option<String>>,
     /// From the last check: the oldest version the publisher still supports.
     min_supported_version: RwLock<Option<String>>,
     last_check: RwLock<Option<(Instant, CheckOutcome)>>,
@@ -53,12 +56,14 @@ pub struct PluginState {
 impl PluginState {
     pub fn new(engine: Engine, config: &Config, journal_root: PathBuf) -> Self {
         let current_version = engine.config().current_version.clone();
+        let skipped_version = engine.skipped_version();
         Self {
             engine: Some(Arc::new(engine)),
             startup_error: None,
             current_version,
             snapshot: RwLock::new(EngineState::Idle),
             target_version: RwLock::new(None),
+            skipped_version: RwLock::new(skipped_version),
             min_supported_version: RwLock::new(None),
             last_check: RwLock::new(None),
             prepared: RwLock::new(None),
@@ -83,6 +88,7 @@ impl PluginState {
             current_version: String::new(),
             snapshot: RwLock::new(EngineState::Idle),
             target_version: RwLock::new(None),
+            skipped_version: RwLock::new(None),
             min_supported_version: RwLock::new(None),
             last_check: RwLock::new(None),
             prepared: RwLock::new(None),
@@ -144,6 +150,8 @@ impl PluginState {
     /// Wire payload for a snapshot. Download/prepare/commit states carry the
     /// target version so the UI can label progress with "v2.1.0" instead of
     /// only a percentage; the engine states themselves stay version-agnostic.
+    /// `target_version`/`skipped_version` are always attached so a window that
+    /// opens later can render the offer without running a check first.
     pub fn payload(&self, snapshot: &EngineState) -> StatePayload {
         let mut payload = StatePayload::from_state(snapshot);
         if payload.version.is_none()
@@ -157,6 +165,8 @@ impl PluginState {
         {
             payload.version = self.target_version();
         }
+        payload.target_version = self.target_version();
+        payload.skipped_version = self.skipped_version();
         payload
     }
 
@@ -169,6 +179,19 @@ impl PluginState {
 
     pub fn set_target_version(&self, version: Option<String>) {
         if let Ok(mut current) = self.target_version.write() {
+            *current = version;
+        }
+    }
+
+    pub fn skipped_version(&self) -> Option<String> {
+        self.skipped_version
+            .read()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    pub fn set_skipped_version(&self, version: Option<String>) {
+        if let Ok(mut current) = self.skipped_version.write() {
             *current = version;
         }
     }

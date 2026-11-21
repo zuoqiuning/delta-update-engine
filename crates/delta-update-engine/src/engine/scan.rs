@@ -15,11 +15,12 @@ pub(crate) fn diff_install(
     install_root: &Path,
     journal_root: &Path,
     remote: &Manifest,
+    current_version: &str,
 ) -> Result<(DiffResult, u32, VerifiedInventory), EngineError> {
     let mut cache = HashCache::load(journal_root, install_root);
     let (local, placeholders_skipped, mtimes) = scan_local(install_root, &mut cache)?;
     let known = KnownFiles::load(&journal_root.join("known_files.json"))?;
-    let result = diff(&local, remote, &known.files)?;
+    let result = diff(&local, remote, &known.files, current_version)?;
     cache.save(journal_root);
 
     // Only files that the commit will replace or remove need their old hash

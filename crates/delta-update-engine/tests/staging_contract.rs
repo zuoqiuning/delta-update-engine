@@ -272,6 +272,76 @@ async fn prepare_applies_qbsdiff_patch() {
 }
 
 #[tokio::test]
+async fn prepare_uses_the_patch_for_the_running_baseline() {
+    let keys = TestKeyPair::generate();
+    let old_14 = b"hello world 1.4";
+    let old_15 = b"hello world 1.5";
+    let new = b"hello brave new world";
+    let patch_14 = qbsdiff_patch(old_14, new);
+    let patch_15 = qbsdiff_patch(old_15, new);
+    let key_14 = "artifacts/1.4.0-to-2.0.0/App.exe.tdp";
+    let key_15 = "artifacts/1.5.0-to-2.0.0/App.exe.tdp";
+
+    let manifest = manifest_with(json!({
+        "App.exe": {
+            "sha256": sha256_bytes(new),
+            "size": new.len(),
+            "strategy": "qbsdiff+zstd",
+            "delta_key": key_14,
+            "delta_size": patch_14.len(),
+            "full_key": "artifacts/full/2.0.0/App.exe",
+            "deltas": [
+                {
+                    "from_version": "1.4.0",
+                    "strategy": "qbsdiff+zstd",
+                    "delta_key": key_14,
+                    "delta_size": patch_14.len()
+                },
+                {
+                    "from_version": "1.5.0",
+                    "strategy": "qbsdiff+zstd",
+                    "delta_key": key_15,
+                    "delta_size": patch_15.len()
+                }
+            ]
+        }
+    }));
+    let (dir, engine, server) = start(
+        manifest,
+        &keys,
+        "1.5.0",
+        Limits::default(),
+        &[("App.exe", old_15)],
+        &[],
+        &[(key_14, &patch_14), (key_15, &patch_15)],
+    )
+    .await;
+
+    let outcome = engine.check().await.unwrap();
+    assert_eq!(
+        outcome.download_bytes,
+        patch_15.len() as u64,
+        "the estimate must use the patch for the running version"
+    );
+    let prepared = engine.prepare(Box::new(|_| {})).await.unwrap();
+    assert_eq!(
+        std::fs::read(prepared.staging_root.join("files/App.exe")).unwrap(),
+        new
+    );
+
+    let requests = server.requests();
+    assert!(
+        requests.iter().any(|path| path == key_15),
+        "the matching baseline patch must be downloaded"
+    );
+    assert!(
+        !requests.iter().any(|path| path == key_14),
+        "another baseline's patch must never be downloaded"
+    );
+    drop(dir);
+}
+
+#[tokio::test]
 async fn prepare_falls_back_to_full_when_patch_is_corrupt() {
     let keys = TestKeyPair::generate();
     let old = b"hello world";
